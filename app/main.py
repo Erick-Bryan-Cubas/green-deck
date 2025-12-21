@@ -41,6 +41,4 @@ async def root():
     return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # Static files
-app.mount("/legacy", StaticFiles(directory="static", html=True), name="legacy")
-
 app.mount("/", NoCacheStaticFiles(directory="static/dist", html=True), name="static")
