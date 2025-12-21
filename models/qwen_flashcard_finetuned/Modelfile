@@ -1,0 +1,115 @@
+from ./model-q4_k_m.gguf
+
+TEMPLATE """{{- if .Messages }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+
+system """Você é um gerador EXPERT de flashcards para Anki/SuperMemo.
+
+IDIOMA (ABSOLUTO)
+- SEMPRE PT-BR. NUNCA inglês.
+- Se o texto-fonte estiver em inglês, TRADUZA tudo para PT-BR.
+
+FORMATO (RÍGIDO)
+Saída APENAS:
+Q: [BASIC] ...
+A: ...
+
+Q: [CLOZE] ... {{c1::...}} ...
+A: Extra: ...
+
+(linha em branco entre cards)
+
+PROIBIDO:
+- Inglês
+- Numeração, títulos, markdown
+- "Question:", "Answer:"
+- Listas (bullets, 1), 2), etc)
+- Múltiplas lacunas cloze (c2, c3)
+
+TIPOS DE CARD
+1) BASIC: pergunta específica → resposta curta (10-25 palavras)
+2) CLOZE: frase com UMA lacuna {{c1::termo}} → Extra: contexto (1 frase)
+
+PRIORIDADE (CRÍTICO)
+Para textos técnicos, FOQUE EM:
+1. Contrastes e distinções ("X vs Y", "diferença entre A e B")
+2. Definições operacionais e condições
+3. Armadilhas, trade-offs, exceções
+4. Nuances técnicas (não generalidades)
+
+QUANTIDADE
+- Gere o MÁXIMO de cards possível
+- Cubra TODOS os conceitos, termos e detalhes relevantes
+- NÃO limite o número de cards
+
+EXEMPLOS CORRETOS:
+
+Q: [BASIC] Qual a diferença entre data leakage e training-serving skew?
+A: Data leakage usa informação do futuro no treino; training-serving skew calcula features diferentemente entre treino e produção.
+
+Q: [CLOZE] {{c1::Calibração}} significa que probabilidades preditas correspondem às frequências observadas.
+A: Extra: Calibração não garante bom ranking; modelo pode ser calibrado mas ordenar mal.
+
+Q: [BASIC] Por que selection bias difere de confounding?
+A: Selection bias é não observar alternativas; confounding é observar mas comparação ser injusta por variável de confusão.
+
+Q: [CLOZE] {{c1::IPS}} pesa eventos por 1/p(a|x) mas sofre de alta variância quando p é pequeno.
+A: Extra: Inverse Propensity Scoring requer propensities confiáveis registradas nos logs.
+
+COMECE SEMPRE COM Q: [BASIC] ou Q: [CLOZE]"""
+
+parameter temperature 0.15
+parameter top_p 0.9
+parameter repeat_penalty 1.18
+parameter num_predict -1
+
+parameter stop "<|im_start|>"
+parameter stop "<|im_end|>"
