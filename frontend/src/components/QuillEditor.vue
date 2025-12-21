@@ -1,25 +1,13 @@
 <script setup>
+
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Quill from 'quill'
 import 'quill/dist/quill.snow.css'
 
-/**
- * QuillEditor.vue (Vue 3 + Quill via NPM)
- *
- * Melhorias incluídas:
- * 1) Context menu abre no mouse: emite `originalEvent` (MouseEvent real)
- * 2) Marcação (background) agora ajusta a cor da fonte automaticamente (color) para manter legibilidade
- * 3) Remover marcação remove também `color` (evita texto “preso” escuro)
- * 4) Normaliza marcações antigas (se já existiam highlights com texto branco)
- * 5) Color picker: reposiciona pra não estourar viewport e fecha ao scroll/resize/click fora
- * 6) Captura seleção antes de abrir o picker (mousedown)
- * 7) Wheel leak: impede scroll “vazar” para a página quando rolar dentro do editor
- */
-
 const props = defineProps({
   placeholder: {
     type: String,
-    default: 'Paste or type your text here, then highlight sections to generate cards...'
+    default: 'Cole ou digite o texto aqui, selecione trechos e gere cards...'
   }
 })
 
@@ -36,28 +24,46 @@ const editorRef = ref(null)
 let quill = null
 let textChangeTimeout = null
 
-// Salva a última seleção (range) para aplicar formatação ao clicar em menus/pickers
 let savedRange = null
 
-// ----------------------------
-// Mapeamento: background -> cor do texto (legibilidade)
-// ----------------------------
-const BG_TO_TEXT = {
-  '#fef08a': '#111827', // Amarelo -> quase preto
-  '#bbf7d0': '#052e16', // Verde -> verde bem escuro
-  '#bfdbfe': '#0b1f3a', // Azul -> azul bem escuro
-  '#fbcfe8': '#3b0a22', // Rosa -> vinho escuro
-  '#ddd6fe': '#1e1b4b', // Roxo -> índigo escuro
-  '#fed7aa': '#3a1f00'  // Laranja -> marrom escuro
+// ------------------------------------------------------------
+// Contraste automático: dado um HEX, retorna #111.. ou #fff
+// ------------------------------------------------------------
+function hexToRgb(hex) {
+  const h = (hex || '').replace('#', '').trim()
+  if (h.length === 3) {
+    const r = parseInt(h[0] + h[0], 16)
+    const g = parseInt(h[1] + h[1], 16)
+    const b = parseInt(h[2] + h[2], 16)
+    return { r, g, b }
+  }
+  if (h.length === 6) {
+    const r = parseInt(h.slice(0, 2), 16)
+    const g = parseInt(h.slice(2, 4), 16)
+    const b = parseInt(h.slice(4, 6), 16)
+    return { r, g, b }
+  }
+  return null
 }
 
-function textColorForBackground(bg) {
-  return BG_TO_TEXT[bg] || '#111827'
+function relativeLuminance({ r, g, b }) {
+  // sRGB -> linear
+  const srgb = [r, g, b].map((v) => v / 255)
+  const lin = srgb.map((c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)))
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
 }
 
-// ----------------------------
-// Helpers de seleção / formatação
-// ----------------------------
+function textColorForBackground(bgHex) {
+  const rgb = hexToRgb(bgHex)
+  if (!rgb) return '#111827'
+  const L = relativeLuminance(rgb)
+  // fundo claro -> texto escuro; fundo escuro -> texto claro
+  return L > 0.52 ? '#111827' : '#ffffff'
+}
+
+// ------------------------------------------------------------
+// Seleção / formatos
+// ------------------------------------------------------------
 function getSelectedText(range) {
   if (!quill || !range || !range.length) return ''
   return quill.getText(range.index, range.length).trim()
@@ -86,7 +92,7 @@ function formatBackground(bg) {
   if (!quill) return
   if (!hasValidSavedRange()) return
 
-  if (bg === 'transparent') {
+  if (!bg || bg === 'transparent') {
     applyFormatsToSavedRange({ background: false, color: false })
     return
   }
@@ -108,51 +114,53 @@ function clearSelection() {
   quill.setSelection(null)
 }
 
-// ----------------------------
-// Picker custom (🖍️) para background + auto-color
-// ----------------------------
+// ------------------------------------------------------------
+// Normaliza highlights antigos (background mas cor errada)
+// ------------------------------------------------------------
+function normalizeHighlightTextColors() {
+  if (!quill) return
+
+  const delta = quill.getContents()
+  let idx = 0
+
+  delta.ops.forEach((op) => {
+    const ins = op.insert
+    const len = typeof ins === 'string' ? ins.length : 1
+    const bg = op.attributes?.background
+
+    if (bg && typeof bg === 'string' && bg.startsWith('#')) {
+      quill.formatText(idx, len, { color: textColorForBackground(bg) })
+    }
+    idx += len
+  })
+}
+
+// ------------------------------------------------------------
+// Picker custom (🖍️) - também clamp na tela
+// ------------------------------------------------------------
 const PICKER_CLASS = 'custom-color-picker'
 let pickerCleanupFns = []
 
 function removePicker() {
   const existing = document.querySelector(`.${PICKER_CLASS}`)
   if (existing) existing.remove()
-
-  // remove listeners registrados
   pickerCleanupFns.forEach((fn) => {
     try { fn() } catch {}
   })
   pickerCleanupFns = []
 }
 
-function positionPicker(pickerEl, anchorRect) {
-  const margin = 8
-  const pickerWidth = 140
-  const pickerHeight = 8 + (3 * 36) + (2 * 6) // aprox (padding + grid)
-  let left = anchorRect.left
-  let top = anchorRect.bottom + 6
-
-  // Ajuste horizontal
-  if (left + pickerWidth + margin > window.innerWidth) {
-    left = Math.max(margin, window.innerWidth - pickerWidth - margin)
+function clampPosition(x, y, w, h, margin = 8) {
+  const maxX = window.innerWidth - w - margin
+  const maxY = window.innerHeight - h - margin
+  return {
+    x: Math.max(margin, Math.min(x, maxX)),
+    y: Math.max(margin, Math.min(y, maxY))
   }
-  if (left < margin) left = margin
-
-  // Ajuste vertical (se estourar embaixo, joga pra cima)
-  if (top + pickerHeight + margin > window.innerHeight) {
-    top = anchorRect.top - pickerHeight - 6
-    if (top < margin) top = margin
-  }
-
-  pickerEl.style.left = `${left}px`
-  pickerEl.style.top = `${top}px`
 }
 
 function showBackgroundPicker(buttonEl) {
-  // Salva seleção atual se possível
   savedRange = quill?.getSelection() || savedRange
-
-  // Sem seleção => não faz sentido marcar
   if (!hasValidSavedRange()) return
 
   const existing = document.querySelector(`.${PICKER_CLASS}`)
@@ -177,51 +185,68 @@ function showBackgroundPicker(buttonEl) {
     position: fixed;
     background: #111827;
     border: 1px solid #374151;
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 8px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-    z-index: 9999;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.55);
+    z-index: 99999;
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 6px;
-    width: 140px;
+    width: 156px;
   `
 
-  // posiciona
   const rect = buttonEl.getBoundingClientRect()
-  positionPicker(picker, rect)
+  // tamanho aproximado do picker (altura depende do grid, mas aqui é estável)
+  const pickerW = 156
+  const pickerH = 8 + (3 * 36) + (2 * 6) + 8
+  const pos = clampPosition(rect.left, rect.bottom + 8, pickerW, pickerH)
+
+  picker.style.left = `${pos.x}px`
+  picker.style.top = `${pos.y}px`
 
   colors.forEach(({ color, label }) => {
     const btn = document.createElement('button')
     btn.type = 'button'
     btn.title = label
+
+    const txtColor = color === 'transparent' ? '#e5e7eb' : textColorForBackground(color)
     btn.style.cssText = `
-      width: 36px;
+      width: 44px;
       height: 36px;
-      border-radius: 6px;
+      border-radius: 8px;
       border: 2px solid #374151;
-      background-color: ${color};
+      background-color: ${color === 'transparent' ? 'transparent' : color};
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: transform 0.12s ease, border-color 0.12s ease;
+      position: relative;
+      overflow: hidden;
       ${color === 'transparent'
         ? 'background-image: linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc); background-size: 8px 8px; background-position: 0 0, 4px 4px;'
         : ''
       }
     `
 
+    // mini “A” pra mostrar contraste (ajuda UX)
+    btn.innerHTML = `<span style="
+        position:absolute; inset:0;
+        display:grid; place-items:center;
+        font-weight:900; font-size:12px;
+        color:${txtColor};
+        text-shadow:${txtColor === '#ffffff' ? '0 1px 2px rgba(0,0,0,0.45)' : 'none'};
+      ">A</span>`
+
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+    })
+
     btn.addEventListener('mouseenter', () => {
-      btn.style.transform = 'scale(1.08)'
+      btn.style.transform = 'scale(1.06)'
       btn.style.borderColor = '#ffffff'
     })
     btn.addEventListener('mouseleave', () => {
       btn.style.transform = 'scale(1)'
       btn.style.borderColor = '#374151'
-    })
-
-    btn.addEventListener('mousedown', (e) => {
-      // evita Quill perder seleção ao clicar no botão
-      e.preventDefault()
-      e.stopPropagation()
     })
 
     btn.addEventListener('click', (e) => {
@@ -236,16 +261,12 @@ function showBackgroundPicker(buttonEl) {
 
   document.body.appendChild(picker)
 
-  // Fecha ao clicar fora
   const onDocClick = (e) => {
-    if (!picker.contains(e.target) && e.target !== buttonEl) {
-      removePicker()
-    }
+    if (!picker.contains(e.target) && e.target !== buttonEl) removePicker()
   }
   document.addEventListener('click', onDocClick)
   pickerCleanupFns.push(() => document.removeEventListener('click', onDocClick))
 
-  // Fecha ao scroll/resize (senão fica “voando”)
   const onScroll = () => removePicker()
   const onResize = () => removePicker()
   window.addEventListener('scroll', onScroll, true)
@@ -254,51 +275,62 @@ function showBackgroundPicker(buttonEl) {
   pickerCleanupFns.push(() => window.removeEventListener('resize', onResize))
 }
 
-// ----------------------------
-// Normaliza highlights antigos (background aplicado, mas texto branco)
-// ----------------------------
-function normalizeHighlightTextColors() {
-  if (!quill) return
+// ------------------------------------------------------------
+// Context menu: clamp para não vazar a tela
+// (1) emitimos um MouseEvent “clampado”
+// (2) fallback: após abrir, tenta ajustar .p-contextmenu visível
+// ------------------------------------------------------------
+function createClampedMouseEvent(e, estimatedW = 260, estimatedH = 320) {
+  const pos = clampPosition(e.clientX, e.clientY, estimatedW, estimatedH, 8)
+  const init = {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    clientX: pos.x,
+    clientY: pos.y,
+    screenX: e.screenX,
+    screenY: e.screenY,
+    button: e.button,
+    buttons: e.buttons,
+    ctrlKey: e.ctrlKey,
+    shiftKey: e.shiftKey,
+    altKey: e.altKey,
+    metaKey: e.metaKey
+  }
+  return new MouseEvent(e.type, init)
+}
 
-  const delta = quill.getContents()
-  let idx = 0
+function clampPrimeContextMenuIfVisible() {
+  // tenta ajustar o menu do PrimeVue se ele estiver aberto
+  requestAnimationFrame(() => {
+    const menus = Array.from(document.querySelectorAll('.p-contextmenu'))
+    if (!menus.length) return
 
-  delta.ops.forEach((op) => {
-    const ins = op.insert
-    const len = typeof ins === 'string' ? ins.length : 1
-    const bg = op.attributes?.background
+    const visible = menus
+      .filter((el) => {
+        const st = window.getComputedStyle(el)
+        return st.display !== 'none' && st.visibility !== 'hidden' && Number(st.opacity || '1') > 0
+      })
+      .sort((a, b) => (a.getBoundingClientRect().top - b.getBoundingClientRect().top))
 
-    if (bg && BG_TO_TEXT[bg]) {
-      // aplica a cor de texto correspondente
-      quill.formatText(idx, len, { color: textColorForBackground(bg) })
-    }
+    const el = visible[visible.length - 1]
+    if (!el) return
 
-    idx += len
+    const r = el.getBoundingClientRect()
+    const margin = 8
+    let left = r.left
+    let top = r.top
+
+    if (r.right > window.innerWidth - margin) left -= (r.right - (window.innerWidth - margin))
+    if (r.bottom > window.innerHeight - margin) top -= (r.bottom - (window.innerHeight - margin))
+    if (left < margin) left = margin
+    if (top < margin) top = margin
+
+    el.style.left = `${Math.round(left)}px`
+    el.style.top = `${Math.round(top)}px`
   })
 }
 
-// ----------------------------
-// Wheel leak: evita scroll do body
-// ----------------------------
-function preventWheelLeak(e) {
-  const el = e.currentTarget
-  const contentHeight = el.scrollHeight
-  const visibleHeight = el.clientHeight
-  const scrollTop = el.scrollTop
-
-  const isAtTop = scrollTop === 0
-  const isAtBottom = scrollTop + visibleHeight >= contentHeight - 1
-
-  // se estiver no limite e o usuário tentar ir além, deixa a página rolar
-  if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) return
-
-  e.preventDefault()
-  el.scrollTop += e.deltaY
-}
-
-// ----------------------------
-// Context menu: emite MouseEvent real pro App abrir ContextMenu no cursor
-// ----------------------------
 function onContextMenu(e) {
   e.preventDefault()
   removePicker()
@@ -312,21 +344,42 @@ function onContextMenu(e) {
   const selText = hasSel ? getSelectedText(range) : ''
   const hl = hasSel ? selectionHasHighlight(range) : false
 
+  const clampedEvent = createClampedMouseEvent(e)
+
   emit('context-menu', {
-    originalEvent: e, // ✅ O App deve chamar contextMenu.show(e)
+    originalEvent: clampedEvent,
     hasSelection: hasSel,
     hasHighlight: hl,
     selectedText: selText,
     range
   })
+
+  // fallback: reposiciona menu se Prime não clampou corretamente
+  clampPrimeContextMenuIfVisible()
 }
 
-// ----------------------------
+// ------------------------------------------------------------
+// Wheel leak: impede scroll “vazar” para a página
+// ------------------------------------------------------------
+function preventWheelLeak(e) {
+  const el = e.currentTarget
+  const contentHeight = el.scrollHeight
+  const visibleHeight = el.clientHeight
+  const scrollTop = el.scrollTop
+
+  const isAtTop = scrollTop === 0
+  const isAtBottom = scrollTop + visibleHeight >= contentHeight - 1
+
+  if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) return
+
+  e.preventDefault()
+  el.scrollTop += e.deltaY
+}
+
+// ------------------------------------------------------------
 // Lifecycle
-// ----------------------------
+// ------------------------------------------------------------
 onMounted(() => {
-  // Config do toolbar parecido com o original, mas usando container custom
-  // Inclui `color` como formato permitido porque vamos setar a cor do texto.
   quill = new Quill(editorRef.value, {
     theme: 'snow',
     placeholder: props.placeholder,
@@ -334,63 +387,62 @@ onMounted(() => {
     formats: ['header', 'bold', 'italic', 'list', 'background', 'color']
   })
 
-  // Botão background (🖍️)
   const bgBtn = toolbarRef.value?.querySelector('.ql-background')
   if (bgBtn) {
     bgBtn.innerHTML = '<span style="font-size:16px;">🖍️</span>'
-
-    // salva a seleção no mousedown (antes de perder foco)
     bgBtn.addEventListener('mousedown', () => {
       savedRange = quill.getSelection() || savedRange
     })
-
-    bgBtn.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
+    bgBtn.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
       showBackgroundPicker(bgBtn)
     })
   }
 
-  // selection-change
   quill.on('selection-change', (range) => {
     savedRange = range
 
     if (range && range.length > 0) {
-      const st = getSelectedText(range)
       emit('selection-changed', {
-        selectedText: st,
+        selectedText: getSelectedText(range),
         range,
         hasSelection: true,
         hasHighlight: selectionHasHighlight(range)
       })
     } else {
-      emit('selection-changed', {
-        selectedText: '',
-        range,
-        hasSelection: false,
-        hasHighlight: false
-      })
+      emit('selection-changed', { selectedText: '', range, hasSelection: false, hasHighlight: false })
     }
   })
 
-  // text-change: emite (com debounce curto)
-  quill.on('text-change', () => {
+  quill.on('text-change', (delta, oldDelta, source) => {
     if (textChangeTimeout) clearTimeout(textChangeTimeout)
+
+    // "texto mudou" somente se houve insert/delete
+    const isTextMutation = Array.isArray(delta?.ops)
+      ? delta.ops.some(op => op.insert != null || op.delete != null)
+      : false
+
     textChangeTimeout = setTimeout(() => {
       const fullText = quill.getText()
       const html = editorRef.value?.querySelector('.ql-editor')?.innerHTML || ''
-      emit('content-changed', { fullText, html })
+      const contents = quill.getContents()
+
+      emit('content-changed', {
+        fullText,
+        html,
+        delta: contents,
+        source,
+        isTextMutation
+      })
     }, 200)
   })
 
-  // listeners no editor
   const editorEl = editorRef.value.querySelector('.ql-editor')
   editorEl.addEventListener('contextmenu', onContextMenu)
   editorEl.addEventListener('wheel', preventWheelLeak, { passive: false })
 
-  // Ajusta highlights existentes (se houver)
   normalizeHighlightTextColors()
-
   emit('editor-ready', quill)
 })
 
@@ -407,21 +459,29 @@ onBeforeUnmount(() => {
   } catch {}
 })
 
-// ----------------------------
-// Expose (para App.vue chamar)
-// ----------------------------
 defineExpose({
   formatBackground,
   clearHighlight,
   clearSelection,
   getFullText: () => (quill ? quill.getText().trim() : ''),
-  getSelectedText: () => (hasValidSavedRange() ? getSelectedText(savedRange) : '')
+  getSelectedText: () => (hasValidSavedRange() ? getSelectedText(savedRange) : ''),
+  getDelta: () => (quill ? quill.getContents() : null),
+  setDelta: (delta) => {
+    if (!quill) return
+    if (!delta) {
+      quill.setText('')
+      return
+    }
+    quill.setContents(delta, 'api')
+    normalizeHighlightTextColors()
+  }
 })
+
 </script>
 
 <template>
-  <div class="quill-wrapper">
-    <div ref="toolbarRef" class="quill-toolbar">
+  <div class="qe-wrap">
+    <div ref="toolbarRef" class="qe-toolbar">
       <select class="ql-header">
         <option value="1"></option>
         <option value="2"></option>
@@ -436,44 +496,42 @@ defineExpose({
       <button class="ql-background" type="button"></button>
     </div>
 
-    <div ref="editorRef" class="quill-editor"></div>
+    <div ref="editorRef" class="qe-editor"></div>
   </div>
 </template>
 
 <style scoped>
-.quill-wrapper {
+.qe-wrap {
   height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
-.quill-toolbar {
-  border-radius: 10px 10px 0 0;
+.qe-toolbar {
+  border-radius: 14px 14px 0 0;
   overflow: hidden;
 }
 
-/* Mantém o editor ocupando todo o espaço do painel */
-.quill-editor {
+.qe-editor {
   flex: 1;
   min-height: 0;
-  border-radius: 0 0 10px 10px;
+  border-radius: 0 0 14px 14px;
   overflow: hidden;
 }
 
-/* Se você tiver CSS global forçando branco, isto pode não vencer um !important.
-   Mas ajuda em setups normais. */
-:deep(.ql-editor) {
-  /* deixe seu tema controlar se quiser; aqui é um fallback “dark friendly” */
-  color: var(--text-color, #e5e7eb);
-}
-
-/* garante que seleção/toolbar fiquem “apertadinhos” em layouts tight */
+/* bordas mais “clean” */
 :deep(.ql-toolbar.ql-snow) {
-  border: 1px solid var(--surface-border, #2a2a2a);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.03);
 }
 :deep(.ql-container.ql-snow) {
-  border: 1px solid var(--surface-border, #2a2a2a);
+  border: 1px solid rgba(148, 163, 184, 0.18);
   border-top: none;
+}
+
+/* melhora o look do editor em dark UI */
+:deep(.ql-editor) {
+  color: var(--text-color, #e5e7eb);
 }
 </style>

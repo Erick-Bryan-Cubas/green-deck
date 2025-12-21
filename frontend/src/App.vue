@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 // PrimeVue
 import Toolbar from 'primevue/toolbar'
@@ -7,7 +7,6 @@ import Splitter from 'primevue/splitter'
 import SplitterPanel from 'primevue/splitterpanel'
 import Button from 'primevue/button'
 import Select from 'primevue/select'
-import SelectButton from 'primevue/selectbutton'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
@@ -37,9 +36,320 @@ import {
 
 const toast = useToast()
 
-// -------------------------
-// Estado
-// -------------------------
+// ============================================================
+// Helpers
+// ============================================================
+function notify(message, severity = 'info', life = 3000) {
+  toast.add({ severity, summary: message, life })
+}
+
+function normalizePlainText(t) {
+  return String(t || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+function safeId() {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`
+  }
+}
+
+function sessionTitleFromText(text) {
+  const t = String(text || '').trim()
+  const firstLine = t
+    .split('\n')
+    .map((s) => s.trim())
+    .find(Boolean)
+  if (!firstLine) return 'Texto sem título'
+  return firstLine.length > 60 ? firstLine.slice(0, 59) + '…' : firstLine
+}
+
+function formatSessionStamp(iso) {
+  try {
+    const d = new Date(iso)
+    return d.toLocaleString(undefined, {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return ''
+  }
+}
+
+// ============================================================
+// Sessões (localStorage) — texto + marcações (Delta) + cards + contexto
+// ============================================================
+const LS_SESSIONS_KEY = 'spaced-rep.sessions.v1'
+const LS_ACTIVE_SESSION_KEY = 'spaced-rep.sessions.active.v1'
+
+// Para evitar estourar o localStorage sem perceber
+const MAX_SESSIONS = 30
+const MAX_LOCALSTORAGE_CHARS = 4_000_000 // ~4MB de margem
+
+const sessions = ref([]) // [{id,title,createdAt,updatedAt,plainText,quillDelta,cards,documentContext}]
+const activeSessionId = ref(null)
+const isRestoringSession = ref(false)
+
+const savedSessionExists = computed(() => sessions.value.length > 0)
+
+function loadSessions() {
+  try {
+    const raw = localStorage.getItem(LS_SESSIONS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+
+    return parsed
+      .map((s) => ({
+        id: typeof s.id === 'string' ? s.id : safeId(),
+        title: typeof s.title === 'string' ? s.title : 'Sessão',
+        createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date().toISOString(),
+        updatedAt: typeof s.updatedAt === 'string' ? s.updatedAt : new Date().toISOString(),
+        plainText: typeof s.plainText === 'string' ? s.plainText : '',
+        quillDelta: s.quillDelta ?? null,
+        cards: Array.isArray(s.cards) ? s.cards : [],
+        documentContext: typeof s.documentContext === 'string' ? s.documentContext : ''
+      }))
+      .slice(0, MAX_SESSIONS)
+  } catch {
+    return []
+  }
+}
+
+function persistSessions(list) {
+  try {
+    const capped = list.slice(0, MAX_SESSIONS)
+    const raw = JSON.stringify(capped)
+    if (raw.length > MAX_LOCALSTORAGE_CHARS) {
+      // Não trava o app, só alerta e não salva
+      notify('Conteúdo muito grande — não foi possível salvar a sessão no localStorage.', 'warn', 6000)
+      return
+    }
+    localStorage.setItem(LS_SESSIONS_KEY, raw)
+  } catch {
+    // storage negado/cheio
+    notify('Falha ao salvar sessão (storage indisponível).', 'warn', 5000)
+  }
+}
+
+function loadActiveSessionId() {
+  try {
+    const id = localStorage.getItem(LS_ACTIVE_SESSION_KEY)
+    return id || null
+  } catch {
+    return null
+  }
+}
+
+function persistActiveSessionId(id) {
+  try {
+    if (!id) localStorage.removeItem(LS_ACTIVE_SESSION_KEY)
+    else localStorage.setItem(LS_ACTIVE_SESSION_KEY, id)
+  } catch {}
+}
+
+function getSessionById(id) {
+  return sessions.value.find((s) => s.id === id) || null
+}
+
+function upsertSession(session) {
+  const now = new Date().toISOString()
+  const next = { ...session, updatedAt: now }
+
+  const idx = sessions.value.findIndex((s) => s.id === next.id)
+  if (idx >= 0) sessions.value.splice(idx, 1, next)
+  else sessions.value.unshift(next)
+
+  // mantém ordenado por "updatedAt" desc
+  sessions.value.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+  sessions.value = sessions.value.slice(0, MAX_SESSIONS)
+
+  persistSessions(sessions.value)
+}
+
+function deleteSessionById(id) {
+  sessions.value = sessions.value.filter((s) => s.id !== id)
+  persistSessions(sessions.value)
+
+  if (activeSessionId.value === id) {
+    activeSessionId.value = sessions.value[0]?.id || null
+    persistActiveSessionId(activeSessionId.value)
+  }
+}
+
+function clearAllSessions() {
+  sessions.value = []
+  activeSessionId.value = null
+  persistActiveSessionId(null)
+  try {
+    localStorage.removeItem(LS_SESSIONS_KEY)
+  } catch {}
+}
+
+function ensureActiveSession() {
+  if (activeSessionId.value) return activeSessionId.value
+
+  const id = safeId()
+  activeSessionId.value = id
+  persistActiveSessionId(id)
+
+  upsertSession({
+    id,
+    title: 'Nova sessão',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    plainText: '',
+    quillDelta: null,
+    cards: [],
+    documentContext: ''
+  })
+  return id
+}
+
+function buildActiveSessionSnapshot() {
+  const id = ensureActiveSession()
+  const base = getSessionById(id)
+
+  const plainText = String(lastFullText.value || '')
+  const title = sessionTitleFromText(plainText)
+
+  // pega delta preferencialmente do último evento; se faltar, consulta o editor
+  const delta = lastEditorDelta.value ?? editorRef.value?.getDelta?.() ?? null
+
+  return {
+    id,
+    title,
+    createdAt: base?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    plainText,
+    quillDelta: delta,
+    cards: cards.value,
+    documentContext: documentContext.value
+  }
+}
+
+let persistSessionTimer = null
+function schedulePersistActiveSession() {
+  if (isRestoringSession.value) return
+  if (persistSessionTimer) clearTimeout(persistSessionTimer)
+  persistSessionTimer = setTimeout(() => {
+    const snap = buildActiveSessionSnapshot()
+
+    // não salva sessão totalmente vazia
+    const hasAny =
+      normalizePlainText(snap.plainText).length > 0 ||
+      (Array.isArray(snap.cards) && snap.cards.length > 0) ||
+      normalizePlainText(snap.documentContext).length > 0
+
+    if (!hasAny) return
+    upsertSession(snap)
+  }, 350)
+}
+
+async function restoreSessionById(id) {
+  const s = getSessionById(id)
+  if (!s) {
+    notify('Sessão não encontrada.', 'warn', 4000)
+    return
+  }
+
+  isRestoringSession.value = true
+  try {
+    activeSessionId.value = s.id
+    persistActiveSessionId(s.id)
+
+    // restaura editor (texto + marcações)
+    editorRef.value?.setDelta?.(s.quillDelta)
+
+    // restaura cards + contexto
+    cards.value = Array.isArray(s.cards) ? s.cards : []
+    documentContext.value = s.documentContext || ''
+
+    // sincroniza “last*”
+    lastFullText.value = s.plainText || ''
+    lastEditorDelta.value = s.quillDelta ?? null
+    lastEditorHtml.value = '' // não é essencial persistir html
+    lastTextForAnalysis.value = normalizePlainText(s.plainText || '')
+
+    await nextTick()
+    notify(`Sessão restaurada: ${s.title}`, 'success', 3200)
+  } finally {
+    // solta o lock após o Quill emitir seus eventos de setContents
+    setTimeout(() => {
+      isRestoringSession.value = false
+    }, 0)
+  }
+}
+
+function clearCurrentSession() {
+  const id = activeSessionId.value
+
+  // limpa UI
+  cards.value = []
+  documentContext.value = ''
+  lastFullText.value = ''
+  lastEditorDelta.value = null
+  lastEditorHtml.value = ''
+  lastTextForAnalysis.value = ''
+
+  // limpa editor (texto + marcações)
+  editorRef.value?.setDelta?.(null)
+
+  // remove sessão atual do storage (se existir)
+  if (id) {
+    deleteSessionById(id)
+  }
+
+  // cria uma nova sessão vazia como “ativa”
+  activeSessionId.value = null
+  persistActiveSessionId(null)
+  ensureActiveSession()
+
+  notify('Sessão atual limpa.', 'info', 3000)
+}
+
+function newSession() {
+  // garante que a sessão atual foi persistida antes de trocar
+  schedulePersistActiveSession()
+
+  // limpa UI/editor e cria nova sessão
+  cards.value = []
+  documentContext.value = ''
+  lastFullText.value = ''
+  lastEditorDelta.value = null
+  lastEditorHtml.value = ''
+  lastTextForAnalysis.value = ''
+
+  editorRef.value?.setDelta?.(null)
+
+  activeSessionId.value = safeId()
+  persistActiveSessionId(activeSessionId.value)
+
+  upsertSession({
+    id: activeSessionId.value,
+    title: 'Nova sessão',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    plainText: '',
+    quillDelta: null,
+    cards: [],
+    documentContext: ''
+  })
+
+  notify('Nova sessão criada.', 'success', 2200)
+}
+
+// ============================================================
+// Estado do App
+// ============================================================
 const cards = ref([])
 const selectedText = ref('')
 const documentContext = ref('')
@@ -49,13 +359,19 @@ const decks = ref({})
 const currentDeck = ref(null)
 const ankiModelsData = ref(null)
 
+// Editor tracking
+const lastFullText = ref('')
+const lastEditorDelta = ref(null)
+const lastEditorHtml = ref('')
+const lastTextForAnalysis = ref('') // texto analisado por último (normalizado)
+const lastNormalizedTextOnChange = ref('') // para detectar mudanças reais sem depender do isTextMutation
+const hasDocumentContext = computed(() => !!documentContext.value)
+
+// Chaves
 const storedKeys = ref(getStoredApiKeys())
 function refreshStoredKeys() {
   storedKeys.value = getStoredApiKeys()
 }
-
-const lastFullText = ref('')
-const hasDocumentContext = computed(() => !!documentContext.value)
 
 // Card type
 const cardType = ref('basic')
@@ -65,29 +381,22 @@ const cardTypeOptions = [
   { label: 'Gerar Cartões Básicos e Cloze', value: 'both' }
 ]
 
-// UI: busca e layout dos cards
+// Busca
 const cardSearch = ref('')
-const cardsLayout = ref('list')
-const cardsLayoutOptions = [
-  { label: 'Lista', value: 'list' },
-  { label: 'Grade', value: 'grid' }
-]
-
 const filteredCards = computed(() => {
   const q = (cardSearch.value || '').trim().toLowerCase()
   if (!q) return cards.value
-
   return cards.value.filter((c) => {
-    const front = String(c.front || '').toLowerCase()
-    const back = String(c.back || '').toLowerCase()
-    const deck = String(c.deck || '').toLowerCase()
-    return front.includes(q) || back.includes(q) || deck.includes(q)
+    const f = String(c.front || '').toLowerCase()
+    const b = String(c.back || '').toLowerCase()
+    const d = String(c.deck || '').toLowerCase()
+    return f.includes(q) || b.includes(q) || d.includes(q)
   })
 })
 
-// -------------------------
-// Timer (header)
-// -------------------------
+// ============================================================
+// Timer (processingTimer)
+// ============================================================
 const processingTimerVisible = ref(false)
 const timerText = ref('Processing...')
 const timerSeconds = ref(0)
@@ -111,9 +420,9 @@ function stopTimer() {
   processingTimerVisible.value = false
 }
 
-// -------------------------
-// Logs (dialog)
-// -------------------------
+// ============================================================
+// Logs
+// ============================================================
 const logsVisible = ref(false)
 const logs = ref([])
 
@@ -127,9 +436,9 @@ function clearLogs() {
   addLog('Logs cleared', 'info')
 }
 
-// -------------------------
+// ============================================================
 // Progress Dialog
-// -------------------------
+// ============================================================
 const progressVisible = ref(false)
 const progressTitle = ref('Processing...')
 const progressValue = ref(0)
@@ -149,27 +458,9 @@ function completeProgress() {
   setTimeout(() => (progressVisible.value = false), 650)
 }
 
-// -------------------------
-// Context Summary Dialog (novo)
-// -------------------------
-const contextVisible = ref(false)
-const contextCopying = ref(false)
-
-async function copyContextToClipboard() {
-  try {
-    contextCopying.value = true
-    await navigator.clipboard.writeText(documentContext.value || '')
-    notify('Contexto copiado para a área de transferência', 'success', 2500)
-  } catch {
-    notify('Falha ao copiar contexto', 'error', 4000)
-  } finally {
-    contextCopying.value = false
-  }
-}
-
-// -------------------------
+// ============================================================
 // API Keys Dialog
-// -------------------------
+// ============================================================
 const apiKeyVisible = ref(false)
 const anthropicApiKey = ref('')
 const mochiApiKey = ref('')
@@ -216,28 +507,20 @@ async function saveApiKeys() {
   }
 }
 
-// -------------------------
-// Toast
-// -------------------------
-function notify(message, severity = 'info', life = 3000) {
-  toast.add({ severity, summary: message, life })
-}
-
-// -------------------------
+// ============================================================
 // Decks Mochi
-// -------------------------
+// ============================================================
 async function fetchDecks() {
   refreshStoredKeys()
   const userMochiKey = storedKeys.value.mochiApiKey
 
-  // Sem chave: fallback
   if (!userMochiKey) {
     decks.value = { General: 'general' }
     currentDeck.value = 'General'
     return
   }
 
-  // 1) tenta via backend
+  // backend
   try {
     const resp = await fetch(`/api/mochi-decks?userMochiKey=${encodeURIComponent(userMochiKey)}`)
     if (resp.ok) {
@@ -248,11 +531,9 @@ async function fetchDecks() {
         return
       }
     }
-  } catch {
-    // ignora e tenta client-side
-  }
+  } catch {}
 
-  // 2) tenta client-side Mochi API
+  // client-side
   try {
     const authHeader = `Basic ${btoa(`${userMochiKey}:`)}`
     const resp = await fetch('https://app.mochi.cards/api/decks/', {
@@ -276,26 +557,29 @@ async function fetchDecks() {
     console.error('Error using client-side Mochi API:', e)
   }
 
-  // 3) fallback final
   decks.value = { General: 'general' }
   currentDeck.value = 'General'
 }
 
-// -------------------------
-// Analyze debounce
-// -------------------------
+// ============================================================
+// Analyze (debounce) — NÃO reanalisa quando é só highlight
+// ============================================================
 let analyzeDebounce = null
 function scheduleAnalyze(fullText) {
   if (analyzeDebounce) clearTimeout(analyzeDebounce)
   analyzeDebounce = setTimeout(() => {
-    if (fullText.trim().length > 100 && !isAnalyzing.value) {
+    const normalized = normalizePlainText(fullText)
+    if (normalized.length > 100 && !isAnalyzing.value) {
+      // evita análise redundante do mesmo texto
+      if (normalized === lastTextForAnalysis.value) return
       analyzeDocumentContext(fullText)
     }
   }, 1200)
 }
 
 async function analyzeDocumentContext(text) {
-  if (!text || text.trim().length < 100 || isAnalyzing.value) return
+  const normalized = normalizePlainText(text)
+  if (!normalized || normalized.length < 100 || isAnalyzing.value) return
 
   try {
     isAnalyzing.value = true
@@ -310,9 +594,15 @@ async function analyzeDocumentContext(text) {
     addLog('Text analysis completed', 'success')
     if (contextSummary) documentContext.value = contextSummary
 
+    // marca o texto analisado
+    lastTextForAnalysis.value = normalized
+
     stopTimer()
     completeProgress()
     notify('Análise concluída. A qualidade dos cards tende a melhorar.', 'success', 3800)
+
+    // persistir sessão (contexto mudou)
+    schedulePersistActiveSession()
   } catch (error) {
     console.error('Error analyzing document:', error)
     addLog('Analysis error: ' + (error?.message || String(error)), 'error')
@@ -324,9 +614,9 @@ async function analyzeDocumentContext(text) {
   }
 }
 
-// -------------------------
+// ============================================================
 // Gerar cards
-// -------------------------
+// ============================================================
 const generating = ref(false)
 
 async function generateCardsFromSelection() {
@@ -361,7 +651,6 @@ async function generateCardsFromSelection() {
             else if (s === 'parsing_completed') addLog('Stage: Parsing completed', 'success')
           }
         } catch (e) {
-          console.error('Progress error:', e)
           addLog('Progress error: ' + (e?.message || String(e)), 'error')
         }
 
@@ -392,60 +681,132 @@ async function generateCardsFromSelection() {
   }
 }
 
-// -------------------------
-// Cards CRUD / Deck edit
-// -------------------------
+// ============================================================
+// CRUD cards
+// ============================================================
 function deleteCard(index) {
   cards.value.splice(index, 1)
 }
 
-const deckDialogVisible = ref(false)
-const deckDialogIndex = ref(-1)
-const deckDialogValue = ref('')
+function clearAllCards() {
+  cards.value = []
+  notify('Cards limpos (apenas UI).', 'info', 2500)
+}
+
+// ============================================================
+// Preview bonito + edição ao clicar (Dialog)
+// ============================================================
+const editVisible = ref(false)
+const editIndex = ref(-1)
+const editDraft = ref({ front: '', back: '', deck: 'General' })
 
 const availableDeckNames = computed(() => {
   const names = Object.keys(decks.value || {})
   return names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
 })
 
-function openDeckDialog(index) {
-  if (!availableDeckNames.value.length) {
-    notify('Sem decks disponíveis. Verifique a conexão com Mochi.', 'error', 6000)
-    return
+function openEditCard(index) {
+  const c = cards.value[index]
+  if (!c) return
+  editIndex.value = index
+  editDraft.value = {
+    front: String(c.front ?? ''),
+    back: String(c.back ?? ''),
+    deck: String(c.deck ?? 'General')
   }
-  deckDialogIndex.value = index
-  deckDialogValue.value = cards.value[index]?.deck || availableDeckNames.value[0]
-  deckDialogVisible.value = true
+  editVisible.value = true
 }
 
-async function refreshDecksFromDialog() {
-  try {
-    await fetchDecks()
-    notify(`${availableDeckNames.value.length} decks carregados`, 'success')
-  } catch {
-    notify('Falha ao atualizar decks', 'error')
-  }
-}
-
-function saveDeckDialog() {
-  const idx = deckDialogIndex.value
+function saveEditCard() {
+  const idx = editIndex.value
   if (idx < 0) return
-  const old = cards.value[idx].deck
-  cards.value[idx].deck = deckDialogValue.value
-  deckDialogVisible.value = false
-  if (old !== deckDialogValue.value) {
-    notify(`Card movido para "${deckDialogValue.value}"`, 'success')
+  cards.value[idx] = {
+    ...cards.value[idx],
+    front: editDraft.value.front,
+    back: editDraft.value.back,
+    deck: editDraft.value.deck || 'General'
   }
+  editVisible.value = false
+  notify('Card atualizado', 'success', 2000)
 }
 
-function clearAllCards() {
-  cards.value = []
-  notify('Cards limpos', 'info')
+function duplicateEditCard() {
+  const idx = editIndex.value
+  if (idx < 0) return
+  const c = cards.value[idx]
+  cards.value.splice(idx + 1, 0, { ...c })
+  notify('Card duplicado', 'success', 2000)
 }
 
-// -------------------------
+function deleteEditCard() {
+  const idx = editIndex.value
+  if (idx < 0) return
+  cards.value.splice(idx, 1)
+  editVisible.value = false
+  notify('Card removido', 'info', 2000)
+}
+
+// Markdown “safe”
+function escapeHtml(s) {
+  return String(s || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
+}
+
+function renderMarkdownSafe(text) {
+  let t = escapeHtml(text)
+
+  // inline code
+  t = t.replace(/`([^`]+)`/g, '<code>$1</code>')
+
+  // bold / italic
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+
+  // cloze highlight {{c1::...}}
+  t = t.replace(/\{\{c\d+::([^}]+)\}\}/g, '<span class="cloze">$1</span>')
+
+  // normalize newlines
+  t = t.replace(/\r\n/g, '\n')
+
+  // listas simples (- item)
+  const lines = t.split('\n')
+  let inList = false
+  const out = []
+
+  for (const line of lines) {
+    const m = line.match(/^\s*-\s+(.*)$/)
+    if (m) {
+      if (!inList) {
+        out.push('<ul>')
+        inList = true
+      }
+      out.push(`<li>${m[1]}</li>`)
+    } else {
+      if (inList) {
+        out.push('</ul>')
+        inList = false
+      }
+      out.push(line.length ? `<p>${line}</p>` : '<br/>')
+    }
+  }
+  if (inList) out.push('</ul>')
+
+  return out.join('')
+}
+
+function previewText(text, max = 260) {
+  const s = String(text || '').trim().replace(/\s+/g, ' ')
+  if (s.length <= max) return s
+  return s.slice(0, max - 1) + '…'
+}
+
+// ============================================================
 // Export Mochi / Markdown
-// -------------------------
+// ============================================================
 const exportLabel = computed(() => (storedKeys.value.mochiApiKey ? 'Export to Mochi' : 'Export as Markdown'))
 
 function formatCardsForMochi() {
@@ -492,27 +853,20 @@ function exportAsMarkdown() {
     })
   }
 
-  try {
-    const blob = new Blob([markdown], { type: 'text/markdown' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `flashcards-${new Date().toISOString().slice(0, 10)}.md`
-    a.style.display = 'none'
-    document.body.appendChild(a)
-    a.click()
+  const blob = new Blob([markdown], { type: 'text/markdown' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `flashcards-${new Date().toISOString().slice(0, 10)}.md`
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  setTimeout(() => {
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }, 100)
 
-    setTimeout(() => {
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-    }, 100)
-
-    notify(`${cards.value.length} cards exportados em markdown`, 'success')
-  } catch (error) {
-    console.error('Error exporting markdown:', error)
-    notify('Falha ao exportar. Veja o console para o markdown.', 'error', 8000)
-    console.log(markdown)
-  }
+  notify(`${cards.value.length} cards exportados em markdown`, 'success')
 }
 
 async function exportToMochi() {
@@ -548,7 +902,6 @@ async function exportToMochi() {
     notify(`${result.totalSuccess} de ${result.totalCards} enviados ao Mochi!`, 'success')
     addLog(`Mochi upload completed: ${result.totalSuccess}/${result.totalCards}`, 'success')
   } catch (error) {
-    console.error('Error uploading to Mochi API:', error)
     notify('Erro no Mochi. Exportando em markdown.', 'error')
     exportAsMarkdown()
   } finally {
@@ -556,34 +909,32 @@ async function exportToMochi() {
   }
 }
 
-// -------------------------
-// Export Anki (modal config)
-// -------------------------
+// ============================================================
+// Anki
+// ============================================================
 const ankiVisible = ref(false)
 const ankiModel = ref('')
 const ankiFrontField = ref('')
 const ankiBackField = ref('')
 const ankiDeckField = ref('')
 const ankiTags = ref('')
+const ankiExporting = ref(false)
 
 const ankiModelOptions = computed(() => {
   const d = ankiModelsData.value
   if (!d?.models) return []
   return Object.keys(d.models).map((m) => ({ label: m, value: m }))
 })
-
 const ankiDeckOptions = computed(() => {
   const d = ankiModelsData.value
   const base = [{ label: "Use card's deck", value: '' }]
   if (!d?.decks) return base
   return base.concat(d.decks.map((x) => ({ label: x, value: x })))
 })
-
 const ankiFieldOptions = computed(() => {
   const d = ankiModelsData.value
   if (!d?.models || !ankiModel.value) return []
-  const fields = d.models[ankiModel.value] || []
-  return fields.map((f) => ({ label: f, value: f }))
+  return (d.models[ankiModel.value] || []).map((f) => ({ label: f, value: f }))
 })
 
 watch(ankiModel, () => {
@@ -598,41 +949,29 @@ async function exportToAnkiOpenConfig() {
       notify('No cards to export', 'info')
       return
     }
-
-    addLog('Fetching Anki models...', 'info')
     showProgress('Carregando modelos do Anki...')
     setProgress(30)
 
     const resp = await fetch('/api/anki-models')
-    if (!resp.ok) {
-      throw new Error('Não foi possível conectar no Anki. Verifique Anki + AnkiConnect.')
-    }
+    if (!resp.ok) throw new Error('Não foi possível conectar no Anki. Verifique Anki + AnkiConnect.')
 
     const data = await resp.json()
     ankiModelsData.value = data
-
-    const first = Object.keys(data.models || {})[0] || ''
-    ankiModel.value = first
+    ankiModel.value = Object.keys(data.models || {})[0] || ''
 
     setProgress(100)
     completeProgress()
-
     ankiVisible.value = true
-    addLog('Anki configuration ready', 'success')
-  } catch (error) {
-    console.error('Error fetching Anki config:', error)
-    addLog('Anki config error: ' + (error?.message || String(error)), 'error')
-    notify(error?.message || String(error), 'error', 8000)
+  } catch (e) {
+    notify(e?.message || String(e), 'error', 8000)
   } finally {
     progressVisible.value = false
   }
 }
 
-const ankiExporting = ref(false)
 async function exportToAnkiConfirm() {
   try {
     ankiExporting.value = true
-    addLog('Starting Anki export...', 'info')
     showProgress('Enviando para Anki...')
     setProgress(20)
 
@@ -657,58 +996,91 @@ async function exportToAnkiConfirm() {
     const result = await resp.json()
     setProgress(100)
     completeProgress()
-
-    addLog(`Anki export completed: ${result.totalSuccess}/${result.totalCards}`, 'success')
     notify(`${result.totalSuccess} de ${result.totalCards} enviados ao Anki!`, 'success')
     ankiVisible.value = false
-  } catch (error) {
-    console.error('Error uploading to Anki:', error)
-    addLog('Anki export error: ' + (error?.message || String(error)), 'error')
-    notify('Erro ao enviar ao Anki: ' + (error?.message || String(error)), 'error', 8000)
+  } catch (e) {
+    notify('Erro ao enviar ao Anki: ' + (e?.message || String(e)), 'error', 8000)
   } finally {
     ankiExporting.value = false
     progressVisible.value = false
   }
 }
 
-// -------------------------
-// Menu (header)
-// -------------------------
+// ============================================================
+// Header menus
+// ============================================================
+
+// Menu principal (ellipsis)
 const menuRef = ref(null)
 const menuItems = computed(() => [
   {
     label: exportLabel.value,
     icon: 'pi pi-upload',
-    command: exportToMochi,
-    disabled: !cards.value.length
+    disabled: !cards.value.length,
+    command: exportToMochi
   },
   {
     label: 'Export to Anki',
     icon: 'pi pi-send',
-    command: exportToAnkiOpenConfig,
-    disabled: !cards.value.length
+    disabled: !cards.value.length,
+    command: exportToAnkiOpenConfig
   },
   {
-    label: 'Clear Cards',
-    icon: 'pi pi-trash',
-    command: clearAllCards,
-    disabled: !cards.value.length
+    label: 'Clear Cards (apenas UI)',
+    icon: 'pi pi-times',
+    disabled: !cards.value.length,
+    command: clearAllCards
   },
   { separator: true },
-  {
-    label: 'API Keys',
-    icon: 'pi pi-key',
-    command: openApiKeys
-  }
+  { label: 'API Keys', icon: 'pi pi-key', command: openApiKeys }
 ])
 
 function toggleMenu(event) {
   menuRef.value?.toggle(event)
 }
 
-// -------------------------
-// Context Menu (editor)
-// -------------------------
+// Menu de sessões (selecionar/restaurar)
+const sessionsMenuRef = ref(null)
+function toggleSessionsMenu(event) {
+  sessionsMenuRef.value?.toggle(event)
+}
+
+const sessionsMenuItems = computed(() => {
+  const sorted = [...sessions.value].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+
+  const restoreItems = sorted.length
+    ? sorted.map((s) => ({
+        label: `${s.title} — ${formatSessionStamp(s.updatedAt)}`,
+        icon: s.id === activeSessionId.value ? 'pi pi-check' : 'pi pi-file',
+        command: () => restoreSessionById(s.id)
+      }))
+    : [{ label: 'Nenhuma sessão salva', icon: 'pi pi-inbox', disabled: true }]
+
+  return [
+    { label: 'Nova sessão', icon: 'pi pi-plus', command: newSession },
+    { separator: true },
+    { label: 'Restaurar sessão', icon: 'pi pi-history', disabled: true },
+    ...restoreItems,
+    { separator: true },
+    {
+      label: 'Limpar sessão atual (UI + storage)',
+      icon: 'pi pi-times',
+      command: clearCurrentSession
+    },
+    {
+      label: 'Limpar todas as sessões',
+      icon: 'pi pi-ban',
+      command: () => {
+        clearAllSessions()
+        clearCurrentSession()
+      }
+    }
+  ]
+})
+
+// ============================================================
+// Context menu do editor
+// ============================================================
 const editorRef = ref(null)
 const contextMenuRef = ref(null)
 const contextHasSelection = ref(false)
@@ -726,7 +1098,8 @@ function onEditorContextMenu(payload) {
 
 async function contextAnalyze() {
   const fullText = editorRef.value?.getFullText?.() || lastFullText.value || ''
-  if (fullText.trim().length > 100) await analyzeDocumentContext(fullText)
+  const normalized = normalizePlainText(fullText)
+  if (normalized.length > 100) await analyzeDocumentContext(fullText)
   else notify('Texto muito curto para análise', 'warn', 4500)
 }
 
@@ -761,65 +1134,95 @@ const contextMenuModel = computed(() => [
       { label: 'Laranja', command: () => contextMark('#fed7aa') }
     ]
   },
-  {
-    label: 'Remover marcação',
-    disabled: !contextHasHighlight.value,
-    command: contextRemoveHighlight
-  },
+  { label: 'Remover marcação', disabled: !contextHasHighlight.value, command: contextRemoveHighlight },
   { separator: true },
   { label: 'Analisar texto novamente', command: contextAnalyze },
   { separator: true },
-  {
-    label: 'Gerar cartão básico',
-    disabled: !contextHasSelection.value,
-    command: () => contextGenerate('basic')
-  },
-  {
-    label: 'Gerar cartão cloze',
-    disabled: !contextHasSelection.value,
-    command: () => contextGenerate('cloze')
-  }
+  { label: 'Gerar cartão básico', disabled: !contextHasSelection.value, command: () => contextGenerate('basic') },
+  { label: 'Gerar cartão cloze', disabled: !contextHasSelection.value, command: () => contextGenerate('cloze') }
 ])
 
-// -------------------------
-// Editor events
-// -------------------------
+// ============================================================
+// Eventos do editor
+// ============================================================
 function onSelectionChanged(payload) {
   selectedText.value = payload.selectedText || ''
 }
 
-function onContentChanged({ fullText }) {
-  lastFullText.value = fullText || ''
-  scheduleAnalyze(fullText || '')
+function onContentChanged(payload) {
+  if (isRestoringSession.value) return
+
+  const fullText = payload?.fullText ?? ''
+  const html = payload?.html ?? ''
+  const delta = payload?.delta ?? null
+  const isTextMutationFromEditor = payload?.isTextMutation // pode vir undefined se seu QuillEditor ainda não emite
+
+  lastFullText.value = fullText
+  lastEditorHtml.value = html
+  if (delta) lastEditorDelta.value = delta
+
+  // persiste sempre (inclusive highlights)
+  schedulePersistActiveSession()
+
+  // NÃO reanalisa ao marcar highlight:
+  // 1) se o editor informou que não houve mutação de texto, sai
+  if (isTextMutationFromEditor === false) return
+
+  // 2) fallback seguro: se o texto normalizado não mudou, foi formatação
+  const normalized = normalizePlainText(fullText)
+  if (normalized === lastNormalizedTextOnChange.value) return
+  lastNormalizedTextOnChange.value = normalized
+
+  // análise só se há texto suficiente
+  if (normalized.length > 100) scheduleAnalyze(fullText)
 }
 
-// -------------------------
+// ============================================================
 // Computeds úteis
-// -------------------------
+// ============================================================
 const hasSelection = computed(() => (selectedText.value || '').trim().length > 0)
 const hasCards = computed(() => cards.value.length > 0)
 
-const headerHint = computed(() => {
-  if (generating.value) return 'Gerando cards…'
-  if (isAnalyzing.value) return 'Analisando texto…'
-  if (!hasSelection.value) return 'Selecione um trecho no editor para habilitar "Create Cards".'
-  return 'Seleção pronta — gere cards quando quiser.'
+// ============================================================
+// Autosave (cards/contexto)
+// ============================================================
+watch(
+  cards,
+  () => {
+    if (isRestoringSession.value) return
+    schedulePersistActiveSession()
+  },
+  { deep: true }
+)
+
+watch(documentContext, () => {
+  if (isRestoringSession.value) return
+  schedulePersistActiveSession()
 })
 
-// -------------------------
+// ============================================================
 // Lifecycle
-// -------------------------
+// ============================================================
 let globalKeyHandler = null
 
 onMounted(async () => {
+  // carrega storage (sessões + ativa)
+  sessions.value = loadSessions()
+  activeSessionId.value = loadActiveSessionId()
+
+  // se não tem ativa, cria uma
+  ensureActiveSession()
+
   loadStoredKeysToForm()
   try {
     await fetchDecks()
-  } catch {
-    // ok fallback
+  } catch {}
+
+  if (sessions.value.length && !cards.value.length && !normalizePlainText(lastFullText.value)) {
+    notify('Sessões encontradas. Use “Sessões” para restaurar.', 'info', 4500)
   }
 
-  // Atalho moderno: Ctrl+Enter gera cards (se houver seleção)
+  // Ctrl+Enter gera
   globalKeyHandler = (e) => {
     const isCtrlEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter'
     if (!isCtrlEnter) return
@@ -834,6 +1237,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (timerInterval) clearInterval(timerInterval)
   if (analyzeDebounce) clearTimeout(analyzeDebounce)
+  if (persistSessionTimer) clearTimeout(persistSessionTimer)
   if (globalKeyHandler) window.removeEventListener('keydown', globalKeyHandler)
 })
 </script>
@@ -841,6 +1245,9 @@ onBeforeUnmount(() => {
 <template>
   <Toast />
   <ContextMenu ref="contextMenuRef" :model="contextMenuModel" appendTo="body" />
+
+  <!-- Menu popup de sessões -->
+  <Menu ref="sessionsMenuRef" :model="sessionsMenuItems" popup />
 
   <div class="app-shell" :class="{ 'has-context': hasDocumentContext }">
     <!-- HEADER -->
@@ -852,7 +1259,7 @@ onBeforeUnmount(() => {
             <div class="brand-text">
               <div class="brand-title">Flash Card Generator</div>
               <div class="brand-subtitle">
-                {{ headerHint }}
+                Selecione um trecho no editor para habilitar “Create Cards”. (Ctrl+Enter)
               </div>
             </div>
           </div>
@@ -863,6 +1270,10 @@ onBeforeUnmount(() => {
             </Tag>
             <Tag v-else severity="secondary" class="pill">
               <i class="pi pi-file mr-2" /> Cole um texto para análise
+            </Tag>
+
+            <Tag v-if="savedSessionExists" severity="info" class="pill">
+              <i class="pi pi-history mr-2" /> Sessões: {{ sessions.length }}
             </Tag>
           </div>
         </div>
@@ -897,12 +1308,20 @@ onBeforeUnmount(() => {
             />
 
             <Button
-              icon="pi pi-sparkles"
-              label="Contexto"
+              icon="pi pi-history"
+              label="Sessões"
               severity="secondary"
               outlined
-              :disabled="!hasDocumentContext"
-              @click="contextVisible = true"
+              :disabled="!savedSessionExists"
+              @click="toggleSessionsMenu"
+            />
+
+            <Button
+              icon="pi pi-times"
+              label="Limpar sessão"
+              severity="danger"
+              outlined
+              @click="clearCurrentSession"
             />
 
             <Button
@@ -928,7 +1347,6 @@ onBeforeUnmount(() => {
 
     <!-- MAIN -->
     <div class="main">
-      <!-- Layout vertical (top/bottom) — estilo moderno "flow" -->
       <Splitter class="main-splitter" layout="vertical">
         <!-- Editor -->
         <SplitterPanel :size="58" :minSize="25">
@@ -956,7 +1374,7 @@ onBeforeUnmount(() => {
           </div>
         </SplitterPanel>
 
-        <!-- Output -->
+        <!-- Cards -->
         <SplitterPanel :size="42" :minSize="20">
           <div class="panel panel-output">
             <div class="panel-head">
@@ -974,36 +1392,8 @@ onBeforeUnmount(() => {
                   <InputText v-model="cardSearch" class="search" placeholder="Buscar em front/back/deck..." />
                 </div>
 
-                <SelectButton
-                  v-model="cardsLayout"
-                  :options="cardsLayoutOptions"
-                  optionLabel="label"
-                  optionValue="value"
-                  class="layout-toggle"
-                />
-
-                <Button
-                  :disabled="!hasCards"
-                  :label="exportLabel"
-                  icon="pi pi-upload"
-                  outlined
-                  @click="exportToMochi"
-                />
-                <Button
-                  :disabled="!hasCards"
-                  label="Anki"
-                  icon="pi pi-send"
-                  outlined
-                  @click="exportToAnkiOpenConfig"
-                />
-                <Button
-                  :disabled="!hasCards"
-                  label="Limpar"
-                  icon="pi pi-trash"
-                  severity="danger"
-                  outlined
-                  @click="clearAllCards"
-                />
+                <Button :disabled="!hasCards" :label="exportLabel" icon="pi pi-upload" outlined @click="exportToMochi" />
+                <Button :disabled="!hasCards" label="Anki" icon="pi pi-send" outlined @click="exportToAnkiOpenConfig" />
               </div>
             </div>
 
@@ -1012,76 +1402,67 @@ onBeforeUnmount(() => {
                 <div class="empty-icon">✨</div>
                 <div class="empty-title">Nenhum card ainda</div>
                 <div class="empty-subtitle">
-                  Cole um texto, selecione um trecho e gere cards. Você pode marcar (highlight) trechos com o clique direito.
+                  Cole um texto, selecione um trecho e gere cards. Você pode marcar trechos com clique direito.
+                </div>
+
+                <div class="empty-actions">
+                  <Button
+                    icon="pi pi-history"
+                    label="Sessões"
+                    outlined
+                    :disabled="!savedSessionExists"
+                    @click="toggleSessionsMenu"
+                  />
+                  <Button icon="pi pi-times" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
                 </div>
               </div>
 
-              <DataView v-else :value="filteredCards" :layout="cardsLayout" class="cards-view">
-                <!-- LIST -->
+              <DataView v-else :value="filteredCards" layout="list" class="cards-view">
                 <template #list="{ items }">
                   <div class="cards-list">
-                    <Card v-for="(c, i) in items" :key="i" class="card-item">
+                    <Card
+                      v-for="(c, i) in items"
+                      :key="i"
+                      class="card-item clickable"
+                      @click="openEditCard(cards.indexOf(c))"
+                    >
                       <template #title>
                         <div class="card-head">
                           <div class="card-left">
-                            <span class="card-index">Card {{ i + 1 }}</span>
-                            <Button
-                              text
-                              size="small"
-                              :label="c.deck || 'General'"
-                              icon="pi pi-tag"
-                              class="deck-btn"
-                              @click="openDeckDialog(i)"
-                              title="Clique para mudar o deck"
-                            />
+                            <span class="card-index">Card {{ cards.indexOf(c) + 1 }}</span>
+                            <span class="deck-pill">
+                              <i class="pi pi-tag mr-2" /> {{ c.deck || 'General' }}
+                            </span>
                           </div>
-                          <Button icon="pi pi-times" severity="danger" text @click="deleteCard(i)" title="Excluir" />
+
+                          <Button
+                            icon="pi pi-times"
+                            severity="danger"
+                            text
+                            class="icon-only"
+                            title="Excluir"
+                            @click.stop="deleteCard(cards.indexOf(c))"
+                          />
                         </div>
                       </template>
 
                       <template #content>
-                        <div class="grid">
-                          <div class="col-12 md:col-6">
-                            <div class="field-title">Front</div>
-                            <Textarea v-model="c.front" autoResize class="w-full field-area" />
+                        <div class="preview-grid">
+                          <div class="preview-block">
+                            <div class="preview-label">Front</div>
+                            <div class="preview-text" v-html="renderMarkdownSafe(previewText(c.front, 300))"></div>
                           </div>
-                          <div class="col-12 md:col-6">
-                            <div class="field-title">Back</div>
-                            <Textarea v-model="c.back" autoResize class="w-full field-area" />
+
+                          <div class="preview-block">
+                            <div class="preview-label">Back</div>
+                            <div class="preview-text" v-html="renderMarkdownSafe(previewText(c.back, 300))"></div>
                           </div>
                         </div>
-                      </template>
-                    </Card>
-                  </div>
-                </template>
 
-                <!-- GRID -->
-                <template #grid="{ items }">
-                  <div class="cards-grid">
-                    <Card v-for="(c, i) in items" :key="i" class="card-item">
-                      <template #title>
-                        <div class="card-head">
-                          <div class="card-left">
-                            <span class="card-index">#{{ i + 1 }}</span>
-                            <Button
-                              text
-                              size="small"
-                              :label="c.deck || 'General'"
-                              icon="pi pi-tag"
-                              class="deck-btn"
-                              @click="openDeckDialog(i)"
-                              title="Clique para mudar o deck"
-                            />
-                          </div>
-                          <Button icon="pi pi-times" severity="danger" text @click="deleteCard(i)" title="Excluir" />
+                        <div class="preview-hint">
+                          <i class="pi pi-pen-to-square mr-2" />
+                          Clique no card para editar
                         </div>
-                      </template>
-
-                      <template #content>
-                        <div class="field-title">Front</div>
-                        <Textarea v-model="c.front" autoResize class="w-full field-area mb-3" />
-                        <div class="field-title">Back</div>
-                        <Textarea v-model="c.back" autoResize class="w-full field-area" />
                       </template>
                     </Card>
                   </div>
@@ -1092,6 +1473,62 @@ onBeforeUnmount(() => {
         </SplitterPanel>
       </Splitter>
     </div>
+
+    <!-- EDIT DIALOG -->
+    <Dialog v-model:visible="editVisible" header="Editar Card" modal class="modern-dialog" style="width: min(980px, 96vw);">
+      <div class="edit-meta">
+        <Tag severity="info" class="pill">
+          <i class="pi pi-hashtag mr-2" /> {{ editIndex + 1 }}
+        </Tag>
+
+        <Tag severity="secondary" class="pill">
+          <i class="pi pi-tag mr-2" /> Deck
+        </Tag>
+
+        <Select
+          v-model="editDraft.deck"
+          :options="availableDeckNames.map(x => ({ label: x, value: x }))"
+          optionLabel="label"
+          optionValue="value"
+          class="deck-select"
+          filter
+          placeholder="General"
+        />
+
+        <Button icon="pi pi-refresh" severity="secondary" outlined @click="fetchDecks" title="Atualizar decks" />
+      </div>
+
+      <div class="grid mt-2">
+        <div class="col-12 md:col-6">
+          <div class="field-title">Front</div>
+          <Textarea v-model="editDraft.front" autoResize class="w-full field-area" />
+        </div>
+        <div class="col-12 md:col-6">
+          <div class="field-title">Back</div>
+          <Textarea v-model="editDraft.back" autoResize class="w-full field-area" />
+        </div>
+      </div>
+
+      <Divider />
+
+      <div class="grid">
+        <div class="col-12 md:col-6">
+          <div class="field-title">Preview Front</div>
+          <div class="md-preview" v-html="renderMarkdownSafe(editDraft.front)"></div>
+        </div>
+        <div class="col-12 md:col-6">
+          <div class="field-title">Preview Back</div>
+          <div class="md-preview" v-html="renderMarkdownSafe(editDraft.back)"></div>
+        </div>
+      </div>
+
+      <template #footer>
+        <Button label="Duplicar" icon="pi pi-copy" severity="secondary" outlined @click="duplicateEditCard" />
+        <Button label="Excluir" icon="pi pi-trash" severity="danger" outlined @click="deleteEditCard" />
+        <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="editVisible = false" />
+        <Button label="Salvar" icon="pi pi-check" @click="saveEditCard" />
+      </template>
+    </Dialog>
 
     <!-- LOGS -->
     <Dialog v-model:visible="logsVisible" header="🔍 Logs" modal class="modern-dialog" style="width: min(980px, 96vw);">
@@ -1115,18 +1552,6 @@ onBeforeUnmount(() => {
     <Dialog v-model:visible="progressVisible" :header="progressTitle" modal class="modern-dialog" style="width: min(520px, 95vw);">
       <ProgressBar :value="progressValue" />
       <div class="mt-2 text-right">{{ progressValue }}%</div>
-    </Dialog>
-
-    <!-- CONTEXT SUMMARY -->
-    <Dialog v-model:visible="contextVisible" header="📌 Contexto do Documento" modal class="modern-dialog" style="width: min(980px, 96vw);">
-      <div class="context-box">
-        <Textarea :modelValue="documentContext" readonly autoResize class="w-full context-area" />
-      </div>
-
-      <template #footer>
-        <Button label="Copiar" icon="pi pi-copy" :loading="contextCopying" outlined @click="copyContextToClipboard" />
-        <Button label="Fechar" icon="pi pi-times" @click="contextVisible = false" />
-      </template>
     </Dialog>
 
     <!-- API KEYS -->
@@ -1160,29 +1585,6 @@ onBeforeUnmount(() => {
       <template #footer>
         <Button label="Cancel" severity="secondary" outlined @click="apiKeyVisible = false" />
         <Button label="Save API Keys" icon="pi pi-save" @click="saveApiKeys" />
-      </template>
-    </Dialog>
-
-    <!-- DECK EDIT -->
-    <Dialog v-model:visible="deckDialogVisible" header="Select Deck" modal class="modern-dialog" style="width: min(520px, 95vw);">
-      <div class="mb-2 text-color-secondary">Escolha um deck para este card:</div>
-
-      <div class="flex align-items-center gap-2">
-        <Select
-          v-model="deckDialogValue"
-          :options="availableDeckNames.map(x => ({ label: x, value: x }))"
-          optionLabel="label"
-          optionValue="value"
-          class="flex-1"
-          filter
-          placeholder="Selecione..."
-        />
-        <Button icon="pi pi-refresh" severity="secondary" outlined @click="refreshDecksFromDialog" title="Atualizar decks" />
-      </div>
-
-      <template #footer>
-        <Button label="Cancel" severity="secondary" outlined @click="deckDialogVisible = false" />
-        <Button label="Update Deck" icon="pi pi-check" @click="saveDeckDialog" />
       </template>
     </Dialog>
 
@@ -1224,7 +1626,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ---------- Shell ---------- */
 .app-shell {
   height: 100vh;
   display: flex;
@@ -1247,7 +1648,6 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-/* ---------- Header ---------- */
 .app-header {
   position: sticky;
   top: 0;
@@ -1347,19 +1747,16 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
 }
 
-/* CTA visual mais “moderna” */
 :deep(.cta.p-button) {
   border-radius: 999px;
   box-shadow: 0 10px 24px rgba(0,0,0,0.22);
 }
 
-/* ---------- Panels ---------- */
 .panel {
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
-
   border-radius: 18px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(17, 24, 39, 0.58);
@@ -1394,100 +1791,29 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
-/* Splitter handle mais “clean” */
+/* Splitter */
 :deep(.p-splitter) {
   border: 0;
   background: transparent;
 }
-
 :deep(.p-splitter-gutter) {
   background: transparent;
 }
-
 :deep(.p-splitter-gutter-handle) {
   background: rgba(148, 163, 184, 0.28);
   border-radius: 999px;
 }
 
-/* ---------- Cards ---------- */
-.cards-view {
-  height: 100%;
-}
-
-.cards-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.cards-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 920px) {
-  .cards-grid {
-    grid-template-columns: 1fr;
-  }
-  .cardtype {
-    width: 100%;
-  }
-}
-
-.card-item :deep(.p-card) {
-  border-radius: 16px;
-}
-
-.card-item :deep(.p-card-body) {
-  padding: 14px 14px;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.card-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.card-index {
-  font-weight: 800;
-  opacity: 0.9;
-}
-
-.deck-btn {
-  padding: 0 !important;
-  font-weight: 700;
-}
-
-.field-title {
-  font-weight: 800;
-  opacity: 0.85;
-  margin-bottom: 6px;
-}
-
-.field-area :deep(textarea) {
-  border-radius: 14px;
-}
-
-/* ---------- Search / toggle ---------- */
+/* Search */
 .search-wrap {
   position: relative;
   width: 18rem;
 }
-
 .search {
   width: 100%;
   padding-left: 34px;
   border-radius: 999px;
 }
-
 .search-ico {
   position: absolute;
   left: 12px;
@@ -1496,11 +1822,7 @@ onBeforeUnmount(() => {
   opacity: 0.75;
 }
 
-.layout-toggle :deep(.p-button) {
-  border-radius: 999px;
-}
-
-/* ---------- Empty state ---------- */
+/* Empty */
 .empty-state {
   height: 100%;
   display: grid;
@@ -1509,30 +1831,165 @@ onBeforeUnmount(() => {
   padding: 28px;
   opacity: 0.92;
 }
-
 .empty-icon {
   font-size: 44px;
   margin-bottom: 6px;
 }
-
 .empty-title {
   font-size: 18px;
   font-weight: 900;
   letter-spacing: -0.3px;
 }
-
 .empty-subtitle {
   margin-top: 8px;
   max-width: 62ch;
   opacity: 0.82;
   line-height: 1.35;
 }
-
-/* ---------- Dialogs ---------- */
-.modern-dialog :deep(.p-dialog-header) {
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+.empty-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
+/* Cards preview */
+.cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card-item :deep(.p-card) {
+  border-radius: 16px;
+}
+.card-item :deep(.p-card-body) {
+  padding: 14px;
+}
+.clickable {
+  cursor: pointer;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.card-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.card-index {
+  font-weight: 900;
+  opacity: 0.92;
+}
+.deck-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(148,163,184,0.18);
+  font-weight: 800;
+  font-size: 12px;
+  opacity: 0.95;
+}
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 920px) {
+  .preview-grid {
+    grid-template-columns: 1fr;
+  }
+  .cardtype { width: 100%; }
+  .search-wrap { width: 100%; }
+}
+.preview-block {
+  border-radius: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148,163,184,0.14);
+  background: rgba(255,255,255,0.03);
+}
+.preview-label {
+  font-weight: 900;
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
+.preview-text {
+  font-size: 13.5px;
+  line-height: 1.35;
+  opacity: 0.92;
+}
+.preview-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+  display: flex;
+  align-items: center;
+}
+
+/* markdown-ish */
+.preview-text :deep(code),
+.md-preview :deep(code) {
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(148,163,184,0.18);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+}
+.preview-text :deep(ul),
+.md-preview :deep(ul) {
+  margin: 8px 0 0 18px;
+}
+.preview-text :deep(p),
+.md-preview :deep(p) {
+  margin: 0 0 6px 0;
+}
+.preview-text :deep(.cloze),
+.md-preview :deep(.cloze) {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  font-weight: 900;
+}
+
+/* Edit dialog */
+.edit-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.deck-select {
+  width: min(320px, 100%);
+}
+.field-title {
+  font-weight: 900;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+.field-area :deep(textarea) {
+  border-radius: 14px;
+}
+.md-preview {
+  border-radius: 14px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.14);
+  background: rgba(255,255,255,0.03);
+  min-height: 120px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  opacity: 0.92;
+}
+
+/* Dialogs */
 .disclaimer {
   padding: 10px 12px;
   border-radius: 14px;
@@ -1540,36 +1997,20 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.05);
   margin-bottom: 14px;
 }
+.req { color: #ef4444; font-weight: 900; margin-left: 6px; }
+.opt { opacity: 0.7; margin-left: 6px; }
+.err { color: #ef4444; margin-top: 8px; font-weight: 800; }
 
-.req {
-  color: #ef4444;
-  font-weight: 800;
-  margin-left: 6px;
-}
-
-.opt {
-  opacity: 0.7;
-  margin-left: 6px;
-}
-
-.err {
-  color: #ef4444;
-  margin-top: 8px;
-  font-weight: 700;
-}
-
-/* ---------- Logs ---------- */
+/* Logs */
 .logs-wrap {
   max-height: 60vh;
   overflow: auto;
   padding: 6px 2px;
 }
-
 .logs-empty {
   opacity: 0.75;
   padding: 10px;
 }
-
 .log-row {
   display: flex;
   gap: 10px;
@@ -1579,36 +2020,15 @@ onBeforeUnmount(() => {
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(148, 163, 184, 0.10);
 }
+.log-ts { opacity: 0.7; white-space: nowrap; }
+.log-msg { opacity: 0.92; }
+.log-row.t-success { border-color: rgba(16, 185, 129, 0.25); }
+.log-row.t-error { border-color: rgba(239, 68, 68, 0.25); }
 
-.log-ts {
-  opacity: 0.7;
-  white-space: nowrap;
-}
-
-.log-msg {
-  opacity: 0.92;
-}
-
-.log-row.t-success {
-  border-color: rgba(16, 185, 129, 0.25);
-}
-
-.log-row.t-error {
-  border-color: rgba(239, 68, 68, 0.25);
-}
-
-/* ---------- Pills ---------- */
+/* Pills */
 .pill {
   border-radius: 999px;
-  font-weight: 800;
+  font-weight: 900;
 }
-
-.pill.subtle {
-  opacity: 0.9;
-}
-
-/* ---------- Context ---------- */
-.context-area :deep(textarea) {
-  border-radius: 14px;
-}
+.pill.subtle { opacity: 0.9; }
 </style>
