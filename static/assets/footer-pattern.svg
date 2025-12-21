@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="600" height="150" viewBox="0 0 600 150" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M0 25C100 10 200 50 300 25C400 0 500 25 600 50V150H0V25Z" fill="rgba(230, 230, 255, 0.1)"/>
-  <path d="M0 50C100 35 200 75 300 50C400 25 500 50 600 75V150H0V50Z" fill="rgba(230, 230, 255, 0.05)"/>
-</svg>
