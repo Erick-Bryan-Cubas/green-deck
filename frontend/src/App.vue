@@ -1255,15 +1255,17 @@ onBeforeUnmount(() => {
       <template #start>
         <div class="header-left">
           <div class="brand">
-            <div class="brand-icon">🧠</div>
+            <div class="brand-icon">
+              <img class="brand-icon-img" src="/green.svg" alt="Green Deck" />
+            </div>
+
             <div class="brand-text">
-              <div class="brand-title">Flash Card Generator</div>
+              <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
               <div class="brand-subtitle">
                 Selecione um trecho no editor para habilitar “Create Cards”. (Ctrl+Enter)
               </div>
             </div>
           </div>
-
           <div class="header-badges">
             <Tag v-if="hasDocumentContext" severity="success" class="pill">
               <i class="pi pi-sparkles mr-2" /> Contexto pronto
@@ -2031,4 +2033,25 @@ onBeforeUnmount(() => {
   font-weight: 900;
 }
 .pill.subtle { opacity: 0.9; }
+
+.brand-icon-img {
+  width: 30px;
+  height: 30px;
+  display: block;
+}
+
+.brand-header-logo {
+  height: 34px;   /* ajuste fino aqui (32–42 costuma ficar ótimo) */
+  width: auto;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+@media (max-width: 520px) {
+  .brand-header-logo {
+    height: 28px;
+  }
+}
+
 </style>

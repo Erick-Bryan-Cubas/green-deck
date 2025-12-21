@@ -534,4 +534,16 @@ defineExpose({
 :deep(.ql-editor) {
   color: var(--text-color, #e5e7eb);
 }
+
+/* Placeholder do Quill (tema escuro) */
+:deep(.ql-editor.ql-blank::before) {
+  color: var(--text-color-secondary, rgba(229, 231, 235, 0.65)) !important;
+  opacity: 1 !important;
+}
+
+/* Opcional: deixa o placeholder mais “suave” e consistente */
+:deep(.ql-editor.ql-blank::before) {
+  font-style: italic;
+}
+
 </style>
