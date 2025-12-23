@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Tuple, Literal
@@ -1112,3 +1112,85 @@ async def recreate_cards(req: AnkiRecreateRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "requestId": request_id, "error": str(e)})
+
+class AnkiNoteSuspendRequest(BaseModel):
+    noteId: int
+    suspend: bool = True
+
+@router.post("/anki-note-suspend")
+async def anki_note_suspend(req: AnkiNoteSuspendRequest):
+    """
+    Suspende/desuspende TODOS os cards de uma nota (noteId).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            note_id = int(req.noteId)
+            card_ids = await ankiconnect(client, "findCards", {"query": f"nid:{note_id}"})
+            card_ids = list(card_ids or [])
+            if not card_ids:
+                return {"success": True, "noteId": note_id, "totalCards": 0, "action": "noop"}
+
+            action = "suspend" if req.suspend else "unsuspend"
+            await ankiconnect(client, action, {"cards": card_ids})
+            return {"success": True, "noteId": note_id, "totalCards": len(card_ids), "action": action}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.get("/anki-note-info")
+async def anki_note_info(noteId: int = Query(..., ge=1)):
+    """
+    Retorna notesInfo (fields ordenados + tags) para edição.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            note_id = int(noteId)
+            info = await ankiconnect(client, "notesInfo", {"notes": [note_id]})
+            info = list(info or [])
+            if not info:
+                return JSONResponse(status_code=404, content={"success": False, "error": f"noteId {note_id} não encontrado."})
+
+            ni = info[0]
+            fields_map, ordered = _extract_notesinfo_fields(ni)
+
+            fields_ordered = [{"order": int(o), "name": str(n), "value": str(v)} for (o, n, v) in ordered]
+            tags = ni.get("tags") or []
+            if isinstance(tags, str):
+                tags = [tags]
+            if not isinstance(tags, list):
+                tags = []
+            tags = [str(t) for t in tags if str(t).strip()]
+
+            out = {
+                "noteId": note_id,
+                "modelName": str(ni.get("modelName") or ""),
+                "tags": tags,
+                "fields": {str(k): str(v) for k, v in fields_map.items()},
+                "fieldsOrdered": fields_ordered,
+            }
+            return {"success": True, "note": out}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+class AnkiNoteUpdateRequest(BaseModel):
+    noteId: int
+    fields: Dict[str, str] = Field(default_factory=dict)
+
+@router.post("/anki-note-update")
+async def anki_note_update(req: AnkiNoteUpdateRequest):
+    """
+    Atualiza fields da nota via updateNoteFields.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            note_id = int(req.noteId)
+            fields = {str(k): str(v) for k, v in (req.fields or {}).items()}
+
+            if not fields:
+                return JSONResponse(status_code=400, content={"success": False, "error": "fields vazio."})
+
+            payload = {"note": {"id": note_id, "fields": fields}}
+            await ankiconnect(client, "updateNoteFields", payload)
+            return {"success": True, "noteId": note_id, "updatedFields": len(fields)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
