@@ -17,6 +17,7 @@ import Toast from 'primevue/toast'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Divider from 'primevue/divider'
+import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 
 const router = useRouter()
@@ -94,6 +95,17 @@ function flagClass(f) {
   return 'flag-none'
 }
 
+// noteId robusto (cardsInfo pode vir com noteId ou note)
+function noteIdOf(row) {
+  const raw = row?.noteId ?? row?.note ?? row?.note_id ?? row?.noteID
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  return n
+}
+function isSuspendedRow(row) {
+  return Number(row?.queue) === -1
+}
+
 // Lê JSON de forma segura e detecta “200 mas HTML”
 async function readJsonSafe(resp) {
   const ct = (resp.headers.get('content-type') || '').toLowerCase()
@@ -140,7 +152,16 @@ function summarizeResults(results = []) {
 // Service status (Anki / Ollama)
 // ----------------------
 const ankiHealth = ref({ ok: null, error: '', ankiConnectVersion: null })
-const ollamaHealth = ref({ ok: null, error: '', modelAvailable: null, timeoutS: null, model: null })
+
+// backend novo retorna required.{easy_or_neutral,hard_technical}
+const ollamaHealth = ref({
+  ok: null,
+  error: '',
+  timeoutS: null,
+  modelsCount: null,
+  required: null
+})
+
 let healthTimer = null
 
 async function fetchHealth() {
@@ -162,12 +183,12 @@ async function fetchHealth() {
     ollamaHealth.value = {
       ok: !!data.ok,
       error: data.error || '',
-      modelAvailable: data.modelAvailable ?? null,
       timeoutS: data.timeoutS ?? null,
-      model: data.model ?? null
+      modelsCount: data.modelsCount ?? null,
+      required: data.required ?? null
     }
   } catch (e) {
-    ollamaHealth.value = { ok: false, error: e?.message || String(e), modelAvailable: null, timeoutS: null, model: null }
+    ollamaHealth.value = { ok: false, error: e?.message || String(e), timeoutS: null, modelsCount: null, required: null }
   }
 }
 
@@ -177,10 +198,25 @@ const ankiStatusTitle = computed(() => {
   return `AnkiConnect OFF: ${ankiHealth.value.error || 'erro desconhecido'}`
 })
 
+const ollamaAllRequiredOk = computed(() => {
+  if (!ollamaHealth.value?.required) return null
+  const req = ollamaHealth.value.required
+  const a = req?.easy_or_neutral?.available
+  const b = req?.hard_technical?.available
+  if (a === undefined && b === undefined) return null
+  return Boolean(a !== false && b !== false)
+})
+
 const ollamaStatusTitle = computed(() => {
   if (ollamaHealth.value.ok) {
-    const avail = ollamaHealth.value.modelAvailable ? 'model OK' : 'model NÃO encontrado'
-    return `Ollama OK (${avail}) • model=${ollamaHealth.value.model || '—'} • timeout=${ollamaHealth.value.timeoutS ?? '—'}s`
+    const req = ollamaHealth.value.required
+    const en = req?.easy_or_neutral
+    const ht = req?.hard_technical
+    const enTxt =
+      en?.model ? `${en.model}=${en.available ? 'OK' : 'NÃO'}` : 'easy/neutral=?'
+    const htTxt =
+      ht?.model ? `${ht.model}=${ht.available ? 'OK' : 'NÃO'}` : 'tech=?'
+    return `Ollama OK • required: ${enTxt} | ${htTxt} • timeout=${ollamaHealth.value.timeoutS ?? '—'}s`
   }
   if (ollamaHealth.value.ok === null) return 'Ollama: verificando...'
   return `Ollama OFF: ${ollamaHealth.value.error || 'erro desconhecido'}`
@@ -203,6 +239,9 @@ const statusOptions = [
   { label: 'Enterrados', value: 'is:buried' },
   { label: 'Todos', value: '' }
 ]
+
+const deckSelectOptions = computed(() => [{ label: 'Todos os decks', value: '' }, ...decks.value.map((d) => ({ label: d, value: d }))])
+const deckTargetOptions = computed(() => [{ label: 'Deck original', value: '' }, ...decks.value.map((d) => ({ label: d, value: d }))])
 
 const queryBuilt = computed(() => {
   const adv = advancedQuery.value.trim()
@@ -332,12 +371,228 @@ function onPage(e) {
 }
 
 // ----------------------
+// Note Actions (suspend / unsuspend / edit)
+// ----------------------
+const noteActionDialogVisible = ref(false)
+const noteActionLoading = ref(false)
+const noteActionType = ref('') // 'suspend' | 'unsuspend'
+const noteActionRow = ref(null)
+
+const noteActionTitle = computed(() => {
+  if (noteActionType.value === 'unsuspend') return 'Desuspender nota'
+  return 'Suspender nota'
+})
+
+function openNoteAction(row, type) {
+  const nid = noteIdOf(row)
+  if (nid === null) {
+    notify('noteId não encontrado para este item.', 'warn', 5200)
+    addLog(`Note action blocked: missing noteId for cardId=${row?.cardId}`, 'warn')
+    return
+  }
+  noteActionRow.value = row
+  noteActionType.value = type
+  noteActionDialogVisible.value = true
+}
+
+async function confirmNoteAction() {
+  const row = noteActionRow.value
+  const nid = noteIdOf(row)
+  if (nid === null) return
+
+  const suspend = noteActionType.value === 'suspend'
+  noteActionLoading.value = true
+  const startedAt = performance.now()
+
+  try {
+    addLog(`Note action start: ${suspend ? 'suspend' : 'unsuspend'} noteId=${nid}`, 'info')
+
+    const r = await fetch('/api/anki-note-suspend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noteId: nid, suspend })
+    })
+
+    const data = await readJsonSafe(r)
+    const elapsed = Math.round(performance.now() - startedAt)
+
+    if (data?.__nonJson) {
+      addLog(`Note action: non-JSON response head="${data.__head}"`, 'error')
+      notify('API /anki-note-suspend não retornou JSON.', 'error', 9000)
+      return
+    }
+    if (data?.__jsonParseError) {
+      addLog(`Note action: JSON parse error: ${data.__message}`, 'error')
+      notify('Falha ao ler JSON do backend.', 'error', 9000)
+      return
+    }
+    if (r.status >= 400 || data?.success === false) {
+      const msg = data?.error || `Falha ao ${suspend ? 'suspender' : 'desuspender'} (HTTP ${r.status}).`
+      addLog(`Note action error: ${msg}`, 'error')
+      notify(msg, 'error', 9000)
+      return
+    }
+
+    const totalCards = Number(data?.totalCards || 0)
+    addLog(`Note action OK: noteId=${nid} cards=${totalCards} elapsed=${elapsed}ms`, 'success')
+    notify(`${suspend ? 'Suspensa' : 'Desuspensa'}: noteId ${nid} (${totalCards} cards)`, 'success', 6000)
+
+    noteActionDialogVisible.value = false
+    await fetchCards()
+  } catch (e) {
+    addLog(`Note action exception: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || String(e), 'error', 9000)
+  } finally {
+    noteActionLoading.value = false
+  }
+}
+
+// -------- Edit Note --------
+const editDialogVisible = ref(false)
+const editLoading = ref(false)
+const editSaving = ref(false)
+const editRow = ref(null)
+const editFields = ref([]) // [{order,name,value}]
+const editTags = ref([])
+
+const editNoteId = computed(() => noteIdOf(editRow.value))
+const editMeta = computed(() => {
+  const r = editRow.value || {}
+  return {
+    cardId: r?.cardId ?? '—',
+    noteId: editNoteId.value ?? '—',
+    deckName: r?.deckName ?? '—',
+    modelName: r?.modelName ?? '—'
+  }
+})
+
+async function openEditDialog(row) {
+  const nid = noteIdOf(row)
+  if (nid === null) {
+    notify('noteId não encontrado para este item.', 'warn', 5200)
+    addLog(`Edit blocked: missing noteId for cardId=${row?.cardId}`, 'warn')
+    return
+  }
+
+  editRow.value = row
+  editDialogVisible.value = true
+  editLoading.value = true
+  editFields.value = []
+  editTags.value = []
+
+  try {
+    const url = `/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`
+    const r = await fetch(url)
+    const data = await readJsonSafe(r)
+
+    if (data?.__nonJson) {
+      addLog(`Note info: non-JSON head="${data.__head}"`, 'error')
+      notify('API /anki-note-info não retornou JSON.', 'error', 9000)
+      return
+    }
+    if (data?.__jsonParseError) {
+      addLog(`Note info: JSON parse error: ${data.__message}`, 'error')
+      notify('Falha ao ler JSON do backend.', 'error', 9000)
+      return
+    }
+    if (r.status >= 400 || data?.success === false) {
+      const msg = data?.error || `Falha ao buscar note info (HTTP ${r.status}).`
+      addLog(`Note info error: ${msg}`, 'error')
+      notify(msg, 'error', 9000)
+      return
+    }
+
+    const note = data?.note || {}
+    const fieldsOrdered = Array.isArray(note?.fieldsOrdered) ? note.fieldsOrdered : []
+    editFields.value = fieldsOrdered.map((f) => ({
+      order: Number(f?.order ?? 9999),
+      name: String(f?.name ?? ''),
+      value: String(f?.value ?? '')
+    }))
+    editTags.value = Array.isArray(note?.tags) ? note.tags : []
+
+    addLog(`Note info loaded: noteId=${nid} fields=${editFields.value.length}`, 'success')
+  } catch (e) {
+    addLog(`Note info exception: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || String(e), 'error', 9000)
+  } finally {
+    editLoading.value = false
+  }
+}
+
+function editFieldsMap() {
+  const out = {}
+  for (const f of editFields.value || []) {
+    if (f?.name) out[String(f.name)] = String(f.value ?? '')
+  }
+  return out
+}
+
+async function saveNoteEdits() {
+  const nid = editNoteId.value
+  if (nid === null) return
+
+  editSaving.value = true
+  const startedAt = performance.now()
+
+  try {
+    const payload = { noteId: nid, fields: editFieldsMap() }
+    addLog(`Note update start: noteId=${nid} fields=${Object.keys(payload.fields).length}`, 'info')
+
+    const r = await fetch('/api/anki-note-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    const data = await readJsonSafe(r)
+    const elapsed = Math.round(performance.now() - startedAt)
+
+    if (data?.__nonJson) {
+      addLog(`Note update: non-JSON head="${data.__head}"`, 'error')
+      notify('API /anki-note-update não retornou JSON.', 'error', 9000)
+      return
+    }
+    if (data?.__jsonParseError) {
+      addLog(`Note update: JSON parse error: ${data.__message}`, 'error')
+      notify('Falha ao ler JSON do backend.', 'error', 9000)
+      return
+    }
+    if (r.status >= 400 || data?.success === false) {
+      const msg = data?.error || `Falha ao atualizar nota (HTTP ${r.status}).`
+      addLog(`Note update error: ${msg}`, 'error')
+      notify(msg, 'error', 9000)
+      return
+    }
+
+    addLog(`Note update OK: noteId=${nid} elapsed=${elapsed}ms`, 'success')
+    notify('Nota atualizada no Anki.', 'success', 5200)
+
+    editDialogVisible.value = false
+    await fetchCards()
+  } catch (e) {
+    addLog(`Note update exception: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || String(e), 'error', 9000)
+  } finally {
+    editSaving.value = false
+  }
+}
+
+// ----------------------
 // Note Types (com suporte vindo do backend)
 // ----------------------
 const noteTypesVisible = ref(false)
 const noteTypesLoaded = ref(false)
 const noteTypes = ref([]) // [{name, supported, family, supportLabel}]
 const supportedNoteTypes = computed(() => noteTypes.value.filter((x) => !!x.supported))
+const supportedCount = computed(() => supportedNoteTypes.value.length)
+
+const noteTypeOptions = computed(() =>
+  noteTypes.value.map((x) => ({
+    label: `${x.name} — ${x.supportLabel}`,
+    value: x.name,
+    disabled: !x.supported
+  }))
+)
 
 async function fetchNoteTypes() {
   addLog('Fetching note types...', 'info')
@@ -402,6 +657,24 @@ const difficultyHelp = computed(() => {
 
 const selectedTargetModels = ref([]) // array de strings (modelNames)
 
+const selectedNotesCount = computed(() => {
+  const s = new Set()
+  for (const c of selected.value || []) {
+    const id = c?.noteId ?? c?.note ?? c?.note_id ?? c?.noteID
+    if (id !== null && id !== undefined && String(id).trim() !== '') s.add(String(id))
+    else if (c?.cardId !== null && c?.cardId !== undefined) s.add(`card:${String(c.cardId)}`)
+  }
+  return s.size
+})
+
+const estimatedCreates = computed(() => {
+  const notes = selectedNotesCount.value
+  const models = selectedTargetModels.value?.length || 0
+  const per = Number(recreateCountPerNote.value || 0)
+  if (!notes || !models || !per) return 0
+  return notes * models * per
+})
+
 function openRecreateDialog() {
   if (!selected.value?.length) {
     notify('Selecione 1+ cards para recriar.', 'warn', 4200)
@@ -425,6 +698,18 @@ const canConfirmRecreate = computed(() => {
   return selected.value?.length > 0 && selectedTargetModels.value?.length > 0
 })
 
+const ollamaRequiredForDifficulty = computed(() => {
+  const req = ollamaHealth.value?.required
+  if (!req) return null
+  if (recreateDifficulty.value === 'hard_technical') return req?.hard_technical || null
+  return req?.easy_or_neutral || null
+})
+const ollamaDifficultyReady = computed(() => {
+  const o = ollamaRequiredForDifficulty.value
+  if (!o) return null
+  return o.available !== false
+})
+
 async function confirmRecreate() {
   if (!canConfirmRecreate.value) {
     notify('Selecione cards e 1+ Note Types suportados.', 'warn', 6000)
@@ -436,27 +721,21 @@ async function confirmRecreate() {
 
   try {
     await fetchHealth()
-    addLog(`Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'} | Ollama=${ollamaHealth.value.ok ? 'ON' : 'OFF'}`, ankiHealth.value.ok && ollamaHealth.value.ok ? 'info' : 'warn')
+    addLog(
+      `Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'} | Ollama=${ollamaHealth.value.ok ? 'ON' : 'OFF'}`,
+      ankiHealth.value.ok && ollamaHealth.value.ok ? 'info' : 'warn'
+    )
     if (!ankiHealth.value.ok) addLog(`Health Anki error: ${ankiHealth.value.error}`, 'error')
     if (!ollamaHealth.value.ok) addLog(`Health Ollama error: ${ollamaHealth.value.error}`, 'error')
-    if (ollamaHealth.value.ok && ollamaHealth.value.modelAvailable === false) {
-      addLog(`Ollama: modelo "${ollamaHealth.value.model}" não encontrado em /api/tags`, 'warn')
-    }
 
     const cardIds = selected.value.map((x) => x.cardId)
     const payload = {
       cardIds,
       targetDeckName: recreateTargetDeck.value || null,
-
-      // tags: manter as mesmas do card original (backend)
-      // NÃO enviar addTag aqui
-
       allowDuplicate: true,
       suspendOriginal: !!recreateSuspendOriginal.value,
       countPerNote: Number(recreateCountPerNote.value || 1),
       targetModelNames: [...selectedTargetModels.value],
-
-      // NOVO: dificuldade da recriação
       difficulty: recreateDifficulty.value
     }
 
@@ -491,7 +770,10 @@ async function confirmRecreate() {
     addLog(`Recreate(SLM) requestId=${requestId} elapsed=${elapsed}ms`, 'info')
 
     if (data?.timings) {
-      addLog(`Recreate timings: cardsInfo=${ms(data.timings.cardsInfoMs)} modelFields=${ms(data.timings.modelFieldNamesMs)} total=${ms(data.timings.totalMs)}`, 'info')
+      addLog(
+        `Recreate timings: cardsInfo=${ms(data.timings.cardsInfoMs)} modelFields=${ms(data.timings.modelFieldNamesMs)} total=${ms(data.timings.totalMs)}`,
+        'info'
+      )
     }
 
     if (r.status >= 400 || data?.success === false) {
@@ -569,12 +851,20 @@ onUnmounted(() => {
 
           <!-- Status badges -->
           <div class="svc-wrap">
-            <span class="svc-pill" :class="ankiHealth.ok ? 'on' : ankiHealth.ok === null ? 'idle' : 'off'" :title="ankiStatusTitle">
+            <span
+              class="svc-pill"
+              :class="ankiHealth.ok ? 'on' : ankiHealth.ok === null ? 'idle' : 'off'"
+              :title="ankiStatusTitle"
+            >
               <i class="pi" :class="ankiHealth.ok ? 'pi-check-circle' : ankiHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times-circle'"></i>
               <span>Anki</span>
             </span>
 
-            <span class="svc-pill" :class="ollamaHealth.ok ? 'on' : ollamaHealth.ok === null ? 'idle' : 'off'" :title="ollamaStatusTitle">
+            <span
+              class="svc-pill"
+              :class="ollamaHealth.ok ? 'on' : ollamaHealth.ok === null ? 'idle' : 'off'"
+              :title="ollamaStatusTitle"
+            >
               <i class="pi" :class="ollamaHealth.ok ? 'pi-check-circle' : ollamaHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times-circle'"></i>
               <span>Ollama</span>
             </span>
@@ -593,22 +883,10 @@ onUnmounted(() => {
     <div class="main">
       <div class="filters card-surface">
         <div class="filters-row">
-          <Select
-            v-model="deck"
-            :options="[{ label: 'Todos os decks', value: '' }, ...decks.map(d => ({ label: d, value: d }))]"
-            optionLabel="label"
-            optionValue="value"
-            filter
-            class="w-22"
-            placeholder="Deck"
-          />
-
+          <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter class="w-22" placeholder="Deck" />
           <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-18" />
-
           <InputText v-model="text" class="w-22" placeholder="Buscar texto (Anki query terms)..." />
-
           <InputText v-model="advancedQuery" class="w-34" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' />
-
           <Button icon="pi pi-refresh" label="Atualizar" outlined @click="fetchCards" />
         </div>
 
@@ -624,7 +902,7 @@ onUnmounted(() => {
         <div class="recreate-left">
           <Select
             v-model="recreateTargetDeck"
-            :options="[{ label: 'Deck original', value: '' }, ...decks.map(d => ({ label: d, value: d }))]"
+            :options="deckTargetOptions"
             optionLabel="label"
             optionValue="value"
             filter
@@ -656,7 +934,7 @@ onUnmounted(() => {
           removableSort
           @page="onPage"
           class="dt modern-dt"
-          tableStyle="min-width: 62rem"
+          tableStyle="min-width: 70rem"
           @rowDblclick="openPreview($event.data)"
         >
           <template #header>
@@ -699,6 +977,40 @@ onUnmounted(() => {
             </template>
           </Column>
 
+          <!-- ✅ NOVO: Ações da NOTA -->
+          <Column header="Ações" style="width: 10rem">
+            <template #body="{ data }">
+              <div class="actions-cell">
+                <Button
+                  v-if="isSuspendedRow(data)"
+                  icon="pi pi-check"
+                  text
+                  rounded
+                  severity="success"
+                  title="Desuspender a NOTA (todos os cards)"
+                  @click="openNoteAction(data, 'unsuspend')"
+                />
+                <Button
+                  v-else
+                  icon="pi pi-ban"
+                  text
+                  rounded
+                  severity="warning"
+                  title="Suspender a NOTA (todos os cards)"
+                  @click="openNoteAction(data, 'suspend')"
+                />
+                <Button
+                  icon="pi pi-pencil"
+                  text
+                  rounded
+                  severity="secondary"
+                  title="Editar a NOTA (updateNoteFields)"
+                  @click="openEditDialog(data)"
+                />
+              </div>
+            </template>
+          </Column>
+
           <Column header="Preview" style="width: 7rem">
             <template #body="{ data }">
               <Button icon="pi pi-eye" text rounded @click="openPreview(data)" />
@@ -714,13 +1026,42 @@ onUnmounted(() => {
       </div>
 
       <!-- Preview -->
-      <Dialog v-model:visible="previewVisible" header="Card Preview (Anki HTML)" modal style="width:min(980px,96vw)">
-        <div v-if="previewCard" class="preview">
+      <Dialog
+        v-model:visible="previewVisible"
+        modal
+        :draggable="false"
+        class="dlg dlg-preview"
+        style="width:min(980px,96vw)"
+        contentStyle="padding: 0;"
+      >
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi pi-eye"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Card Preview</div>
+                <div class="dlg-sub">Render do HTML do Anki (Q/A). Duplo clique na tabela também abre.</div>
+              </div>
+            </div>
+
+            <div class="dlg-hdr-right">
+              <Tag v-if="previewCard" class="pill" severity="secondary">
+                <i class="pi pi-hashtag mr-2" /> {{ previewCard.cardId }}
+              </Tag>
+              <Tag v-if="previewCard" class="pill" :severity="queueSeverity(previewCard.queue)">
+                <i class="pi pi-circle-fill mr-2" /> {{ queueLabel(previewCard.queue) }}
+              </Tag>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="previewCard" class="dlg-body preview">
           <div class="pv-meta">
-            <Tag class="pill" severity="secondary"><i class="pi pi-hashtag mr-2" /> cardId: {{ previewCard.cardId }}</Tag>
             <Tag class="pill" severity="secondary"><i class="pi pi-file mr-2" /> noteId: {{ previewCard.noteId || previewCard.note || '—' }}</Tag>
-            <Tag class="pill" :severity="queueSeverity(previewCard.queue)"><i class="pi pi-circle-fill mr-2" /> {{ queueLabel(previewCard.queue) }}</Tag>
             <Tag class="pill" severity="info"><i class="pi pi-tag mr-2" /> {{ previewCard.deckName }}</Tag>
+            <Tag class="pill" severity="secondary"><i class="pi pi-book mr-2" /> {{ previewCard.modelName }}</Tag>
           </div>
 
           <Divider />
@@ -736,110 +1077,442 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+
         <template #footer>
-          <Button label="Fechar" icon="pi pi-times" outlined @click="previewVisible=false" />
+          <div class="dlg-footer">
+            <Button label="Fechar" icon="pi pi-times" outlined @click="previewVisible = false" />
+          </div>
+        </template>
+      </Dialog>
+
+      <!-- ✅ NOVO: Confirmar Suspender/Desuspender Nota -->
+      <Dialog
+        v-model:visible="noteActionDialogVisible"
+        modal
+        :draggable="false"
+        class="dlg dlg-noteaction"
+        style="width:min(820px,96vw)"
+        contentStyle="padding: 0;"
+      >
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi" :class="noteActionType === 'unsuspend' ? 'pi-check' : 'pi-ban'"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">{{ noteActionTitle }}</div>
+                <div class="dlg-sub">
+                  Esta ação afeta <b>todos os cards</b> do <b>noteId</b> (não só o card da linha).
+                </div>
+              </div>
+            </div>
+            <div class="dlg-hdr-right">
+              <Tag class="pill" severity="secondary">noteId: <b class="ml-2">{{ noteActionRow ? (noteActionRow.noteId || noteActionRow.note || '—') : '—' }}</b></Tag>
+              <Tag v-if="noteActionRow" class="pill" severity="info">{{ noteActionRow.deckName }}</Tag>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body">
+          <div class="noteaction-box">
+            <div class="noteaction-line">
+              <span class="muted">Ação:</span>
+              <b>{{ noteActionType === 'unsuspend' ? 'Desuspender' : 'Suspender' }}</b>
+            </div>
+            <div class="noteaction-line">
+              <span class="muted">Modelo:</span>
+              <b>{{ noteActionRow?.modelName || '—' }}</b>
+            </div>
+            <div class="noteaction-line">
+              <span class="muted">CardId (referência):</span>
+              <b>{{ noteActionRow?.cardId || '—' }}</b>
+            </div>
+          </div>
+
+          <div class="muted tiny">
+            Dica: use o filtro <code class="q">is:suspended</code> para checar rapidamente o resultado.
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <div class="footer-left"></div>
+            <div class="footer-right">
+              <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="noteActionDialogVisible = false" />
+              <Button
+                :label="noteActionType === 'unsuspend' ? 'Desuspender' : 'Suspender'"
+                :icon="noteActionType === 'unsuspend' ? 'pi pi-check' : 'pi pi-ban'"
+                :severity="noteActionType === 'unsuspend' ? 'success' : 'warning'"
+                :loading="noteActionLoading"
+                @click="confirmNoteAction"
+              />
+            </div>
+          </div>
+        </template>
+      </Dialog>
+
+      <!-- ✅ NOVO: Editar Nota -->
+      <Dialog
+        v-model:visible="editDialogVisible"
+        modal
+        :draggable="false"
+        class="dlg dlg-editnote"
+        style="width:min(980px,96vw)"
+        contentStyle="padding: 0;"
+      >
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi pi-pencil"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Editar nota</div>
+                <div class="dlg-sub">Edita fields via <b>updateNoteFields</b>. (Cuidado: isso altera a nota no Anki.)</div>
+              </div>
+            </div>
+
+            <div class="dlg-hdr-right">
+              <Tag class="pill" severity="secondary">noteId: <b class="ml-2">{{ editMeta.noteId }}</b></Tag>
+              <Tag class="pill" severity="info">{{ editMeta.deckName }}</Tag>
+              <Tag class="pill" severity="secondary">{{ editMeta.modelName }}</Tag>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body editnote">
+          <div v-if="editLoading" class="muted pad">Carregando note info...</div>
+
+          <div v-else>
+            <div class="editnote-top">
+              <div class="editnote-kv">
+                <div class="kv"><span class="muted">cardId</span><b>{{ editMeta.cardId }}</b></div>
+                <div class="kv"><span class="muted">noteId</span><b>{{ editMeta.noteId }}</b></div>
+              </div>
+
+              <div class="editnote-tags" v-if="editTags?.length">
+                <span class="muted">Tags:</span>
+                <div class="tags-chips">
+                  <Tag v-for="(t, i) in editTags" :key="i" class="pill" severity="secondary">{{ t }}</Tag>
+                </div>
+              </div>
+            </div>
+
+            <Divider />
+
+            <div v-if="!editFields.length" class="muted pad">Nenhum field encontrado.</div>
+
+            <div v-else class="fields-grid">
+              <div v-for="(f, idx) in editFields" :key="idx" class="field-card">
+                <div class="field-h">
+                  <div class="field-name">{{ f.name }}</div>
+                  <Tag class="pill" severity="secondary">ord: {{ f.order }}</Tag>
+                </div>
+                <Textarea v-model="f.value" autoResize rows="2" class="w-100" />
+                <div class="muted tiny">Dica: preserve HTML do Anki se você estiver usando formatação/cloze.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <div class="footer-left">
+              <Tag class="pill" severity="secondary">Fields: <b class="ml-2">{{ editFields.length }}</b></Tag>
+            </div>
+            <div class="footer-right">
+              <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="editDialogVisible = false" />
+              <Button label="Salvar" icon="pi pi-save" :loading="editSaving" :disabled="editLoading || !editFields.length" @click="saveNoteEdits" />
+            </div>
+          </div>
         </template>
       </Dialog>
 
       <!-- Modal Recreate (SLM/Ollama) -->
-      <Dialog v-model:visible="recreateDialogVisible" header="Recriar via SLM/Ollama" modal style="width:min(980px,96vw)">
-        <div class="recreate-modal">
-          <div class="row">
-            <Tag severity="secondary" class="pill">Selecionados: {{ selected.length }}</Tag>
-            <div class="muted help">
-              Selecione 1+ Note Types <b>Suportados</b>. Dificuldade controla como o SLM “reescreve” o conteúdo.
+      <Dialog
+        v-model:visible="recreateDialogVisible"
+        modal
+        :draggable="false"
+        class="dlg dlg-recreate"
+        style="width:min(980px,96vw)"
+        contentStyle="padding: 0;"
+      >
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi pi-copy"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Recriar via SLM/Ollama</div>
+                <div class="dlg-sub">Gera novas notas com clozes e (opcionalmente) suspende os cards originais.</div>
+              </div>
+            </div>
+
+            <div class="dlg-hdr-right">
+              <span class="svc-mini" :class="ankiHealth.ok ? 'on' : ankiHealth.ok === null ? 'idle' : 'off'" :title="ankiStatusTitle">
+                <i class="pi" :class="ankiHealth.ok ? 'pi-check' : ankiHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times'"></i>
+                <span>Anki</span>
+              </span>
+              <span class="svc-mini" :class="ollamaHealth.ok ? 'on' : ollamaHealth.ok === null ? 'idle' : 'off'" :title="ollamaStatusTitle">
+                <i class="pi" :class="ollamaHealth.ok ? 'pi-check' : ollamaHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times'"></i>
+                <span>Ollama</span>
+              </span>
             </div>
           </div>
+        </template>
 
-          <Divider />
+        <div class="dlg-body recreate-modal">
+          <!-- Hero / resumo -->
+          <div class="recreate-hero">
+            <div class="hero-left">
+              <div class="hero-title">
+                <span class="hero-pill">Resumo</span>
+                <span class="muted">•</span>
+                <span class="muted">revise antes de confirmar</span>
+              </div>
 
-          <div class="grid">
-            <div class="blk">
-              <div class="lbl">Dificuldade</div>
-              <Select v-model="recreateDifficulty" :options="difficultyOptions" optionLabel="label" optionValue="value" class="w-100" />
-              <div class="muted tiny" style="margin-top:8px;">
-                {{ difficultyHelp }}
+              <div class="hero-kpis">
+                <div class="kpi">
+                  <div class="kpi-lbl">Cards</div>
+                  <div class="kpi-val">{{ selected.length }}</div>
+                </div>
+                <div class="kpi">
+                  <div class="kpi-lbl">Notas únicas</div>
+                  <div class="kpi-val">{{ selectedNotesCount }}</div>
+                </div>
+                <div class="kpi">
+                  <div class="kpi-lbl">Note Types</div>
+                  <div class="kpi-val">{{ selectedTargetModels.length }}</div>
+                </div>
+                <div class="kpi">
+                  <div class="kpi-lbl">Estimativa</div>
+                  <div class="kpi-val">{{ estimatedCreates }}</div>
+                </div>
               </div>
             </div>
 
-            <div class="blk">
-              <div class="lbl">Suspender originais?</div>
-              <div class="inline">
-                <InputSwitch v-model="recreateSuspendOriginal" />
-                <span class="muted">
-                  {{ recreateSuspendOriginal ? 'Sim (suspende todas as cards das notas)' : 'Não (mantém tudo)' }}
-                </span>
-              </div>
-            </div>
+            <div class="hero-right">
+              <Tag class="pill" severity="secondary">
+                <i class="pi pi-sitemap mr-2" />
+                Deck destino: <b class="ml-2">{{ recreateTargetDeck ? recreateTargetDeck : 'Original' }}</b>
+              </Tag>
 
-            <div class="blk" style="grid-column: 1 / -1;">
-              <div class="lbl">Quantas (por nota)</div>
-              <div class="qty">
-                <Slider v-model="recreateCountPerNote" :min="1" :max="20" class="qty-slider" />
-                <InputNumber v-model="recreateCountPerNote" :min="1" :max="50" showButtons />
-              </div>
-              <div class="muted tiny">
-                Ex.: 3 notas selecionadas, 2 Note Types, quantidade 2 → cria 3 * 2 * 2 = 12 novas notas.
-              </div>
-            </div>
-          </div>
+              <Tag v-if="!ollamaHealth.ok" class="pill" severity="danger">
+                <i class="pi pi-exclamation-triangle mr-2" />
+                Ollama offline — a recriação vai falhar
+              </Tag>
 
-          <Divider />
+              <Tag v-else-if="ollamaDifficultyReady === false" class="pill" severity="warn">
+                <i class="pi pi-info-circle mr-2" />
+                Modelo exigido p/ dificuldade não encontrado
+              </Tag>
 
-          <div class="blk">
-            <div class="lbl">Note Types (alvo)</div>
-
-            <MultiSelect
-              v-model="selectedTargetModels"
-              :options="noteTypes.map(x => ({ label: `${x.name} — ${x.supportLabel}`, value: x.name, disabled: !x.supported }))"
-              optionLabel="label"
-              optionValue="value"
-              optionDisabled="disabled"
-              filter
-              display="chip"
-              placeholder="Selecione 1+ Note Types"
-              class="w-100"
-            />
-
-            <div class="support">
-              <!-- ✅ correção: sem JS multi-linha dentro do template -->
-              <Button icon="pi pi-list" label="Consultar Note Types" severity="secondary" outlined @click="openNoteTypesDialog" />
-              <Tag v-if="selectedTargetModels.length" severity="success" class="pill">
-                Selecionados: {{ selectedTargetModels.length }}
+              <Tag v-else-if="ollamaAllRequiredOk === false" class="pill" severity="warn">
+                <i class="pi pi-info-circle mr-2" />
+                Nem todos os modelos required estão disponíveis
               </Tag>
             </div>
           </div>
 
-          <div class="row actions">
-            <div class="spacer"></div>
-            <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="recreateDialogVisible=false" />
-            <Button label="Recriar agora" icon="pi pi-check" :disabled="!canConfirmRecreate" :loading="recreating" @click="confirmRecreate" />
-          </div>
-        </div>
-      </Dialog>
+          <div class="sections">
+            <!-- Config -->
+            <div class="section">
+              <div class="section-h">
+                <i class="pi pi-sliders-h"></i>
+                <div>
+                  <div class="section-title">Configuração</div>
+                  <div class="section-sub">Controle de dificuldade, volume e comportamento de suspensão</div>
+                </div>
+              </div>
 
-      <!-- Consultar Note Types -->
-      <Dialog v-model:visible="noteTypesVisible" header="Note Types disponíveis no Anki" modal style="width:min(780px,96vw)">
-        <div class="types-list">
-          <div v-if="!noteTypesLoaded" class="muted">Carregando...</div>
-          <div v-else-if="!noteTypes.length" class="muted">Nenhum Note Type encontrado.</div>
-          <div v-else>
-            <div v-for="(t, i) in noteTypes" :key="i" class="type-row">
-              <span class="type-name">{{ t.name }}</span>
-              <Tag v-if="t.supported" severity="success" class="pill">Suportado</Tag>
-              <Tag v-else severity="secondary" class="pill">Sem suporte</Tag>
+              <div class="grid">
+                <div class="blk">
+                  <div class="lbl">Dificuldade</div>
+                  <Select v-model="recreateDifficulty" :options="difficultyOptions" optionLabel="label" optionValue="value" class="w-100" />
+                  <div class="muted tiny" style="margin-top: 8px;">
+                    {{ difficultyHelp }}
+                  </div>
+                </div>
+
+                <div class="blk">
+                  <div class="lbl">Suspender originais</div>
+                  <div class="inline">
+                    <InputSwitch v-model="recreateSuspendOriginal" />
+                    <div class="inline-col">
+                      <div class="inline-strong">
+                        {{ recreateSuspendOriginal ? 'Sim' : 'Não' }}
+                        <Tag v-if="recreateSuspendOriginal" severity="warn" class="pill ml-2">impacta estudo</Tag>
+                      </div>
+                      <div class="muted tiny">
+                        {{ recreateSuspendOriginal ? 'Suspende todos os cards das notas originais.' : 'Mantém cards originais ativos.' }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="blk blk-wide">
+                  <div class="lbl">Quantidade por nota</div>
+                  <div class="qty">
+                    <Slider v-model="recreateCountPerNote" :min="1" :max="20" class="qty-slider" />
+                    <InputNumber v-model="recreateCountPerNote" :min="1" :max="50" showButtons />
+                  </div>
+                  <div class="muted tiny">
+                    Estimativa: <b>{{ selectedNotesCount }}</b> notas × <b>{{ selectedTargetModels.length }}</b> Note Types × <b>{{ recreateCountPerNote }}</b> por nota = <b>{{ estimatedCreates }}</b>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Note Types -->
+            <div class="section">
+              <div class="section-h">
+                <i class="pi pi-box"></i>
+                <div>
+                  <div class="section-title">Note Types (alvo)</div>
+                  <div class="section-sub">Apenas Note Types suportados aparecem habilitados</div>
+                </div>
+
+                <div class="section-right">
+                  <Tag class="pill" severity="secondary">
+                    Suportados: <b class="ml-2">{{ supportedCount }}</b>/<b>{{ noteTypes.length }}</b>
+                  </Tag>
+                </div>
+              </div>
+
+              <div class="blk">
+                <MultiSelect
+                  v-model="selectedTargetModels"
+                  :options="noteTypeOptions"
+                  optionLabel="label"
+                  optionValue="value"
+                  optionDisabled="disabled"
+                  filter
+                  display="chip"
+                  placeholder="Selecione 1+ Note Types"
+                  class="w-100"
+                />
+
+                <div class="support">
+                  <Button icon="pi pi-list" label="Consultar Note Types" severity="secondary" outlined @click="openNoteTypesDialog" />
+                  <Tag v-if="selectedTargetModels.length" severity="success" class="pill">
+                    <i class="pi pi-check mr-2" /> Selecionados: {{ selectedTargetModels.length }}
+                  </Tag>
+                  <Tag v-else severity="warn" class="pill">
+                    <i class="pi pi-info-circle mr-2" /> Selecione pelo menos 1
+                  </Tag>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="recreate-tip">
+            <i class="pi pi-lightbulb"></i>
+            <div class="muted">
+              Dica: se quiser testar, use <b>Fácil</b> e <b>Quantidade=1</b> primeiro. Depois aumente a dificuldade/quantidade.
             </div>
           </div>
         </div>
 
         <template #footer>
-          <Button label="Fechar" icon="pi pi-times" @click="noteTypesVisible=false" />
+          <div class="dlg-footer">
+            <div class="footer-left">
+              <Tag class="pill" severity="secondary"><i class="pi pi-calculator mr-2" /> Estimativa: {{ estimatedCreates }}</Tag>
+            </div>
+            <div class="footer-right">
+              <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="recreateDialogVisible = false" />
+              <Button
+                label="Recriar agora"
+                icon="pi pi-check"
+                :disabled="!canConfirmRecreate || !ankiHealth.ok || !ollamaHealth.ok || ollamaDifficultyReady === false"
+                :loading="recreating"
+                @click="confirmRecreate"
+              />
+            </div>
+          </div>
+        </template>
+      </Dialog>
+
+      <!-- Consultar Note Types -->
+      <Dialog
+        v-model:visible="noteTypesVisible"
+        modal
+        :draggable="false"
+        class="dlg dlg-notetypes"
+        style="width:min(820px,96vw)"
+        contentStyle="padding: 0;"
+      >
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi pi-list"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Note Types disponíveis</div>
+                <div class="dlg-sub">Lista do Anki com indicação de suporte no backend</div>
+              </div>
+            </div>
+
+            <div class="dlg-hdr-right">
+              <Tag class="pill" severity="secondary">Suportados: <b class="ml-2">{{ supportedCount }}</b></Tag>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body types-list">
+          <div v-if="!noteTypesLoaded" class="muted pad">Carregando...</div>
+          <div v-else-if="!noteTypes.length" class="muted pad">Nenhum Note Type encontrado.</div>
+          <div v-else class="types-grid">
+            <div v-for="(t, i) in noteTypes" :key="i" class="type-card" :class="t.supported ? 'ok' : 'no'">
+              <div class="type-top">
+                <div class="type-name">{{ t.name }}</div>
+                <Tag v-if="t.supported" severity="success" class="pill"><i class="pi pi-check mr-2" /> Suportado</Tag>
+                <Tag v-else severity="secondary" class="pill"><i class="pi pi-minus mr-2" /> Sem suporte</Tag>
+              </div>
+              <div class="type-sub muted">
+                {{ t.supportLabel }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <Button label="Fechar" icon="pi pi-times" @click="noteTypesVisible = false" />
+          </div>
         </template>
       </Dialog>
 
       <!-- Logs -->
-      <Dialog v-model:visible="logsVisible" header="🔍 Logs (Browser)" modal style="width:min(980px,96vw);">
-        <div class="logs-wrap">
+      <Dialog
+        v-model:visible="logsVisible"
+        modal
+        :draggable="false"
+        class="dlg dlg-logs"
+        style="width:min(980px,96vw)"
+        contentStyle="padding: 0;"
+      >
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi pi-search"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Logs (Browser)</div>
+                <div class="dlg-sub">Erros de API, timings e detalhes de recriação</div>
+              </div>
+            </div>
+
+            <div class="dlg-hdr-right">
+              <Tag class="pill" severity="secondary">Linhas: <b class="ml-2">{{ logs.length }}</b></Tag>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body logs-wrap">
           <div v-if="!logs.length" class="logs-empty">Sem logs ainda.</div>
           <div v-else>
             <div v-for="(l, idx) in logs" :key="idx" class="log-row" :class="`t-${l.type}`">
@@ -850,8 +1523,14 @@ onUnmounted(() => {
         </div>
 
         <template #footer>
-          <Button label="Clear Logs" icon="pi pi-trash" severity="secondary" outlined @click="clearLogs" />
-          <Button label="Close" icon="pi pi-times" @click="logsVisible = false" />
+          <div class="dlg-footer">
+            <div class="footer-left">
+              <Button label="Clear Logs" icon="pi pi-trash" severity="secondary" outlined @click="clearLogs" />
+            </div>
+            <div class="footer-right">
+              <Button label="Close" icon="pi pi-times" @click="logsVisible = false" />
+            </div>
+          </div>
         </template>
       </Dialog>
     </div>
@@ -974,6 +1653,123 @@ onUnmounted(() => {
 .flag-green{ color: #22c55e; }
 .flag-blue{ color: #3b82f6; }
 
+/* ✅ actions column */
+.actions-cell{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap: 6px;
+}
+:deep(.modern-dt .p-button.p-button-text){
+  border-radius: 999px;
+}
+
+/* -----------------------------
+   Dialog system (all modals)
+------------------------------ */
+:deep(.dlg .p-dialog){
+  border-radius: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+}
+:deep(.dlg .p-dialog-header){
+  padding: 14px 14px 12px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  background:
+    radial-gradient(900px 260px at 10% 0%, rgba(99,102,241,0.18), transparent 60%),
+    radial-gradient(900px 260px at 95% 0%, rgba(16,185,129,0.14), transparent 60%),
+    rgba(17, 24, 39, 0.74);
+  backdrop-filter: blur(14px);
+}
+:deep(.dlg .p-dialog-content){
+  background: rgba(17, 24, 39, 0.64);
+  backdrop-filter: blur(14px);
+}
+:deep(.dlg .p-dialog-footer){
+  padding: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(17, 24, 39, 0.72);
+  backdrop-filter: blur(14px);
+}
+:deep(.dlg .p-dialog-header-icons .p-dialog-header-close){
+  border-radius: 999px;
+}
+:deep(.p-dialog-mask){
+  backdrop-filter: blur(6px);
+}
+
+/* Dialog header layout */
+.dlg-hdr{
+  width: 100%;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 12px;
+}
+.dlg-hdr-left{
+  display:flex;
+  align-items:center;
+  gap: 12px;
+  min-width: 0;
+}
+.dlg-icon{
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background: rgba(0,0,0,0.28);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.dlg-icon i{ font-size: 18px; opacity: .95; }
+.dlg-hdr-txt{ min-width:0; }
+.dlg-title{
+  font-weight: 950;
+  letter-spacing: -0.2px;
+  line-height: 1.15;
+}
+.dlg-sub{
+  margin-top: 4px;
+  font-size: 12.5px;
+  opacity: .78;
+  max-width: 62ch;
+}
+.dlg-hdr-right{ display:flex; gap: 8px; align-items:center; flex-wrap:wrap; }
+
+.dlg-body{ padding: 14px; }
+
+/* footer */
+.dlg-footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.footer-left, .footer-right{ display:flex; gap: 10px; align-items:center; flex-wrap:wrap; }
+
+/* small status pills inside modal header */
+.svc-mini{
+  display:inline-flex;
+  gap: 8px;
+  align-items:center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148,163,184,0.16);
+  background: rgba(0,0,0,0.22);
+  font-weight: 900;
+  font-size: 12px;
+}
+.svc-mini i{ font-size: 12px; }
+.svc-mini.on{ border-color: rgba(16, 185, 129, 0.35); }
+.svc-mini.off{ border-color: rgba(239, 68, 68, 0.35); }
+.svc-mini.idle{ border-color: rgba(148, 163, 184, 0.25); opacity: .9; }
+.svc-mini.on i{ color: #22c55e; }
+.svc-mini.off i{ color: #ef4444; }
+.svc-mini.idle i{ color: rgba(148, 163, 184, 0.9); }
+
 /* Preview */
 .preview{ display:flex; flex-direction:column; gap: 10px; }
 .pv-meta{ display:flex; gap: 8px; flex-wrap:wrap; align-items:center; }
@@ -989,19 +1785,23 @@ onUnmounted(() => {
   border: 1px solid rgba(148,163,184,0.14);
   background: rgba(255,255,255,0.03);
   min-height: 120px;
+  max-height: 44vh;
+  overflow: auto;
 }
 
 /* Logs */
-.logs-wrap{ max-height: 60vh; overflow: auto; padding: 6px 2px; }
+.logs-wrap{ max-height: 62vh; overflow: auto; padding: 12px 14px; }
 .logs-empty{ opacity: 0.75; padding: 10px; }
 .log-row{
   display:flex;
   gap:10px;
-  padding: 6px 8px;
-  border-radius: 10px;
-  margin-bottom: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  margin-bottom: 8px;
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(148, 163, 184, 0.10);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
 }
 .log-ts{ opacity: 0.7; white-space: nowrap; }
 .log-msg{ opacity: 0.92; }
@@ -1009,44 +1809,218 @@ onUnmounted(() => {
 .log-row.t-warn{ border-color: rgba(251, 191, 36, 0.25); }
 .log-row.t-error{ border-color: rgba(239, 68, 68, 0.25); }
 
-/* Recreate modal */
-.recreate-modal{ display:flex; flex-direction:column; gap: 10px; }
-.recreate-modal .row{ display:flex; gap: 10px; align-items:center; flex-wrap: wrap; }
-.recreate-modal .actions{ margin-top: 6px; }
-.recreate-modal .spacer{ flex:1; }
-.recreate-modal .grid{
+/* Note action dialog */
+.noteaction-box{
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.16);
+  display:flex;
+  flex-direction:column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.noteaction-line{ display:flex; gap: 10px; align-items:center; flex-wrap:wrap; }
+
+/* Edit note */
+.editnote{ display:flex; flex-direction:column; gap: 12px; }
+.editnote-top{
+  display:flex;
+  gap: 12px;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  align-items:flex-start;
+}
+.editnote-kv{ display:flex; gap: 12px; flex-wrap:wrap; }
+.kv{
+  border-radius: 14px;
+  padding: 10px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.16);
+  display:flex;
+  gap: 8px;
+  align-items:center;
+}
+.editnote-tags{ display:flex; gap: 10px; align-items:flex-start; flex-wrap:wrap; }
+.tags-chips{ display:flex; gap: 8px; flex-wrap:wrap; }
+
+.fields-grid{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 920px){
+  .fields-grid{ grid-template-columns: 1fr; }
+}
+.field-card{
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.16);
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+}
+.field-h{
+  display:flex;
+  justify-content:space-between;
+  gap: 10px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.field-name{ font-weight: 950; letter-spacing: -0.2px; }
+
+/* -----------------------------
+   Recreate modal (improved)
+------------------------------ */
+.recreate-modal{ display:flex; flex-direction:column; gap: 12px; }
+.recreate-hero{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap: 12px;
+  flex-wrap:wrap;
+  border-radius: 18px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.14);
+  background:
+    radial-gradient(900px 220px at 0% 0%, rgba(99,102,241,0.16), transparent 60%),
+    radial-gradient(900px 220px at 100% 0%, rgba(16,185,129,0.12), transparent 60%),
+    rgba(255,255,255,0.02);
+}
+.hero-left{ display:flex; flex-direction:column; gap: 10px; }
+.hero-title{ display:flex; gap: 10px; align-items:center; flex-wrap:wrap; }
+.hero-pill{
+  font-weight: 950;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148,163,184,0.16);
+  background: rgba(0,0,0,0.18);
+}
+.hero-kpis{
+  display:grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 920px){
+  .hero-kpis{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.kpi{
+  border-radius: 16px;
+  padding: 10px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.18);
+}
+.kpi-lbl{ font-size: 12px; opacity: .72; font-weight: 900; }
+.kpi-val{ margin-top: 4px; font-size: 18px; font-weight: 950; letter-spacing: -0.4px; }
+
+.hero-right{ display:flex; flex-direction:column; gap: 8px; align-items:flex-start; }
+
+.sections{ display:flex; flex-direction:column; gap: 12px; }
+.section{
+  border-radius: 18px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(255,255,255,0.02);
+  padding: 12px;
+}
+.section-h{
+  display:flex;
+  gap: 12px;
+  align-items:flex-start;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  margin-bottom: 10px;
+}
+.section-h > i{
+  font-size: 16px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(0,0,0,0.20);
+  border: 1px solid rgba(148,163,184,0.14);
+}
+.section-title{ font-weight: 950; letter-spacing: -0.2px; }
+.section-sub{ margin-top: 4px; font-size: 12.5px; opacity: .78; }
+.section-right{ display:flex; gap: 8px; align-items:center; }
+
+.grid{
   display:grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 @media (max-width: 920px){
-  .recreate-modal .grid{ grid-template-columns: 1fr; }
+  .grid{ grid-template-columns: 1fr; }
 }
 .blk{
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid rgba(148,163,184,0.12);
-  background: rgba(255,255,255,0.02);
+  background: rgba(0,0,0,0.16);
   padding: 12px;
 }
-.lbl{ font-weight: 900; opacity: .9; margin-bottom: 8px; }
-.inline{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.blk-wide{ grid-column: 1 / -1; }
+.lbl{ font-weight: 950; opacity: .9; margin-bottom: 8px; }
+.inline{ display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap; }
+.inline-col{ display:flex; flex-direction:column; gap: 4px; }
+.inline-strong{ font-weight: 950; display:flex; align-items:center; flex-wrap:wrap; gap: 8px; }
+
 .qty{ display:flex; gap: 12px; align-items:center; }
 .qty-slider{ flex: 1; }
-.tiny{ font-size: 12px; opacity: .75; margin-top: 6px; }
+.tiny{ font-size: 12px; opacity: .78; margin-top: 8px; }
 .support{ display:flex; gap: 10px; align-items:center; flex-wrap:wrap; margin-top: 10px; }
 
-/* Note types list */
-.types-list{ max-height: 60vh; overflow:auto; padding: 4px; }
-.type-row{
+.recreate-tip{
   display:flex;
-  align-items:center;
-  justify-content:space-between;
   gap: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(148,163,184,0.10);
-  background: rgba(255,255,255,0.02);
-  margin-bottom: 8px;
+  align-items:flex-start;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px dashed rgba(148,163,184,0.22);
+  background: rgba(0,0,0,0.16);
 }
-.type-name{ opacity: .92; }
+.recreate-tip i{ margin-top: 2px; opacity: .9; }
+
+/* Prime controls inside dialogs */
+:deep(.dlg .p-inputtext),
+:deep(.dlg .p-dropdown),
+:deep(.dlg .p-multiselect),
+:deep(.dlg .p-inputnumber-input),
+:deep(.dlg .p-textarea){
+  background: rgba(0,0,0,0.22);
+  border-color: rgba(148,163,184,0.18);
+}
+:deep(.dlg .p-multiselect-label),
+:deep(.dlg .p-dropdown-label){
+  font-weight: 900;
+}
+:deep(.dlg .p-multiselect-token){
+  border-radius: 999px;
+  font-weight: 900;
+}
+
+/* Note types list */
+.types-list{ max-height: 64vh; overflow:auto; padding: 14px; }
+.pad{ padding: 6px 2px; }
+.types-grid{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 920px){
+  .types-grid{ grid-template-columns: 1fr; }
+}
+.type-card{
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.16);
+}
+.type-card.ok{ border-color: rgba(16,185,129,0.20); }
+.type-card.no{ border-color: rgba(148,163,184,0.14); opacity: .92; }
+.type-top{ display:flex; gap: 10px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
+.type-name{ font-weight: 950; letter-spacing: -0.2px; }
+.type-sub{ margin-top: 8px; font-size: 12.5px; }
+
+/* small spacing helpers */
+.ml-2{ margin-left: 8px; }
+.mr-2{ margin-right: 8px; }
 </style>
