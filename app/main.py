@@ -41,15 +41,9 @@ app.include_router(dashboard_router)
 
 @app.exception_handler(StarletteHTTPException)
 async def spa_fallback(request: Request, exc: StarletteHTTPException):
-    if exc.status_code == 404:
-        # Para API, devolve 404 JSON (não relança)
-        if request.url.path.startswith("/api"):
-            return JSONResponse(status_code=404, content={"detail": "Not Found"})
-        # Para SPA, devolve o index.html
+    if exc.status_code == 404 and not request.url.path.startswith("/api"):
         return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache"})
-
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
 
 # Static files
 app.mount("/", StaticFiles(directory="static/dist"), name="static")
