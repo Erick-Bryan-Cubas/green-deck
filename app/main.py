@@ -4,11 +4,14 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from app.api import health_router, anki_router, flashcards_router, history_router
-
 class AnkiStatusFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
-        return "/api/anki-status" not in msg and "http://127.0.0.1:8765" not in msg
+        return (
+            "/api/anki-status" not in msg
+            and "/api/ollama-status" not in msg
+            and "http://127.0.0.1:8765" not in msg
+        )
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").addFilter(AnkiStatusFilter())

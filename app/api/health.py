@@ -1,25 +1,37 @@
+# app/api/health.py
+
 from fastapi import APIRouter
 import httpx
-from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, ANKI_CONNECT_URL
+
+from app.config import (
+    OLLAMA_MODEL,
+    OLLAMA_ANALYSIS_MODEL,
+    ANKI_CONNECT_URL,
+    OLLAMA_HOST,
+)
 
 router = APIRouter(prefix="/api", tags=["health"])
 
-@router.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "llm_model": OLLAMA_MODEL,
-        "analysis_model": OLLAMA_ANALYSIS_MODEL,
-    }
+@router.get("/ollama-status")
+async def ollama_status():
+    base = (OLLAMA_HOST or "").rstrip("/")
+    if not base:
+        return {"connected": False, "models": [], "host": ""}
 
-@router.get("/anki-status")
-async def anki_status():
     try:
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            r = await client.post(ANKI_CONNECT_URL, json={"action": "version", "version": 6})
-            data = r.json()
-            if data.get("result"):
-                return {"connected": True, "version": data["result"]}
-    except:
-        pass
-    return {"connected": False}
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            # Ollama: lista modelos disponíveis
+            resp = await client.get(f"{base}/api/tags")
+            resp.raise_for_status()
+            data = resp.json() or {}
+
+        raw = data.get("models") or []
+        models = []
+        for m in raw:
+            name = (m or {}).get("name") or (m or {}).get("model")
+            if name:
+                models.append(name)
+
+        return {"connected": True, "models": models, "host": base}
+    except Exception:
+        return {"connected": False, "models": [], "host": base}
