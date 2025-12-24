@@ -24,7 +24,7 @@ import { useToast } from 'primevue/usetoast'
 // App components
 import QuillEditor from '@/components/QuillEditor.vue'
 import AnkiStatus from '@/components/AnkiStatus.vue'
-
+import OllamaStatus from '@/components/OllamaStatus.vue'
 import { useRouter } from 'vue-router'
 
 // Services
@@ -1265,7 +1265,7 @@ onBeforeUnmount(() => {
             <div class="brand-text">
               <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
               <div class="brand-subtitle">
-                Selecione um trecho no editor para habilitar “Create Cards”. (Ctrl+Enter)
+                Desenvolvido para fins academicos por um TDAH com paixão por aprendizado.
               </div>
             </div>
           </div>
@@ -1287,7 +1287,19 @@ onBeforeUnmount(() => {
       <template #end>
         <div class="header-right">
           <div class="status-wrap">
-            <AnkiStatus />
+            <div class="status-pills">
+              <div class="status-item">
+                <AnkiStatus />
+                <span class="status-label">Anki</span>
+              </div>
+
+              <span class="status-sep" aria-hidden="true"></span>
+
+              <div class="status-item">
+                <OllamaStatus />
+                <span class="status-label">Ollama</span>
+              </div>
+            </div>
           </div>
 
           <Divider layout="vertical" class="hdr-divider" />
@@ -1488,8 +1500,17 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- EDIT DIALOG -->
-    <Dialog v-model:visible="editVisible" header="Editar Card" modal class="modern-dialog" style="width: min(980px, 96vw);">
-      <div class="edit-meta">
+    <Dialog
+        v-model:visible="editVisible"
+        header="Editar Card"
+        modal
+        appendTo="body"
+        :draggable="false"
+        :dismissableMask="true"
+        class="modern-dialog"
+        style="width: min(980px, 96vw);"
+    >
+    <div class="edit-meta">
         <Tag severity="info" class="pill">
           <i class="pi pi-hashtag mr-2" /> {{ editIndex + 1 }}
         </Tag>
@@ -2063,6 +2084,123 @@ onBeforeUnmount(() => {
   .brand-header-logo {
     height: 28px;
   }
+}
+/* =========================
+   Status pills (Header)
+========================= */
+.status-wrap {
+  display: flex;
+  align-items: center;
+}
+
+.status-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-label {
+  font-weight: 900;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.status-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}
+
+/* deixa o AnkiStatus/OllamaStatus com “cara de chip” igual */
+.status-pills :deep(.anki-status),
+.status-pills :deep(.ollama-status) {
+  border-radius: 10px;
+}
+
+/* some com labels em telas pequenas */
+@media (max-width: 720px) {
+  .status-label { display: none; }
+  .status-pills { padding: 6px 8px; gap: 8px; }
+}
+
+/* =========================
+   Modern Dialog (PrimeVue)
+========================= */
+:deep(.p-dialog.modern-dialog) {
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(17, 24, 39, 0.92);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-header) {
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-title) {
+  font-weight: 900;
+  letter-spacing: -0.2px;
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-content) {
+  padding: 16px;
+  background: transparent;
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-footer) {
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-header-icon) {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-header-icon:hover) {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+/* Máscara do modal (fica “Browser-like”) */
+:deep(.p-dialog-mask) {
+  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* Inputs dentro do dialog mais arredondados/consistentes */
+:deep(.modern-dialog .p-inputtext),
+:deep(.modern-dialog .p-textarea),
+:deep(.modern-dialog .p-dropdown),
+:deep(.modern-dialog .p-select) {
+  border-radius: 14px;
+}
+
+:deep(.modern-dialog .p-inputtext:focus),
+:deep(.modern-dialog .p-textarea:focus),
+:deep(.modern-dialog .p-dropdown:not(.p-disabled).p-focus),
+:deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.55);
 }
 
 </style>
