@@ -4,7 +4,10 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
-from app.api import health_router, anki_router, flashcards_router, history_router
+from fastapi.responses import FileResponse, JSONResponse
+from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router
+
+
 class AnkiStatusFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
@@ -34,13 +37,19 @@ app.include_router(health_router)
 app.include_router(anki_router)
 app.include_router(flashcards_router)
 app.include_router(history_router)
+app.include_router(dashboard_router)
 
-# SPA fallback
 @app.exception_handler(StarletteHTTPException)
 async def spa_fallback(request: Request, exc: StarletteHTTPException):
-    if exc.status_code == 404 and not request.url.path.startswith("/api"):
+    if exc.status_code == 404:
+        # Para API, devolve 404 JSON (não relança)
+        if request.url.path.startswith("/api"):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        # Para SPA, devolve o index.html
         return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache"})
-    raise exc
+
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
 
 # Static files
 app.mount("/", StaticFiles(directory="static/dist"), name="static")
