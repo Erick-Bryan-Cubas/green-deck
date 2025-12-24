@@ -1331,6 +1331,12 @@ onBeforeUnmount(() => {
               outlined
               @click="router.push('/browser')"
             />
+            <Button
+              icon="pi pi-chart-bar"
+              label="Dashboard"
+              outlined
+              @click="router.push('/dashboard')"
+            />
 
             <Button
               icon="pi pi-history"
