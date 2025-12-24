@@ -857,6 +857,9 @@ onUnmounted(() => {
     <Toolbar class="app-header">
       <template #start>
         <div class="brand">
+          <div class="brand-icon">
+            <img class="brand-icon-img" src="/green.svg" alt="Green Deck" />
+          </div>
           <img src="/green-header.svg" alt="Green Deck" class="brand-header-logo" />
           <Tag severity="success" class="pill">/browser</Tag>
 
@@ -1514,6 +1517,21 @@ onUnmounted(() => {
 :deep(.p-toolbar){ background: rgba(17, 24, 39, 0.60); border-bottom: 1px solid rgba(148, 163, 184, 0.18); }
 
 .brand{ display:flex; align-items:center; gap:10px; flex-wrap: wrap; }
+.brand-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+}
+.brand-icon-img {
+  width: 30px;
+  height: 30px;
+  display: block;
+}
 .brand-header-logo{ height:40px; width:auto; display:block; filter: drop-shadow(0 10px 24px rgba(0,0,0,0.25)); }
 .hdr-actions{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
 
