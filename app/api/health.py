@@ -16,15 +16,23 @@ async def health():
 
 @router.get("/anki-status")
 async def anki_status():
+    url = (ANKI_CONNECT_URL or "http://127.0.0.1:8765").rstrip("/")
+    payload = {"action": "version", "version": 6}
+
     try:
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            r = await client.post(ANKI_CONNECT_URL, json={"action": "version", "version": 6})
-            data = r.json()
-            if data.get("result"):
-                return {"connected": True, "version": data["result"]}
-    except:
-        pass
-    return {"connected": False}
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            r = await client.post(url, json=payload)
+            r.raise_for_status()
+            data = r.json() or {}
+
+            ok = (data.get("error") is None) and (data.get("result") is not None)
+            if ok:
+                return {"connected": True, "version": data["result"], "url": url}
+
+            return {"connected": False, "url": url, "error": data.get("error")}
+    except Exception as e:
+        return {"connected": False, "url": url, "error": str(e)}
+
 
 @router.get("/ollama-status")
 async def ollama_status():

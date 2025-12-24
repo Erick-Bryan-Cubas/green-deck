@@ -1,3 +1,4 @@
+<!-- frontend/src/pages/BrowserPage.vue -->
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -19,6 +20,10 @@ import Column from 'primevue/column'
 import Divider from 'primevue/divider'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
+
+// App components
+import AnkiStatus from '@/components/AnkiStatus.vue'
+import OllamaStatus from '@/components/OllamaStatus.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -212,10 +217,8 @@ const ollamaStatusTitle = computed(() => {
     const req = ollamaHealth.value.required
     const en = req?.easy_or_neutral
     const ht = req?.hard_technical
-    const enTxt =
-      en?.model ? `${en.model}=${en.available ? 'OK' : 'NÃO'}` : 'easy/neutral=?'
-    const htTxt =
-      ht?.model ? `${ht.model}=${ht.available ? 'OK' : 'NÃO'}` : 'tech=?'
+    const enTxt = en?.model ? `${en.model}=${en.available ? 'OK' : 'NÃO'}` : 'easy/neutral=?'
+    const htTxt = ht?.model ? `${ht.model}=${ht.available ? 'OK' : 'NÃO'}` : 'tech=?'
     return `Ollama OK • required: ${enTxt} | ${htTxt} • timeout=${ollamaHealth.value.timeoutS ?? '—'}s`
   }
   if (ollamaHealth.value.ok === null) return 'Ollama: verificando...'
@@ -750,7 +753,10 @@ async function confirmRecreate() {
       body: JSON.stringify(payload)
     })
 
-    addLog(`Recreate(SLM) HTTP status=${r.status} ${r.statusText || ''}`, r.status >= 400 ? 'error' : r.status === 207 ? 'warn' : 'info')
+    addLog(
+      `Recreate(SLM) HTTP status=${r.status} ${r.statusText || ''}`,
+      r.status >= 400 ? 'error' : r.status === 207 ? 'warn' : 'info'
+    )
 
     const data = await readJsonSafe(r)
     const elapsed = Math.round(performance.now() - startedAt)
@@ -771,7 +777,9 @@ async function confirmRecreate() {
 
     if (data?.timings) {
       addLog(
-        `Recreate timings: cardsInfo=${ms(data.timings.cardsInfoMs)} modelFields=${ms(data.timings.modelFieldNamesMs)} total=${ms(data.timings.totalMs)}`,
+        `Recreate timings: cardsInfo=${ms(data.timings.cardsInfoMs)} modelFields=${ms(data.timings.modelFieldNamesMs)} total=${ms(
+          data.timings.totalMs
+        )}`,
         'info'
       )
     }
@@ -797,7 +805,10 @@ async function confirmRecreate() {
     const notes = Number(data?.totalSelectedNotes || 0)
     const suspended = Number(data?.totalSuspendedCards || 0)
 
-    addLog(`Recreate(SLM) done: notes=${notes} created=${created} failed=${failed} suspendedCards=${suspended}`, failed ? 'warn' : 'success')
+    addLog(
+      `Recreate(SLM) done: notes=${notes} created=${created} failed=${failed} suspendedCards=${suspended}`,
+      failed ? 'warn' : 'success'
+    )
 
     if (Array.isArray(data?.results) && failed > 0) {
       const sum = summarizeResults(data.results)
@@ -849,25 +860,21 @@ onUnmounted(() => {
           <img src="/green-header.svg" alt="Green Deck" class="brand-header-logo" />
           <Tag severity="success" class="pill">/browser</Tag>
 
-          <!-- Status badges -->
-          <div class="svc-wrap">
-            <span
-              class="svc-pill"
-              :class="ankiHealth.ok ? 'on' : ankiHealth.ok === null ? 'idle' : 'off'"
-              :title="ankiStatusTitle"
-            >
-              <i class="pi" :class="ankiHealth.ok ? 'pi-check-circle' : ankiHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times-circle'"></i>
-              <span>Anki</span>
-            </span>
+          <!-- ✅ Status pills (igual ao Generator) -->
+          <div class="status-wrap">
+            <div class="status-pills">
+              <div class="status-item">
+                <AnkiStatus />
+                <span class="status-label">Anki</span>
+              </div>
 
-            <span
-              class="svc-pill"
-              :class="ollamaHealth.ok ? 'on' : ollamaHealth.ok === null ? 'idle' : 'off'"
-              :title="ollamaStatusTitle"
-            >
-              <i class="pi" :class="ollamaHealth.ok ? 'pi-check-circle' : ollamaHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times-circle'"></i>
-              <span>Ollama</span>
-            </span>
+              <span class="status-sep" aria-hidden="true"></span>
+
+              <div class="status-item">
+                <OllamaStatus />
+                <span class="status-label">Ollama</span>
+              </div>
+            </div>
           </div>
         </div>
       </template>
@@ -977,7 +984,7 @@ onUnmounted(() => {
             </template>
           </Column>
 
-          <!-- ✅ NOVO: Ações da NOTA -->
+          <!-- ✅ Ações da NOTA -->
           <Column header="Ações" style="width: 10rem">
             <template #body="{ data }">
               <div class="actions-cell">
@@ -1026,20 +1033,11 @@ onUnmounted(() => {
       </div>
 
       <!-- Preview -->
-      <Dialog
-        v-model:visible="previewVisible"
-        modal
-        :draggable="false"
-        class="dlg dlg-preview"
-        style="width:min(980px,96vw)"
-        contentStyle="padding: 0;"
-      >
+      <Dialog v-model:visible="previewVisible" modal :draggable="false" class="dlg dlg-preview modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
-              <div class="dlg-icon">
-                <i class="pi pi-eye"></i>
-              </div>
+              <div class="dlg-icon"><i class="pi pi-eye"></i></div>
               <div class="dlg-hdr-txt">
                 <div class="dlg-title">Card Preview</div>
                 <div class="dlg-sub">Render do HTML do Anki (Q/A). Duplo clique na tabela também abre.</div>
@@ -1085,15 +1083,8 @@ onUnmounted(() => {
         </template>
       </Dialog>
 
-      <!-- ✅ NOVO: Confirmar Suspender/Desuspender Nota -->
-      <Dialog
-        v-model:visible="noteActionDialogVisible"
-        modal
-        :draggable="false"
-        class="dlg dlg-noteaction"
-        style="width:min(820px,96vw)"
-        contentStyle="padding: 0;"
-      >
+      <!-- Confirmar Suspender/Desuspender Nota -->
+      <Dialog v-model:visible="noteActionDialogVisible" modal :draggable="false" class="dlg dlg-noteaction modern-dialog" style="width:min(820px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
@@ -1152,21 +1143,12 @@ onUnmounted(() => {
         </template>
       </Dialog>
 
-      <!-- ✅ NOVO: Editar Nota -->
-      <Dialog
-        v-model:visible="editDialogVisible"
-        modal
-        :draggable="false"
-        class="dlg dlg-editnote"
-        style="width:min(980px,96vw)"
-        contentStyle="padding: 0;"
-      >
+      <!-- Editar Nota -->
+      <Dialog v-model:visible="editDialogVisible" modal :draggable="false" class="dlg dlg-editnote modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
-              <div class="dlg-icon">
-                <i class="pi pi-pencil"></i>
-              </div>
+              <div class="dlg-icon"><i class="pi pi-pencil"></i></div>
               <div class="dlg-hdr-txt">
                 <div class="dlg-title">Editar nota</div>
                 <div class="dlg-sub">Edita fields via <b>updateNoteFields</b>. (Cuidado: isso altera a nota no Anki.)</div>
@@ -1230,20 +1212,11 @@ onUnmounted(() => {
       </Dialog>
 
       <!-- Modal Recreate (SLM/Ollama) -->
-      <Dialog
-        v-model:visible="recreateDialogVisible"
-        modal
-        :draggable="false"
-        class="dlg dlg-recreate"
-        style="width:min(980px,96vw)"
-        contentStyle="padding: 0;"
-      >
+      <Dialog v-model:visible="recreateDialogVisible" modal :draggable="false" class="dlg dlg-recreate modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
-              <div class="dlg-icon">
-                <i class="pi pi-copy"></i>
-              </div>
+              <div class="dlg-icon"><i class="pi pi-copy"></i></div>
               <div class="dlg-hdr-txt">
                 <div class="dlg-title">Recriar via SLM/Ollama</div>
                 <div class="dlg-sub">Gera novas notas com clozes e (opcionalmente) suspende os cards originais.</div>
@@ -1346,7 +1319,11 @@ onUnmounted(() => {
                         <Tag v-if="recreateSuspendOriginal" severity="warn" class="pill ml-2">impacta estudo</Tag>
                       </div>
                       <div class="muted tiny">
-                        {{ recreateSuspendOriginal ? 'Suspende todos os cards das notas originais.' : 'Mantém cards originais ativos.' }}
+                        {{
+                          recreateSuspendOriginal
+                            ? 'Suspende todos os cards das notas originais.'
+                            : 'Mantém cards originais ativos.'
+                        }}
                       </div>
                     </div>
                   </div>
@@ -1359,7 +1336,9 @@ onUnmounted(() => {
                     <InputNumber v-model="recreateCountPerNote" :min="1" :max="50" showButtons />
                   </div>
                   <div class="muted tiny">
-                    Estimativa: <b>{{ selectedNotesCount }}</b> notas × <b>{{ selectedTargetModels.length }}</b> Note Types × <b>{{ recreateCountPerNote }}</b> por nota = <b>{{ estimatedCreates }}</b>
+                    Estimativa:
+                    <b>{{ selectedNotesCount }}</b> notas × <b>{{ selectedTargetModels.length }}</b> Note Types ×
+                    <b>{{ recreateCountPerNote }}</b> por nota = <b>{{ estimatedCreates }}</b>
                   </div>
                 </div>
               </div>
@@ -1435,20 +1414,11 @@ onUnmounted(() => {
       </Dialog>
 
       <!-- Consultar Note Types -->
-      <Dialog
-        v-model:visible="noteTypesVisible"
-        modal
-        :draggable="false"
-        class="dlg dlg-notetypes"
-        style="width:min(820px,96vw)"
-        contentStyle="padding: 0;"
-      >
+      <Dialog v-model:visible="noteTypesVisible" modal :draggable="false" class="dlg dlg-notetypes modern-dialog" style="width:min(820px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
-              <div class="dlg-icon">
-                <i class="pi pi-list"></i>
-              </div>
+              <div class="dlg-icon"><i class="pi pi-list"></i></div>
               <div class="dlg-hdr-txt">
                 <div class="dlg-title">Note Types disponíveis</div>
                 <div class="dlg-sub">Lista do Anki com indicação de suporte no backend</div>
@@ -1486,20 +1456,11 @@ onUnmounted(() => {
       </Dialog>
 
       <!-- Logs -->
-      <Dialog
-        v-model:visible="logsVisible"
-        modal
-        :draggable="false"
-        class="dlg dlg-logs"
-        style="width:min(980px,96vw)"
-        contentStyle="padding: 0;"
-      >
+      <Dialog v-model:visible="logsVisible" modal :draggable="false" class="dlg dlg-logs modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
-              <div class="dlg-icon">
-                <i class="pi pi-search"></i>
-              </div>
+              <div class="dlg-icon"><i class="pi pi-search"></i></div>
               <div class="dlg-hdr-txt">
                 <div class="dlg-title">Logs (Browser)</div>
                 <div class="dlg-sub">Erros de API, timings e detalhes de recriação</div>
@@ -1552,30 +1513,59 @@ onUnmounted(() => {
 .app-header{ position:sticky; top:0; z-index:50; border:0; padding:14px; backdrop-filter: blur(10px); }
 :deep(.p-toolbar){ background: rgba(17, 24, 39, 0.60); border-bottom: 1px solid rgba(148, 163, 184, 0.18); }
 
-.brand{ display:flex; align-items:center; gap:10px; }
+.brand{ display:flex; align-items:center; gap:10px; flex-wrap: wrap; }
 .brand-header-logo{ height:40px; width:auto; display:block; filter: drop-shadow(0 10px 24px rgba(0,0,0,0.25)); }
 .hdr-actions{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
 
-.svc-wrap{ display:flex; gap:8px; align-items:center; margin-left:6px; flex-wrap:wrap; }
-.svc-pill{
-  display:inline-flex;
-  gap:8px;
-  align-items:center;
-  padding: 4px 10px;
+/* =========================
+   Status pills (Header)
+========================= */
+.status-wrap {
+  display: flex;
+  align-items: center;
+}
+
+.status-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(148,163,184,0.16);
-  background: rgba(0,0,0,0.25);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-label {
   font-weight: 900;
   font-size: 12px;
-  cursor: default;
+  opacity: 0.85;
 }
-.svc-pill i{ font-size: 14px; }
-.svc-pill.on{ border-color: rgba(16, 185, 129, 0.35); }
-.svc-pill.off{ border-color: rgba(239, 68, 68, 0.35); }
-.svc-pill.idle{ border-color: rgba(148, 163, 184, 0.25); opacity: .9; }
-.svc-pill.on i{ color: #22c55e; }
-.svc-pill.off i{ color: #ef4444; }
-.svc-pill.idle i{ color: rgba(148, 163, 184, 0.9); }
+
+.status-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}
+
+/* deixa o AnkiStatus/OllamaStatus com "cara de chip" igual */
+.status-pills :deep(.anki-status),
+.status-pills :deep(.ollama-status) {
+  border-radius: 10px;
+}
+
+/* some com labels em telas pequenas */
+@media (max-width: 720px) {
+  .status-label { display: none; }
+  .status-pills { padding: 6px 8px; gap: 8px; }
+}
 
 .card-surface{
   border-radius: 18px;
@@ -1653,7 +1643,7 @@ onUnmounted(() => {
 .flag-green{ color: #22c55e; }
 .flag-blue{ color: #3b82f6; }
 
-/* ✅ actions column */
+/* actions column */
 .actions-cell{
   display:flex;
   align-items:center;
@@ -1664,42 +1654,7 @@ onUnmounted(() => {
   border-radius: 999px;
 }
 
-/* -----------------------------
-   Dialog system (all modals)
------------------------------- */
-:deep(.dlg .p-dialog){
-  border-radius: 22px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  overflow: hidden;
-  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
-}
-:deep(.dlg .p-dialog-header){
-  padding: 14px 14px 12px 14px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
-  background:
-    radial-gradient(900px 260px at 10% 0%, rgba(99,102,241,0.18), transparent 60%),
-    radial-gradient(900px 260px at 95% 0%, rgba(16,185,129,0.14), transparent 60%),
-    rgba(17, 24, 39, 0.74);
-  backdrop-filter: blur(14px);
-}
-:deep(.dlg .p-dialog-content){
-  background: rgba(17, 24, 39, 0.64);
-  backdrop-filter: blur(14px);
-}
-:deep(.dlg .p-dialog-footer){
-  padding: 0;
-  border-top: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(17, 24, 39, 0.72);
-  backdrop-filter: blur(14px);
-}
-:deep(.dlg .p-dialog-header-icons .p-dialog-header-close){
-  border-radius: 999px;
-}
-:deep(.p-dialog-mask){
-  backdrop-filter: blur(6px);
-}
-
-/* Dialog header layout */
+/* Dialog header layout (mantém seu layout interno) */
 .dlg-hdr{
   width: 100%;
   display:flex;
@@ -1870,9 +1825,7 @@ onUnmounted(() => {
 }
 .field-name{ font-weight: 950; letter-spacing: -0.2px; }
 
-/* -----------------------------
-   Recreate modal (improved)
------------------------------- */
+/* Recreate modal */
 .recreate-modal{ display:flex; flex-direction:column; gap: 12px; }
 .recreate-hero{
   display:flex;
@@ -2023,4 +1976,73 @@ onUnmounted(() => {
 /* small spacing helpers */
 .ml-2{ margin-left: 8px; }
 .mr-2{ margin-right: 8px; }
+
+/* =========================
+   Modern Dialog (PrimeVue)
+   (igual GeneratorPage)
+========================= */
+:deep(.p-dialog.modern-dialog) {
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(17, 24, 39, 0.92);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-header) {
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-title) {
+  font-weight: 900;
+  letter-spacing: -0.2px;
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-content) {
+  padding: 16px;
+  background: transparent;
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-footer) {
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-header-icon) {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+:deep(.p-dialog.modern-dialog .p-dialog-header-icon:hover) {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+/* Máscara do modal */
+:deep(.p-dialog-mask) {
+  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.55);
+}
+
+/* Inputs dentro do dialog mais arredondados/consistentes */
+:deep(.modern-dialog .p-inputtext),
+:deep(.modern-dialog .p-textarea),
+:deep(.modern-dialog .p-dropdown),
+:deep(.modern-dialog .p-select) {
+  border-radius: 14px;
+}
+
+:deep(.modern-dialog .p-inputtext:focus),
+:deep(.modern-dialog .p-textarea:focus),
+:deep(.modern-dialog .p-dropdown:not(.p-disabled).p-focus),
+:deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.55);
+}
 </style>
