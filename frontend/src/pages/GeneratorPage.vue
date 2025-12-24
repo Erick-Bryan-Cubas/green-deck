@@ -1265,7 +1265,7 @@ onBeforeUnmount(() => {
             <div class="brand-text">
               <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
               <div class="brand-subtitle">
-                Desenvolvido para fins academicos por um TDAH com paixão por aprendizado.
+                Desenvolvido para fins academicos por um TDAH com paixão por aprendizado🎈
               </div>
             </div>
           </div>
