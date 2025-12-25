@@ -1265,7 +1265,7 @@ onBeforeUnmount(() => {
             <div class="brand-text">
               <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
               <div class="brand-subtitle">
-                Desenvolvido para fins academicos por um TDAH com paixão por aprendizado🎈
+                Flashcard generator powered by AI 🎈
               </div>
             </div>
           </div>
@@ -1423,8 +1423,25 @@ onBeforeUnmount(() => {
                   <InputText v-model="cardSearch" class="search" placeholder="Buscar em front/back/deck..." />
                 </div>
 
-                <Button :disabled="!hasCards" :label="exportLabel" icon="pi pi-upload" outlined @click="exportToMochi" />
-                <Button :disabled="!hasCards" label="Anki" icon="pi pi-send" outlined @click="exportToAnkiOpenConfig" />
+                <!--<div class="export-group"style="display:flex;gap:1rem;align-items:center;">-->
+                <div class="export-group">
+                  <Button
+                    class="export-btn"
+                    :disabled="!hasCards"
+                    :label="exportLabel"
+                    icon="pi pi-upload"
+                    outlined
+                    @click="exportToMochi"
+                  />
+                  <Button
+                    class="export-btn"
+                    :disabled="!hasCards"
+                    label="Anki"
+                    icon="pi pi-send"
+                    outlined
+                    @click="exportToAnkiOpenConfig"
+                  />
+                </div>
               </div>
             </div>
 
@@ -2207,6 +2224,34 @@ onBeforeUnmount(() => {
 :deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
   border-color: rgba(99, 102, 241, 0.55);
+}
+
+
+/* deixa search + export alinhados e com espaço entre blocos */
+.panel-actions{
+  display: flex;
+  align-items: center;
+  gap: 12px;          /* espaço entre a busca e o grupo de botões */
+  flex-wrap: wrap;    /* quebra em telas menores */
+}
+
+/* espaço ENTRE os botões */
+.export-group{
+  display: flex;
+  align-items: center;
+  gap: 10px;          /* ajuste aqui (8–14 costuma ficar bom) */
+  flex-wrap: wrap;    /* evita “colar” quando quebrar linha */
+}
+
+/* opcional: garante largura consistente/bonita */
+.export-btn{
+  white-space: nowrap;
+}
+
+.brand-subtitle {
+  font-size: 13px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-weight: 500;
 }
 
 </style>
