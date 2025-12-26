@@ -74,12 +74,16 @@ A: Extra: <1 frase de contexto em PT-BR>
 SRC: "<trecho LITERAL do texto-fonte (5-25 palavras), sem alterar>"
 
 PROIBIDO
-- Inglês.
+- Inglês FORA do campo SRC.
 - Numeração, títulos, markdown.
 - "Question:", "Answer:".
 - Listas/bullets.
 - Múltiplas lacunas cloze (c2, c3...).
 - Cards que pedem conjuntos/enumerations longas (“liste X itens”) sem quebrar em itens menores.
+
+OBS (IMPORTANTE):
+- O campo SRC é uma CITAÇÃO LITERAL do texto-fonte.
+- Se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido).
 
 QUALIDADE (SUPER IMPORTANTE)
 - Mínimo de informação por card (1 fato/1 distinção/1 definição por card).

@@ -9,7 +9,7 @@ from pathlib import Path
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, MAX_CTX_CHARS
 from app.services.ollama import ollama_generate_stream
 from app.services.parser import parse_flashcards_qa, normalize_cards, pick_default_deck
-from app.utils.text import truncate_source, looks_english
+from app.utils.text import truncate_source, guess_language_ptbr_en
 from app.services.storage import save_analysis, save_cards
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
@@ -40,9 +40,11 @@ def _norm_ws(s: str) -> str:
 
 _SUPERMEMO_CHECKLIST_CACHE: Optional[str] = None
 
+
 def _project_root() -> Path:
     # app/api/flashcards.py -> parents: [api, app, project_root]
     return Path(__file__).resolve().parents[2]
+
 
 def _load_supermemo_checklist(max_chars: int = 2500) -> str:
     """
@@ -205,6 +207,7 @@ TAREFA:
 - Crie flashcards em PT-BR BASEADOS APENAS no CONTEÚDO-FONTE.
 - Se algo não estiver no texto, NÃO invente.
 - Se o texto estiver em inglês, traduza os conceitos para PT-BR (sem adicionar fatos).
+- IMPORTANTE: O campo SRC é uma CITAÇÃO LITERAL do texto-fonte; se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido).
 
 QUANTIDADE:
 - Gere entre {target_min} e {target_max} cards.
@@ -236,11 +239,22 @@ COMECE:
             async for piece in ollama_generate_stream(OLLAMA_MODEL, prompt, system=None, options=options):
                 raw += piece
 
-            cards = normalize_cards(parse_flashcards_qa(raw))
-            cards = _filter_cards_with_valid_src(cards, src)
+            # Parse/normalize
+            cards_raw = normalize_cards(parse_flashcards_qa(raw))
+            yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'count': len(cards_raw)})}\n\n"
 
-            if not cards or looks_english(raw) or len(cards) < target_min:
-                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_pass', 'reason': f'cards={len(cards)}, min={target_min}'})}\n\n"
+            # SRC filter
+            cards = _filter_cards_with_valid_src(cards_raw, src)
+            yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards))})}\n\n"
+
+            lang_hint = guess_language_ptbr_en(raw)
+
+            # Repair pass se:
+            # - não gerou nada útil
+            # - output veio em inglês (fora do SRC)
+            # - ou ficou abaixo do mínimo esperado
+            if not cards or lang_hint == "en" or len(cards) < target_min:
+                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_pass', 'reason': f'lang={lang_hint}, cards={len(cards)}, min={target_min}'})}\n\n"
 
                 repair_prompt = f"""
 CONTEÚDO-FONTE (use SOMENTE isso como base):
@@ -253,6 +267,7 @@ CONTEÚDO-FONTE (use SOMENTE isso como base):
 A saída abaixo está INCOMPLETA ou INCORRETA.
 
 Reescreva em PT-BR seguindo RIGOROSAMENTE o formato e garantindo que CADA card tenha SRC literal (5–25 palavras) do texto-fonte.
+Se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido). Fora do campo SRC, escreva em PT-BR.
 Gere entre {target_min} e {target_max} cards.
 
 FORMATO:
@@ -265,7 +280,7 @@ A: Extra: ...
 SRC: "..."
 
 PROIBIDO:
-- Inglês
+- Inglês fora do campo SRC
 - Listas (bullets, números)
 - Markdown
 - "Question:" / "Answer:"
@@ -287,8 +302,12 @@ REESCREVA CORRETAMENTE:
                 ):
                     raw2 += piece
 
-                cards2 = normalize_cards(parse_flashcards_qa(raw2))
-                cards2 = _filter_cards_with_valid_src(cards2, src)
+                cards2_raw = normalize_cards(parse_flashcards_qa(raw2))
+                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'count': len(cards2_raw)})}\n\n"
+
+                cards2 = _filter_cards_with_valid_src(cards2_raw, src)
+                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2))})}\n\n"
+
                 if cards2:
                     cards = cards2
 
