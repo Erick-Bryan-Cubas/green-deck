@@ -1,14 +1,21 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
-from app.api import health_router, anki_router, flashcards_router, history_router
+from fastapi.responses import FileResponse, JSONResponse
+from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router
+
 
 class AnkiStatusFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
-        return "/api/anki-status" not in msg and "http://127.0.0.1:8765" not in msg
+        return (
+            "/api/anki-status" not in msg
+            and "/api/ollama-status" not in msg
+            and "http://127.0.0.1:8765" not in msg
+        )
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").addFilter(AnkiStatusFilter())
@@ -30,15 +37,13 @@ app.include_router(health_router)
 app.include_router(anki_router)
 app.include_router(flashcards_router)
 app.include_router(history_router)
-class NoCacheStaticFiles(StaticFiles):
-    async def get_response(self, path: str, scope):
-        response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return response
-# Root
-@app.get("/")
-async def root():
-    return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+app.include_router(dashboard_router)
+
+@app.exception_handler(StarletteHTTPException)
+async def spa_fallback(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404 and not request.url.path.startswith("/api"):
+        return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache"})
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # Static files
-app.mount("/", NoCacheStaticFiles(directory="static/dist", html=True), name="static")
+app.mount("/", StaticFiles(directory="static/dist"), name="static")
