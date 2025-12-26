@@ -3,6 +3,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import json
+import re
+from pathlib import Path
+
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, MAX_CTX_CHARS
 from app.services.ollama import ollama_generate_stream
 from app.services.parser import parse_flashcards_qa, normalize_cards, pick_default_deck
@@ -11,8 +14,10 @@ from app.services.storage import save_analysis, save_cards
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 
+
 class TextRequest(BaseModel):
     text: str
+
 
 class CardsRequest(BaseModel):
     text: str
@@ -21,45 +26,137 @@ class CardsRequest(BaseModel):
     useRAG: Optional[bool] = False
     topK: Optional[int] = 0
 
+    # "basic" | "cloze" | "both"
+    cardType: Optional[str] = "both"
+
+
+def _norm_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+# =============================================================================
+# SuperMemo checklist injection (docs/supermemo_checklist.md)
+# =============================================================================
+
+_SUPERMEMO_CHECKLIST_CACHE: Optional[str] = None
+
+def _project_root() -> Path:
+    # app/api/flashcards.py -> parents: [api, app, project_root]
+    return Path(__file__).resolve().parents[2]
+
+def _load_supermemo_checklist(max_chars: int = 2500) -> str:
+    """
+    Carrega uma versão curta do checklist SuperMemo para injetar no prompt.
+    - Mantém cache em memória.
+    - Limita tamanho para não estourar o contexto de um SLM pequeno.
+    """
+    global _SUPERMEMO_CHECKLIST_CACHE
+    if _SUPERMEMO_CHECKLIST_CACHE is not None:
+        return _SUPERMEMO_CHECKLIST_CACHE
+
+    try:
+        p = _project_root() / "docs" / "supermemo_checklist.md"
+        if not p.exists():
+            _SUPERMEMO_CHECKLIST_CACHE = ""
+            return _SUPERMEMO_CHECKLIST_CACHE
+
+        txt = p.read_text(encoding="utf-8").strip()
+        if len(txt) > max_chars:
+            txt = txt[:max_chars].rstrip() + "\n\n[...truncado...]"
+
+        _SUPERMEMO_CHECKLIST_CACHE = txt
+        return _SUPERMEMO_CHECKLIST_CACHE
+    except Exception:
+        _SUPERMEMO_CHECKLIST_CACHE = ""
+        return _SUPERMEMO_CHECKLIST_CACHE
+
+
+def _format_checklist_block() -> str:
+    checklist = _load_supermemo_checklist()
+    if not checklist:
+        return ""
+
+    return f"""
+DIRETRIZES DE QUALIDADE (SM20 Checklist) — NÃO é conteúdo do usuário.
+- Use estas diretrizes APENAS para melhorar a formulação dos cards.
+- NUNCA crie cards sobre estas diretrizes.
+- NÃO adicione fatos que não estejam no CONTEÚDO-FONTE.
+
+{checklist}
+""".strip()
+
+
+# =============================================================================
+# Card SRC validation
+# =============================================================================
+
+def _is_src_valid(ref: str, src_text: str) -> bool:
+    """
+    Heurísticas simples:
+    - src deve existir
+    - src (normalizado) precisa aparecer no texto-fonte (normalizado)
+    - src deve ter 5–25 palavras (para evitar SRC enorme ou trivial)
+    """
+    ref = (ref or "").strip().strip('"').strip()
+    if not ref:
+        return False
+
+    wc = len(ref.split())
+    if wc < 5 or wc > 25:
+        return False
+
+    return _norm_ws(ref) in _norm_ws(src_text)
+
+
+def _filter_cards_with_valid_src(cards, src_text: str):
+    """
+    Mantém apenas cards cujo campo `src` aparece (quase-verbatim) dentro do texto-fonte.
+    Isso ajuda a garantir que o modelo está ancorando no trecho selecionado.
+    """
+    kept = []
+    for c in cards or []:
+        ref = (c.get("src") or "").strip().strip('"').strip()
+        if not _is_src_valid(ref, src_text):
+            continue
+        c["src"] = ref
+        kept.append(c)
+    return kept
+
+
 @router.post("/analyze-text-stream")
 async def analyze_text_stream(request: TextRequest):
     async def generate():
         try:
             from app.services.ollama import ollama_embed, chunk_text, cosine_similarity
-            
+
             yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing'})}\n\n"
 
             src = truncate_source(request.text or "")
             chunks = chunk_text(src, chunk_size=400)
-            
+
             yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'embedding'})}\n\n"
-            
-            # Gerar embeddings para cada chunk
+
             chunk_embeddings = []
             for chunk in chunks:
                 emb = await ollama_embed(OLLAMA_ANALYSIS_MODEL, chunk)
                 chunk_embeddings.append((chunk, emb))
-            
-            # Query para extrair informações relevantes
+
             query = "conceitos importantes, definições técnicas, contrastes e distinções"
             query_emb = await ollama_embed(OLLAMA_ANALYSIS_MODEL, query)
-            
+
             yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'ranking'})}\n\n"
-            
-            # Ranquear chunks por relevância
+
             scored = [(chunk, cosine_similarity(emb, query_emb)) for chunk, emb in chunk_embeddings]
             scored.sort(key=lambda x: x[1], reverse=True)
-            
-            # Pegar top 3 chunks mais relevantes
+
             top_chunks = [chunk for chunk, _ in scored[:3]]
             summary = "\n\n".join(top_chunks)
-            
+
             result = {"content": [{"type": "text", "text": summary}]}
-            
-            # Salvar análise
+
             analysis_id = save_analysis(src, summary, {"chunks": len(chunks), "top_chunks": len(top_chunks)})
             result["analysis_id"] = analysis_id
-            
+
             yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done'})}\n\n"
             yield f"event: result\ndata: {json.dumps(result)}\n\n"
 
@@ -67,6 +164,7 @@ async def analyze_text_stream(request: TextRequest):
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
 
 @router.post("/generate-cards-stream")
 async def generate_cards_stream(request: CardsRequest):
@@ -77,111 +175,135 @@ async def generate_cards_stream(request: CardsRequest):
             src = truncate_source(request.text or "")
             ctx = (request.textContext or "").strip()
 
+            card_type = (request.cardType or "both").strip().lower()
+            if card_type not in ("basic", "cloze", "both"):
+                card_type = "both"
+
+            # Quantidade alvo: suficiente sem incentivar alucinação
+            word_count = len(src.split())
+            min_expected = max(8, word_count // 120)  # ~1 card / 120 palavras (piso 8)
+            target_min = max(10, min_expected)
+            target_max = min(40, max(16, target_min * 2))
+
+            type_instruction = {
+                "basic": "Gere APENAS cards [BASIC].",
+                "cloze": "Gere APENAS cards [CLOZE].",
+                "both": "Para cada conceito importante, gere 1 [BASIC] + 1 [CLOZE].",
+            }[card_type]
+
+            checklist_block = _format_checklist_block()
+
             prompt = f"""
-CONTEÚDO-FONTE:
+CONTEÚDO-FONTE (use SOMENTE isso como base):
 {src}
 
 {("CONTEXTO (opcional):\n" + ctx) if ctx else ""}
 
-TAREFA CRÍTICA:
-Você DEVE gerar NO MÍNIMO 20-40 flashcards (ou mais se o texto for longo) cobrindo EXAUSTIVAMENTE:
+{checklist_block if checklist_block else ""}
 
-1. TODOS os contrastes mencionados (ex: "X vs Y", "diferença entre A e B")
-2. TODAS as definições de termos técnicos
-3. TODAS as armadilhas, trade-offs e exceções
-4. TODOS os exemplos e casos práticos
-5. TODAS as nuances e detalhes técnicos
+TAREFA:
+- Crie flashcards em PT-BR BASEADOS APENAS no CONTEÚDO-FONTE.
+- Se algo não estiver no texto, NÃO invente.
+- Se o texto estiver em inglês, traduza os conceitos para PT-BR (sem adicionar fatos).
 
-Para CADA conceito importante, crie MÚLTIPLOS cards (1 BASIC + 1-2 CLOZE).
+QUANTIDADE:
+- Gere entre {target_min} e {target_max} cards.
 
-FORMATO OBRIGATÓRIO:
+TIPOS:
+{type_instruction}
+
+FORMATO OBRIGATÓRIO (use exatamente estas chaves):
 Q: [BASIC] <pergunta específica em PT-BR>
-A: <resposta curta em PT-BR, 1-2 frases>
+A: <resposta curta em PT-BR (1-2 frases)>
+SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
-Q: [CLOZE] <frase com {{{{c1::termo}}}} em PT-BR>
-A: Extra: <contexto adicional em PT-BR>
-
-EXEMPLOS CORRETOS:
-
-Q: [BASIC] Qual a diferença fundamental entre data leakage e training-serving skew?
-A: Data leakage ocorre quando o treino vê informação do futuro; training-serving skew é quando features são calculadas diferentemente entre treino e produção.
-
-Q: [CLOZE] {{{{c1::Calibração}}}} significa que quando o modelo diz 0.2, cerca de 20% dos casos são positivos.
-A: Extra: Calibração não garante bom ranking; um modelo pode ser bem calibrado mas ordenar mal os itens.
-
-Q: [BASIC] Por que melhorar CTR pode piorar a margem líquida?
-A: Porque aumentar CTR pode gerar mais cliques mas também aumentar devoluções, frete e custos de incentivo sem retorno real.
-
-Q: [CLOZE] {{{{c1::Selection bias}}}} ocorre quando só observamos labels para itens que foram expostos pela política anterior.
-A: Extra: Diferente de confounding, onde observamos alternativas mas a comparação é injusta devido a variável de confusão.
+Q: [CLOZE] <frase em PT-BR com UMA lacuna {{c1::termo}}>
+A: Extra: <1 frase de contexto adicional em PT-BR>
+SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
 REGRAS CRÍTICAS:
-- SEMPRE em PT-BR (nunca inglês)
-- SEMPRE prefixe [BASIC] ou [CLOZE]
-- Cloze: exatamente UMA lacuna {{{{c1::...}}}}
-- Respostas curtas (10-25 palavras)
-- NÃO PARE até cobrir TODO o conteúdo (mínimo 20 cards)
-- Sem listas, sem markdown, sem numeração
-- Uma linha em branco entre cards
+- SEM markdown, SEM listas, SEM numeração.
+- Uma linha em branco entre cards.
+- O campo SRC PRECISA ser um trecho literal do texto-fonte (5–25 palavras).
+- Evite repetir o mesmo SRC em cards diferentes (quando possível).
+- NÃO crie cards sobre as “Diretrizes de Qualidade”.
 
-IMPORTANTE: Gere cards até ESGOTAR o conteúdo. Não economize!
-
-COMECE AGORA (lembre-se: mínimo 20 cards):
+COMECE:
 """.strip()
 
             raw = ""
-            # Forçar geração mais longa
             options = {"num_predict": 4096, "temperature": 0.2}
             async for piece in ollama_generate_stream(OLLAMA_MODEL, prompt, system=None, options=options):
                 raw += piece
 
-            cards = parse_flashcards_qa(raw)
-            cards = normalize_cards(cards)
+            cards = normalize_cards(parse_flashcards_qa(raw))
+            cards = _filter_cards_with_valid_src(cards, src)
 
-            # Validar quantidade mínima de cards
-            min_expected = max(10, len(src.split()) // 100)  # ~1 card por 100 palavras
-            
-            if not cards or looks_english(raw) or len(cards) < min_expected:
-                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_pass', 'reason': f'cards={len(cards)}, min={min_expected}'})}\n\n"
+            if not cards or looks_english(raw) or len(cards) < target_min:
+                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_pass', 'reason': f'cards={len(cards)}, min={target_min}'})}\n\n"
+
                 repair_prompt = f"""
-A saída abaixo está INCOMPLETA ou INCORRETA (gerou apenas {len(cards)} cards, esperado mínimo {min_expected}).
+CONTEÚDO-FONTE (use SOMENTE isso como base):
+{src}
 
-Reescreva em PT-BR seguindo RIGOROSAMENTE e gerando MUITO MAIS cards:
+{("CONTEXTO (opcional):\n" + ctx) if ctx else ""}
+
+{checklist_block if checklist_block else ""}
+
+A saída abaixo está INCOMPLETA ou INCORRETA.
+
+Reescreva em PT-BR seguindo RIGOROSAMENTE o formato e garantindo que CADA card tenha SRC literal (5–25 palavras) do texto-fonte.
+Gere entre {target_min} e {target_max} cards.
 
 FORMATO:
-Q: [BASIC] <pergunta em PT-BR>
-A: <resposta em PT-BR>
+Q: [BASIC] ...
+A: ...
+SRC: "..."
 
-Q: [CLOZE] <frase com {{{{c1::termo}}}} em PT-BR>
-A: Extra: <contexto em PT-BR>
+Q: [CLOZE] ... {{c1::...}} ...
+A: Extra: ...
+SRC: "..."
 
 PROIBIDO:
 - Inglês
 - Listas (bullets, números)
 - Markdown
-- "Question:", "Answer:"
+- "Question:" / "Answer:"
 - Múltiplas lacunas cloze
+- Cards sobre as “Diretrizes de Qualidade”
 
-SAÍDA INCORRETA:
+SAÍDA RUIM:
 {raw}
 
-REESCREVA CORRETAMENTE EM PT-BR:
+REESCREVA CORRETAMENTE:
 """.strip()
 
                 raw2 = ""
-                async for piece in ollama_generate_stream(OLLAMA_MODEL, repair_prompt, system=None, options=None):
+                async for piece in ollama_generate_stream(
+                    OLLAMA_MODEL,
+                    repair_prompt,
+                    system=None,
+                    options={"num_predict": 4096, "temperature": 0.2},
+                ):
                     raw2 += piece
 
                 cards2 = normalize_cards(parse_flashcards_qa(raw2))
+                cards2 = _filter_cards_with_valid_src(cards2, src)
                 if cards2:
                     cards = cards2
 
             deck = pick_default_deck(request.deckOptions or "General")
-            result_cards = [{"front": c["front"], "back": c["back"], "deck": deck} for c in cards]
 
-            # Salvar cards
+            # Propaga SRC para o frontend + persistência
+            result_cards = []
+            for c in cards:
+                item = {"front": c["front"], "back": c["back"], "deck": deck}
+                if c.get("src"):
+                    item["src"] = c["src"]
+                result_cards.append(item)
+
             cards_id = save_cards(result_cards, source_text=src)
-            
+
             yield f"event: stage\ndata: {json.dumps({'stage': 'done', 'total_cards': len(result_cards), 'cards_id': cards_id})}\n\n"
             yield f"event: result\ndata: {json.dumps({'success': True, 'cards': result_cards})}\n\n"
 
