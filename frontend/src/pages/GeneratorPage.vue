@@ -686,7 +686,8 @@ const filteredCards = computed(() => {
     const f = String(c.front || '').toLowerCase()
     const b = String(c.back || '').toLowerCase()
     const d = String(c.deck || '').toLowerCase()
-    return f.includes(q) || b.includes(q) || d.includes(q)
+    const s = String(c.src || '').toLowerCase()
+    return f.includes(q) || b.includes(q) || d.includes(q) || s.includes(q)
   })
 })
 
@@ -1939,6 +1940,10 @@ onBeforeUnmount(() => {
                             <div class="preview-label">Back</div>
                             <div class="preview-text" v-html="renderMarkdownSafe(previewText(c.back, 300))"></div>
                           </div>
+                        </div>
+
+                        <div v-if="c.src" class="text-xs opacity-70 mt-2">
+                          <strong>Fonte:</strong> {{ previewText(c.src, 160) }}
                         </div>
 
                         <div class="preview-hint">
