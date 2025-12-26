@@ -1,8 +1,38 @@
 import re
+import logging
 from typing import List, Literal
+
 from app.config import MAX_SOURCE_CHARS
 
 LangHint = Literal["pt-br", "en", "unknown"]
+LangHint3 = Literal["pt-br", "en", "es", "unknown"]
+
+try:
+    import langid  # type: ignore
+except Exception:
+    langid = None
+
+_LANGID_READY = False
+
+
+def _ensure_langid_ready() -> bool:
+    """
+    Inicializa o langid uma única vez e restringe as classes
+    (pt/en/es) para reduzir confusões.
+    """
+    global _LANGID_READY
+    if langid is None:
+        return False
+    if not _LANGID_READY:
+        # garante que os logs do langid apareçam em nível INFO
+        logging.getLogger("langid.langid").setLevel(logging.INFO)
+        try:
+            langid.set_languages(["pt", "en", "es"])
+        except Exception:
+            # se por algum motivo falhar, seguimos com o default
+            pass
+        _LANGID_READY = True
+    return True
 
 
 def truncate_source(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
@@ -16,55 +46,67 @@ def truncate_source(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
     return (text or "").strip()
 
 
-def guess_language_ptbr_en(text: str, *, min_hits: int = 3, margin: int = 2) -> LangHint:
+def strip_src_lines(text: str) -> str:
     """
-    Heurística simples para inferir se um texto parece estar em PT-BR ou Inglês.
+    Remove linhas SRC/FONTE/REF antes de detectar idioma.
 
-    Esta função NÃO é um detector de idioma completo; ela só tenta distinguir:
-      - "pt-br": quando há indícios fortes de português (Brasil)
-      - "en": quando há indícios fortes de inglês
-      - "unknown": quando não dá para ter confiança (texto curto, misto, técnico demais etc.)
-
-    Como funciona:
-      - Tokeniza palavras (inclui acentos).
-      - Conta ocorrências de “palavras-função” (stopwords) típicas de cada idioma.
-      - Decide por maioria com uma margem mínima (para reduzir falso positivo).
-
-    Args:
-        text: Texto a ser analisado.
-        min_hits: Número mínimo de ocorrências de marcadores para considerar um idioma.
-        margin: Diferença mínima entre os scores para “ganhar” a decisão.
-
-    Returns:
-        "pt-br", "en" ou "unknown".
+    Importante porque SRC pode (e muitas vezes deve) estar no idioma do texto-fonte.
     """
-    s = (text or "").strip().lower()
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    out = []
+    for ln in t.split("\n"):
+        if re.match(r"(?i)^(src|fonte|ref)\s*:\s*", ln.strip()):
+            continue
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
+def detect_language_pt_en_es(text: str) -> LangHint3:
+    """
+    Detector de idioma (pt/en/es) usando langid (offline).
+    Retorna: "pt-br" | "en" | "es" | "unknown"
+    """
+    s = (text or "").strip()
     if not s:
         return "unknown"
 
-    # Captura palavras com letras ASCII + latinas acentuadas
-    tokens = re.findall(r"[a-zA-ZÀ-ÿ]+", s)
-    if not tokens:
+    if not _ensure_langid_ready():
         return "unknown"
 
-    # Evite tokens muito ambíguos ("a", "o", "de", "to") e foque em marcadores úteis.
-    pt_markers = {
-        "não", "que", "para", "porque", "porquê", "como", "também", "você", "vocês",
-        "qual", "quais", "isso", "essa", "esse", "estas", "estes", "são", "é", "foi",
-        "mais", "menos", "então", "ou", "numa", "neste", "nessa",
-    }
-    en_markers = {
-        "the", "and", "what", "why", "how", "this", "that", "these", "those",
-        "is", "are", "was", "were", "with", "without", "because", "into", "from",
-        "can", "could", "should", "would",
-    }
+    code, score = langid.classify(s)
 
-    pt_hits = sum(1 for t in tokens if t in pt_markers)
-    en_hits = sum(1 for t in tokens if t in en_markers)
+    if code == "pt":
+        mapped: LangHint3 = "pt-br"
+    elif code == "en":
+        mapped = "en"
+    elif code == "es":
+        mapped = "es"
+    else:
+        mapped = "unknown"
 
-    if pt_hits >= min_hits and pt_hits >= en_hits + margin:
+    # Log no logger do próprio langid (fica como: INFO:langid.langid:...)
+    logging.getLogger("langid.langid").info(
+        "classify: code=%s mapped=%s score=%.4f chars=%d",
+        code,
+        mapped,
+        float(score) if score is not None else -1.0,
+        len(s),
+    )
+
+    return mapped
+
+
+def guess_language_ptbr_en(text: str) -> LangHint:
+    """
+    Compat: mantém a assinatura original do projeto, mas agora usa APENAS langid.
+
+    Retorna "pt-br" | "en" | "unknown"
+    (se cair em "es", retorna unknown para este helper).
+    """
+    lang = detect_language_pt_en_es(text)
+    if lang == "pt-br":
         return "pt-br"
-    if en_hits >= min_hits and en_hits >= pt_hits + margin:
+    if lang == "en":
         return "en"
     return "unknown"
 
