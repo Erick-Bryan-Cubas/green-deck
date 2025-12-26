@@ -6,7 +6,7 @@ Validates JSON output and SuperMemo compliance
 import httpx
 import json
 import asyncio
-from prompts import SUPERMEMO_RULES, BASIC_CARDS_PROMPT
+from ollama.fine_tuning.prompts import SUPERMEMO_RULES, BASIC_CARDS_PROMPT
 
 # Test texts
 TEST_CASES = [
