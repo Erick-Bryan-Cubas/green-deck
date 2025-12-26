@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 import json
 import re
+import logging
 from pathlib import Path
 
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, MAX_CTX_CHARS
@@ -15,10 +16,22 @@ from app.services.parser import (
     normalize_cards,
     pick_default_deck,
 )
-from app.utils.text import truncate_source, guess_language_ptbr_en
+from app.utils.text import (
+    truncate_source,
+    strip_src_lines,
+    detect_language_pt_en_es,
+)
 from app.services.storage import save_analysis, save_cards
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
+logger = logging.getLogger(__name__)
+
+SYSTEM_PTBR = (
+    "Você é um gerador de flashcards.\n"
+    "Fora do campo SRC, escreva SEMPRE em Português do Brasil (pt-BR).\n"
+    "No campo SRC, COPIE literalmente do texto-fonte (pode estar em inglês).\n"
+    "NUNCA responda em espanhol.\n"
+)
 
 
 class TextRequest(BaseModel):
@@ -131,10 +144,74 @@ def _filter_cards_with_valid_src(cards, src_text: str):
     return kept
 
 
+# =============================================================================
+# BÔNUS: relaxamento do SRC quando derruba demais
+# =============================================================================
+
+def _dedupe_key(card: dict) -> str:
+    return (card.get("front") or "").strip() + "||" + (card.get("back") or "").strip()
+
+
+def _relax_src_if_needed(cards_with_src, cards_raw, *, target_min: int, target_max: int):
+    """
+    Se o filtro SRC for restritivo demais (ex.: gerou 20, mas só 3 passaram),
+    mantém os cards com SRC válido e completa até target_min com cards sem SRC.
+
+    Regra prática:
+    - só relaxa se cards_raw >= target_min e cards_with_src < target_min
+    """
+    if not cards_raw:
+        return cards_with_src
+
+    if len(cards_raw) < target_min:
+        return cards_with_src
+
+    if len(cards_with_src) >= target_min:
+        return cards_with_src
+
+    out = list(cards_with_src or [])
+    seen = {_dedupe_key(c) for c in out}
+
+    for c in cards_raw:
+        if len(out) >= target_max:
+            break
+        k = _dedupe_key(c)
+        if not k or k in seen:
+            continue
+        c2 = dict(c)
+        c2.pop("src", None)  # os extras entram sem SRC
+        out.append(c2)
+        seen.add(k)
+        if len(out) >= target_min:
+            break
+
+    return out
+
+
+def _cards_lang_from_cards(cards) -> str:
+    """
+    Detecta o idioma a partir do conteúdo REAL que importa (front/back),
+    ao invés do `raw` inteiro (que tem Q:/A:/SRC: e pode confundir em textos curtos).
+
+    Usa apenas langid por baixo (detect_language_pt_en_es).
+    """
+    blob = "\n".join(
+        ((c.get("front") or "") + " " + (c.get("back") or "")).strip()
+        for c in (cards or [])
+    ).strip()
+
+    if not blob:
+        return "unknown"
+
+    return detect_language_pt_en_es(blob)
+
+
 @router.post("/analyze-text-stream")
 async def analyze_text_stream(request: TextRequest):
     async def generate():
         try:
+            logger.info("Ollama analysis model (embeddings): %s", OLLAMA_ANALYSIS_MODEL)
+
             from app.services.ollama import ollama_embed, chunk_text, cosine_similarity
 
             yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing'})}\n\n"
@@ -178,6 +255,8 @@ async def analyze_text_stream(request: TextRequest):
 async def generate_cards_stream(request: CardsRequest):
     async def generate():
         try:
+            logger.info("Ollama generation model (cards): %s", OLLAMA_MODEL)
+
             yield f"event: stage\ndata: {json.dumps({'stage': 'generation_started'})}\n\n"
 
             src = truncate_source(request.text or "")
@@ -187,11 +266,16 @@ async def generate_cards_stream(request: CardsRequest):
             if card_type not in ("basic", "cloze", "both"):
                 card_type = "both"
 
-            # Quantidade alvo: suficiente sem incentivar alucinação
+            # Quantidade alvo: ajusta por tamanho do trecho selecionado
             word_count = len(src.split())
-            min_expected = max(8, word_count // 120)  # ~1 card / 120 palavras (piso 8)
-            target_min = max(10, min_expected)
-            target_max = min(40, max(16, target_min * 2))
+            if word_count < 140:
+                target_min, target_max = 3, 8
+            elif word_count < 320:
+                target_min, target_max = 5, 12
+            elif word_count < 700:
+                target_min, target_max = 8, 18
+            else:
+                target_min, target_max = 10, 30
 
             type_instruction = {
                 "basic": "Gere APENAS cards [BASIC].",
@@ -214,6 +298,7 @@ TAREFA:
 - Se algo não estiver no texto, NÃO invente.
 - Se o texto estiver em inglês, traduza os conceitos para PT-BR (sem adicionar fatos).
 - IMPORTANTE: O campo SRC é uma CITAÇÃO LITERAL do texto-fonte; se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido).
+- Fora do campo SRC, NUNCA use inglês.
 
 QUANTIDADE:
 - Gere entre {target_min} e {target_max} cards.
@@ -241,8 +326,9 @@ COMECE:
 """.strip()
 
             raw = ""
-            options = {"num_predict": 4096, "temperature": 0.2}
-            async for piece in ollama_generate_stream(OLLAMA_MODEL, prompt, system=None, options=options):
+            # temperature 0.0 tende a reduzir “desobediência” de idioma
+            options = {"num_predict": 4096, "temperature": 0.0}
+            async for piece in ollama_generate_stream(OLLAMA_MODEL, prompt, system=SYSTEM_PTBR, options=options):
                 raw += piece
 
             # Parse/normalize (QA -> JSON fallback)
@@ -265,15 +351,45 @@ COMECE:
                 cards = cards_raw
                 yield f"event: stage\ndata: {json.dumps({'stage': 'src_bypassed', 'count': len(cards)})}\n\n"
 
-            lang_hint = guess_language_ptbr_en(raw)
+            # BÔNUS: relaxa SRC se ele derrubar demais e impedir o mínimo
+            cards_relaxed = _relax_src_if_needed(cards, cards_raw, target_min=target_min, target_max=target_max)
+            if len(cards_relaxed) != len(cards):
+                yield (
+                    "event: stage\ndata: "
+                    + json.dumps(
+                        {
+                            "stage": "src_relaxed",
+                            "kept_with_src": len(cards),
+                            "total_after_relax": len(cards_relaxed),
+                            "target_min": target_min,
+                        }
+                    )
+                    + "\n\n"
+                )
+                cards = cards_relaxed
+
+            # Idioma detectado a partir do conteúdo (front/back), não do raw
+            out_lang = _cards_lang_from_cards(cards)
+            yield f"event: stage\ndata: {json.dumps({'stage': 'lang_check', 'lang': out_lang, 'cards': len(cards), 'min': target_min})}\n\n"
 
             # Repair pass se:
             # - não gerou nada útil
-            # - output veio em inglês (fora do SRC)
+            # - output NÃO veio em pt-br
             # - ou ficou abaixo do mínimo esperado
-            if not cards or lang_hint == "en" or len(cards) < target_min:
-                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_pass', 'reason': f'lang={lang_hint}, cards={len(cards)}, min={target_min}'})}\n\n"
+            if not cards or out_lang != "pt-br" or len(cards) < target_min:
+                yield (
+                    "event: stage\ndata: "
+                    + json.dumps(
+                        {
+                            "stage": "repair_pass",
+                            "reason": f"lang={out_lang}, cards={len(cards)}, min={target_min}",
+                        }
+                    )
+                    + "\n\n"
+                )
 
+                # IMPORTANTE: NÃO incluir "SAÍDA RUIM: {raw}" aqui,
+                # isso estava puxando o modelo pro inglês.
                 repair_prompt = f"""
 CONTEÚDO-FONTE (use SOMENTE isso como base):
 {src}
@@ -281,8 +397,6 @@ CONTEÚDO-FONTE (use SOMENTE isso como base):
 {("CONTEXTO (opcional):\n" + ctx) if ctx else ""}
 
 {checklist_block if checklist_block else ""}
-
-A saída abaixo está INCOMPLETA ou INCORRETA.
 
 Reescreva em PT-BR seguindo RIGOROSAMENTE o formato e garantindo que CADA card tenha SRC literal (5–25 palavras) do texto-fonte.
 Se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido). Fora do campo SRC, escreva em PT-BR.
@@ -298,6 +412,8 @@ A: Extra: ...
 SRC: "..."
 
 PROIBIDO:
+- Qualquer idioma que NÃO seja Português do Brasil (pt-BR) fora do campo SRC
+- Espanhol fora do campo SRC
 - Inglês fora do campo SRC
 - Listas (bullets, números)
 - Markdown
@@ -305,18 +421,15 @@ PROIBIDO:
 - Múltiplas lacunas cloze
 - Cards sobre as “Diretrizes de Qualidade”
 
-SAÍDA RUIM:
-{raw}
-
-REESCREVA CORRETAMENTE:
+COMECE DIRETO (sem explicar nada):
 """.strip()
 
                 raw2 = ""
                 async for piece in ollama_generate_stream(
                     OLLAMA_MODEL,
                     repair_prompt,
-                    system=None,
-                    options={"num_predict": 4096, "temperature": 0.2},
+                    system=SYSTEM_PTBR,
+                    options={"num_predict": 4096, "temperature": 0.0},
                 ):
                     raw2 += piece
 
@@ -339,8 +452,29 @@ REESCREVA CORRETAMENTE:
                     cards2 = cards2_raw
                     yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_bypassed', 'count': len(cards2)})}\n\n"
 
+                # BÔNUS também no repair
+                cards2_relaxed = _relax_src_if_needed(cards2, cards2_raw, target_min=target_min, target_max=target_max)
+                if len(cards2_relaxed) != len(cards2):
+                    yield (
+                        "event: stage\ndata: "
+                        + json.dumps(
+                            {
+                                "stage": "repair_src_relaxed",
+                                "kept_with_src": len(cards2),
+                                "total_after_relax": len(cards2_relaxed),
+                                "target_min": target_min,
+                            }
+                        )
+                        + "\n\n"
+                    )
+                    cards2 = cards2_relaxed
+
+                # aceita a versão reparada se existir
                 if cards2:
                     cards = cards2
+
+                out_lang2 = _cards_lang_from_cards(cards)
+                yield f"event: stage\ndata: {json.dumps({'stage': 'lang_check_after_repair', 'lang': out_lang2, 'cards': len(cards)})}\n\n"
 
             deck = pick_default_deck(request.deckOptions or "General")
 
