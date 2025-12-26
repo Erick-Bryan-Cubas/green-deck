@@ -1,3 +1,4 @@
+<!-- frontend/src/pages/GeneratorPage.vue -->
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
@@ -87,6 +88,301 @@ function formatSessionStamp(iso) {
   }
 }
 
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n))
+}
+
+// ============================================================
+// Modo Leitura (Kindle full-screen + paginação real)
+// Melhorias:
+// - scroller = .ql-container (padding no container)
+// - step correto = (contentWidth + gap)
+// - snap suave após scroll
+// - tema kindle claro só no campo de leitura/edição (header intacto)
+// ============================================================
+const LS_READER_KEY = 'spaced-rep.reader.v2'
+const immersiveReader = ref(false)
+const readerTwoPage = ref(true) // "spread" (2 páginas) quando a tela permitir
+const readerFontScale = ref(1) // 1.0 = normal
+const readerDark = ref(false) // false = Kindle (claro); true = "como está agora" (escuro)
+
+const readerSurfaceRef = ref(null) // wrapper DOM em volta do QuillEditor
+const readerScrollerEl = ref(null) // ✅ .ql-container (scroll horizontal)
+const readerPage = ref(1)
+const readerTotalPages = ref(1)
+
+const readerGapPx = ref(56)
+const readerPadXPx = ref(64)
+const readerPadYPx = ref(48)
+const readerPageWidthPx = ref(680)
+
+// ✅ stride real entre páginas/spreads
+const readerStepPx = ref(0)
+
+const isKindleTheme = computed(() => immersiveReader.value && !readerDark.value)
+
+const readerVars = computed(() => ({
+  '--reader-scale': String(readerFontScale.value),
+  '--reader-gap': `${readerGapPx.value}px`,
+  '--reader-pad-x': `${readerPadXPx.value}px`,
+  '--reader-pad-y': `${readerPadYPx.value}px`,
+  '--reader-page-width': `${readerPageWidthPx.value}px`
+}))
+
+function toggleReader() {
+  immersiveReader.value = !immersiveReader.value
+  if (immersiveReader.value) {
+    nextTick(() => {
+      editorRef.value?.focus?.()
+    })
+  }
+}
+
+function toggleReaderTheme() {
+  readerDark.value = !readerDark.value
+  requestReaderLayout({ preserveProgress: true })
+}
+
+function readerFontMinus() {
+  const progress = getReaderProgress()
+  readerFontScale.value = clamp(Number(readerFontScale.value) - 0.05, 0.85, 1.6)
+  nextTick(() => {
+    requestReaderLayout({ preserveProgress: true, explicitProgress: progress })
+  })
+}
+function readerFontPlus() {
+  const progress = getReaderProgress()
+  readerFontScale.value = clamp(Number(readerFontScale.value) + 0.05, 0.85, 1.6)
+  nextTick(() => {
+    requestReaderLayout({ preserveProgress: true, explicitProgress: progress })
+  })
+}
+function toggleTwoPage() {
+  const progress = getReaderProgress()
+  readerTwoPage.value = !readerTwoPage.value
+  nextTick(() => {
+    requestReaderLayout({ preserveProgress: true, explicitProgress: progress })
+  })
+}
+
+// ✅ scroller agora é o container do Quill
+function resolveReaderScroller() {
+  const host = readerSurfaceRef.value
+  if (!host?.querySelector) return null
+  return host.querySelector('.ql-container') || null
+}
+
+function attachReaderScroller() {
+  const el = resolveReaderScroller()
+  readerScrollerEl.value = el
+  if (!el) return
+  el.addEventListener('scroll', onReaderScroll, { passive: true })
+  requestReaderLayout({ preserveProgress: true })
+}
+
+function detachReaderScroller() {
+  const el = readerScrollerEl.value
+  if (!el) return
+  el.removeEventListener('scroll', onReaderScroll)
+  readerScrollerEl.value = null
+}
+
+let readerScrollRaf = null
+let readerSnapTimer = null
+
+function onReaderScroll() {
+  if (!immersiveReader.value) return
+
+  if (readerScrollRaf) cancelAnimationFrame(readerScrollRaf)
+  readerScrollRaf = requestAnimationFrame(() => {
+    updateReaderPageStats()
+  })
+
+  // ✅ snap “macio” para a página mais próxima após o usuário parar de rolar
+  if (readerSnapTimer) clearTimeout(readerSnapTimer)
+  readerSnapTimer = setTimeout(() => {
+    snapReaderToNearestPage()
+  }, 140)
+}
+
+function computeReaderLayoutMetrics() {
+  const el = readerScrollerEl.value
+  if (!el) return
+
+  const viewW = Math.max(1, el.clientWidth || 1)
+  const padX = readerPadXPx.value
+  const gap = readerGapPx.value
+
+  const contentW = Math.max(320, viewW - 2 * padX)
+
+  // ✅ decide spread baseado no contentW (e não no viewW bruto)
+  const allowSpread = readerTwoPage.value && contentW >= 900
+  const pageW = allowSpread ? Math.floor((contentW - gap) / 2) : Math.floor(contentW)
+
+  readerPageWidthPx.value = clamp(pageW, 320, 1400)
+
+  // ✅ stride real: largura do “conteúdo visível” + gap
+  readerStepPx.value = Math.max(1, Math.floor(contentW + gap))
+}
+
+function updateReaderPageStats() {
+  const el = readerScrollerEl.value
+  if (!el) {
+    readerPage.value = 1
+    readerTotalPages.value = 1
+    return
+  }
+
+  if (!readerStepPx.value) computeReaderLayoutMetrics()
+  const step = Math.max(1, readerStepPx.value)
+
+  const maxScroll = Math.max(0, (el.scrollWidth || el.clientWidth) - el.clientWidth)
+  const total = Math.max(1, Math.ceil(maxScroll / step) + 1)
+
+  const current = clamp(Math.round((el.scrollLeft || 0) / step) + 1, 1, total)
+
+  readerTotalPages.value = total
+  readerPage.value = current
+}
+
+function snapReaderToNearestPage() {
+  const el = readerScrollerEl.value
+  if (!el || !immersiveReader.value) return
+
+  if (!readerStepPx.value) computeReaderLayoutMetrics()
+  const step = Math.max(1, readerStepPx.value)
+
+  const maxScroll = Math.max(0, (el.scrollWidth || el.clientWidth) - el.clientWidth)
+  const maxIdx = Math.max(0, Math.ceil(maxScroll / step))
+  const idx = clamp(Math.round((el.scrollLeft || 0) / step), 0, maxIdx)
+  const target = Math.min(idx * step, maxScroll)
+
+  el.scrollTo({ left: target, top: 0, behavior: 'smooth' })
+}
+
+function getReaderProgress() {
+  const el = readerScrollerEl.value
+  if (!el) return 0
+  const maxScroll = Math.max(1, (el.scrollWidth || el.clientWidth) - el.clientWidth)
+  return clamp((el.scrollLeft || 0) / maxScroll, 0, 1)
+}
+
+function setReaderProgress(progress01) {
+  const el = readerScrollerEl.value
+  if (!el) return
+  const maxScroll = Math.max(0, (el.scrollWidth || el.clientWidth) - el.clientWidth)
+  const target = clamp(progress01, 0, 1) * maxScroll
+  el.scrollTo({ left: target, top: 0, behavior: 'auto' })
+  updateReaderPageStats()
+}
+
+function readerScrollToPage(pageNumber, behavior = 'smooth') {
+  const el = readerScrollerEl.value
+  if (!el) return
+
+  if (!readerStepPx.value) computeReaderLayoutMetrics()
+  const step = Math.max(1, readerStepPx.value)
+
+  const maxScroll = Math.max(0, (el.scrollWidth || el.clientWidth) - el.clientWidth)
+  const total = Math.max(1, Math.ceil(maxScroll / step) + 1)
+
+  const p = clamp(pageNumber, 1, total)
+  const target = Math.min((p - 1) * step, maxScroll)
+
+  el.scrollTo({ left: target, top: 0, behavior })
+  readerPage.value = p
+  readerTotalPages.value = total
+}
+
+function readerPrevPage() {
+  readerScrollToPage(readerPage.value - 1)
+}
+function readerNextPage() {
+  readerScrollToPage(readerPage.value + 1)
+}
+function readerFirstPage() {
+  readerScrollToPage(1)
+}
+function readerLastPage() {
+  readerScrollToPage(readerTotalPages.value)
+}
+
+let readerResizeObserver = null
+let winResizeHandler = null
+
+function requestReaderLayout({ preserveProgress = false, explicitProgress = null } = {}) {
+  if (!immersiveReader.value) return
+
+  const beforeProgress = preserveProgress ? (explicitProgress ?? getReaderProgress()) : 0
+
+  computeReaderLayoutMetrics()
+
+  requestAnimationFrame(() => {
+    if (preserveProgress) setReaderProgress(beforeProgress)
+    updateReaderPageStats()
+    // ✅ garante alinhamento após mudanças de fonte/1p/2p
+    snapReaderToNearestPage()
+  })
+}
+
+watch([immersiveReader, readerTwoPage, readerFontScale, readerDark], () => {
+  try {
+    localStorage.setItem(
+      LS_READER_KEY,
+      JSON.stringify({
+        immersiveReader: immersiveReader.value,
+        readerTwoPage: readerTwoPage.value,
+        readerFontScale: readerFontScale.value,
+        readerDark: readerDark.value
+      })
+    )
+  } catch {}
+})
+
+// Quando entra/sai do modo leitura, prepara scroller + observer
+watch(
+  immersiveReader,
+  async (on) => {
+    if (on) {
+      await nextTick()
+      attachReaderScroller()
+
+      // ResizeObserver no scroller (melhor que window.resize)
+      try {
+        if (readerResizeObserver) readerResizeObserver.disconnect()
+        const el = readerScrollerEl.value
+        if (el && 'ResizeObserver' in window) {
+          readerResizeObserver = new ResizeObserver(() => {
+            requestReaderLayout({ preserveProgress: true })
+          })
+          readerResizeObserver.observe(el)
+        }
+      } catch {}
+
+      // fallback
+      winResizeHandler = () => requestReaderLayout({ preserveProgress: true })
+      window.addEventListener('resize', winResizeHandler)
+
+      requestReaderLayout({ preserveProgress: true })
+    } else {
+      detachReaderScroller()
+      if (readerResizeObserver) {
+        try {
+          readerResizeObserver.disconnect()
+        } catch {}
+        readerResizeObserver = null
+      }
+      if (winResizeHandler) {
+        window.removeEventListener('resize', winResizeHandler)
+        winResizeHandler = null
+      }
+      readerPage.value = 1
+      readerTotalPages.value = 1
+    }
+  },
+  { flush: 'post' }
+)
+
 // ============================================================
 // Sessões (localStorage) — texto + marcações (Delta) + cards + contexto
 // ============================================================
@@ -132,13 +428,11 @@ function persistSessions(list) {
     const capped = list.slice(0, MAX_SESSIONS)
     const raw = JSON.stringify(capped)
     if (raw.length > MAX_LOCALSTORAGE_CHARS) {
-      // Não trava o app, só alerta e não salva
       notify('Conteúdo muito grande — não foi possível salvar a sessão no localStorage.', 'warn', 6000)
       return
     }
     localStorage.setItem(LS_SESSIONS_KEY, raw)
   } catch {
-    // storage negado/cheio
     notify('Falha ao salvar sessão (storage indisponível).', 'warn', 5000)
   }
 }
@@ -171,7 +465,6 @@ function upsertSession(session) {
   if (idx >= 0) sessions.value.splice(idx, 1, next)
   else sessions.value.unshift(next)
 
-  // mantém ordenado por "updatedAt" desc
   sessions.value.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
   sessions.value = sessions.value.slice(0, MAX_SESSIONS)
 
@@ -224,7 +517,6 @@ function buildActiveSessionSnapshot() {
   const plainText = String(lastFullText.value || '')
   const title = sessionTitleFromText(plainText)
 
-  // pega delta preferencialmente do último evento; se faltar, consulta o editor
   const delta = lastEditorDelta.value ?? editorRef.value?.getDelta?.() ?? null
 
   return {
@@ -246,7 +538,6 @@ function schedulePersistActiveSession() {
   persistSessionTimer = setTimeout(() => {
     const snap = buildActiveSessionSnapshot()
 
-    // não salva sessão totalmente vazia
     const hasAny =
       normalizePlainText(snap.plainText).length > 0 ||
       (Array.isArray(snap.cards) && snap.cards.length > 0) ||
@@ -269,23 +560,22 @@ async function restoreSessionById(id) {
     activeSessionId.value = s.id
     persistActiveSessionId(s.id)
 
-    // restaura editor (texto + marcações)
     editorRef.value?.setDelta?.(s.quillDelta)
 
-    // restaura cards + contexto
     cards.value = Array.isArray(s.cards) ? s.cards : []
     documentContext.value = s.documentContext || ''
 
-    // sincroniza “last*”
     lastFullText.value = s.plainText || ''
     lastEditorDelta.value = s.quillDelta ?? null
-    lastEditorHtml.value = '' // não é essencial persistir html
+    lastEditorHtml.value = ''
     lastTextForAnalysis.value = normalizePlainText(s.plainText || '')
 
     await nextTick()
     notify(`Sessão restaurada: ${s.title}`, 'success', 3200)
+
+    // se estiver no leitor, recalcula páginas
+    if (immersiveReader.value) requestReaderLayout({ preserveProgress: true })
   } finally {
-    // solta o lock após o Quill emitir seus eventos de setContents
     setTimeout(() => {
       isRestoringSession.value = false
     }, 0)
@@ -295,7 +585,6 @@ async function restoreSessionById(id) {
 function clearCurrentSession() {
   const id = activeSessionId.value
 
-  // limpa UI
   cards.value = []
   documentContext.value = ''
   lastFullText.value = ''
@@ -303,27 +592,24 @@ function clearCurrentSession() {
   lastEditorHtml.value = ''
   lastTextForAnalysis.value = ''
 
-  // limpa editor (texto + marcações)
   editorRef.value?.setDelta?.(null)
 
-  // remove sessão atual do storage (se existir)
   if (id) {
     deleteSessionById(id)
   }
 
-  // cria uma nova sessão vazia como “ativa”
   activeSessionId.value = null
   persistActiveSessionId(null)
   ensureActiveSession()
 
   notify('Sessão atual limpa.', 'info', 3000)
+
+  if (immersiveReader.value) requestReaderLayout({ preserveProgress: false })
 }
 
 function newSession() {
-  // garante que a sessão atual foi persistida antes de trocar
   schedulePersistActiveSession()
 
-  // limpa UI/editor e cria nova sessão
   cards.value = []
   documentContext.value = ''
   lastFullText.value = ''
@@ -348,6 +634,13 @@ function newSession() {
   })
 
   notify('Nova sessão criada.', 'success', 2200)
+
+  if (immersiveReader.value) {
+    nextTick(() => {
+      requestReaderLayout({ preserveProgress: false })
+      readerFirstPage()
+    })
+  }
 }
 
 // ============================================================
@@ -366,8 +659,8 @@ const ankiModelsData = ref(null)
 const lastFullText = ref('')
 const lastEditorDelta = ref(null)
 const lastEditorHtml = ref('')
-const lastTextForAnalysis = ref('') // texto analisado por último (normalizado)
-const lastNormalizedTextOnChange = ref('') // para detectar mudanças reais sem depender do isTextMutation
+const lastTextForAnalysis = ref('')
+const lastNormalizedTextOnChange = ref('')
 const hasDocumentContext = computed(() => !!documentContext.value)
 
 // Chaves
@@ -573,7 +866,6 @@ function scheduleAnalyze(fullText) {
   analyzeDebounce = setTimeout(() => {
     const normalized = normalizePlainText(fullText)
     if (normalized.length > 100 && !isAnalyzing.value) {
-      // evita análise redundante do mesmo texto
       if (normalized === lastTextForAnalysis.value) return
       analyzeDocumentContext(fullText)
     }
@@ -597,14 +889,12 @@ async function analyzeDocumentContext(text) {
     addLog('Text analysis completed', 'success')
     if (contextSummary) documentContext.value = contextSummary
 
-    // marca o texto analisado
     lastTextForAnalysis.value = normalized
 
     stopTimer()
     completeProgress()
     notify('Análise concluída. A qualidade dos cards tende a melhorar.', 'success', 3800)
 
-    // persistir sessão (contexto mudou)
     schedulePersistActiveSession()
   } catch (error) {
     console.error('Error analyzing document:', error)
@@ -762,20 +1052,12 @@ function escapeHtml(s) {
 function renderMarkdownSafe(text) {
   let t = escapeHtml(text)
 
-  // inline code
   t = t.replace(/`([^`]+)`/g, '<code>$1</code>')
-
-  // bold / italic
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-
-  // cloze highlight {{c1::...}}
   t = t.replace(/\{\{c\d+::([^}]+)\}\}/g, '<span class="cloze">$1</span>')
-
-  // normalize newlines
   t = t.replace(/\r\n/g, '\n')
 
-  // listas simples (- item)
   const lines = t.split('\n')
   let inList = false
   const out = []
@@ -1012,8 +1294,6 @@ async function exportToAnkiConfirm() {
 // ============================================================
 // Header menus
 // ============================================================
-
-// Menu principal (ellipsis)
 const menuRef = ref(null)
 const menuItems = computed(() => [
   {
@@ -1042,7 +1322,7 @@ function toggleMenu(event) {
   menuRef.value?.toggle(event)
 }
 
-// Menu de sessões (selecionar/restaurar)
+// Menu de sessões
 const sessionsMenuRef = ref(null)
 function toggleSessionsMenu(event) {
   sessionsMenuRef.value?.toggle(event)
@@ -1158,26 +1438,26 @@ function onContentChanged(payload) {
   const fullText = payload?.fullText ?? ''
   const html = payload?.html ?? ''
   const delta = payload?.delta ?? null
-  const isTextMutationFromEditor = payload?.isTextMutation // pode vir undefined se seu QuillEditor ainda não emite
+  const isTextMutationFromEditor = payload?.isTextMutation
 
   lastFullText.value = fullText
   lastEditorHtml.value = html
   if (delta) lastEditorDelta.value = delta
 
-  // persiste sempre (inclusive highlights)
   schedulePersistActiveSession()
 
-  // NÃO reanalisa ao marcar highlight:
-  // 1) se o editor informou que não houve mutação de texto, sai
   if (isTextMutationFromEditor === false) return
 
-  // 2) fallback seguro: se o texto normalizado não mudou, foi formatação
   const normalized = normalizePlainText(fullText)
   if (normalized === lastNormalizedTextOnChange.value) return
   lastNormalizedTextOnChange.value = normalized
 
-  // análise só se há texto suficiente
   if (normalized.length > 100) scheduleAnalyze(fullText)
+
+  // se estiver lendo, recalcula o layout/páginas (mantendo progresso)
+  if (immersiveReader.value) {
+    requestReaderLayout({ preserveProgress: true })
+  }
 }
 
 // ============================================================
@@ -1213,7 +1493,15 @@ onMounted(async () => {
   sessions.value = loadSessions()
   activeSessionId.value = loadActiveSessionId()
 
-  // se não tem ativa, cria uma
+  // carrega preferências do modo leitura
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_READER_KEY) || '{}')
+    immersiveReader.value = !!saved.immersiveReader
+    readerTwoPage.value = saved.readerTwoPage ?? true
+    readerFontScale.value = saved.readerFontScale ?? 1
+    readerDark.value = saved.readerDark ?? false
+  } catch {}
+
   ensureActiveSession()
 
   loadStoredKeysToForm()
@@ -1225,8 +1513,56 @@ onMounted(async () => {
     notify('Sessões encontradas. Use “Sessões” para restaurar.', 'info', 4500)
   }
 
-  // Ctrl+Enter gera
+  // atalhos
   globalKeyHandler = (e) => {
+    // ESC sai do modo leitura
+    if (e.key === 'Escape' && immersiveReader.value) {
+      e.preventDefault()
+      immersiveReader.value = false
+      return
+    }
+
+    // Paginação (modo leitura)
+    if (immersiveReader.value) {
+      const key = e.key
+
+      // prev/next
+      if (key === 'ArrowLeft' || key === 'PageUp') {
+        e.preventDefault()
+        readerPrevPage()
+        return
+      }
+      if (key === 'ArrowRight' || key === 'PageDown' || key === ' ') {
+        e.preventDefault()
+        readerNextPage()
+        return
+      }
+      if (key === 'Home') {
+        e.preventDefault()
+        readerFirstPage()
+        return
+      }
+      if (key === 'End') {
+        e.preventDefault()
+        readerLastPage()
+        return
+      }
+
+      // Ctrl +/- para fonte
+      const isCtrl = e.ctrlKey || e.metaKey
+      if (isCtrl && (key === '=' || key === '+')) {
+        e.preventDefault()
+        readerFontPlus()
+        return
+      }
+      if (isCtrl && key === '-') {
+        e.preventDefault()
+        readerFontMinus()
+        return
+      }
+    }
+
+    // Ctrl+Enter gera cards (modo normal)
     const isCtrlEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter'
     if (!isCtrlEnter) return
     if (hasSelection.value && !generating.value && !isAnalyzing.value) {
@@ -1235,6 +1571,13 @@ onMounted(async () => {
     }
   }
   window.addEventListener('keydown', globalKeyHandler)
+
+  // Se iniciar já no modo leitura, garante layout depois de montar
+  if (immersiveReader.value) {
+    await nextTick()
+    attachReaderScroller()
+    requestReaderLayout({ preserveProgress: true })
+  }
 })
 
 onBeforeUnmount(() => {
@@ -1242,6 +1585,19 @@ onBeforeUnmount(() => {
   if (analyzeDebounce) clearTimeout(analyzeDebounce)
   if (persistSessionTimer) clearTimeout(persistSessionTimer)
   if (globalKeyHandler) window.removeEventListener('keydown', globalKeyHandler)
+
+  if (readerScrollRaf) cancelAnimationFrame(readerScrollRaf)
+  if (readerSnapTimer) clearTimeout(readerSnapTimer)
+
+  detachReaderScroller()
+  if (readerResizeObserver) {
+    try {
+      readerResizeObserver.disconnect()
+    } catch {}
+  }
+  if (winResizeHandler) {
+    window.removeEventListener('resize', winResizeHandler)
+  }
 })
 </script>
 
@@ -1252,7 +1608,15 @@ onBeforeUnmount(() => {
   <!-- Menu popup de sessões -->
   <Menu ref="sessionsMenuRef" :model="sessionsMenuItems" popup />
 
-  <div class="app-shell" :class="{ 'has-context': hasDocumentContext }">
+  <div
+    class="app-shell"
+    :class="{
+      'has-context': hasDocumentContext,
+      'reader-mode': immersiveReader,
+      'reader-kindle': immersiveReader && !readerDark,
+      'reader-dark': immersiveReader && readerDark
+    }"
+  >
     <!-- HEADER -->
     <Toolbar class="app-header">
       <template #start>
@@ -1264,12 +1628,11 @@ onBeforeUnmount(() => {
 
             <div class="brand-text">
               <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
-              <div class="brand-subtitle">
-                Flashcard generator powered by AI 🎈
-              </div>
+              <div v-if="!immersiveReader" class="brand-subtitle">Flashcard generator powered by AI 🎈</div>
             </div>
           </div>
-          <div class="header-badges">
+
+          <div v-if="!immersiveReader" class="header-badges">
             <Tag v-if="hasDocumentContext" severity="success" class="pill">
               <i class="pi pi-sparkles mr-2" /> Contexto pronto
             </Tag>
@@ -1281,12 +1644,21 @@ onBeforeUnmount(() => {
               <i class="pi pi-history mr-2" /> Sessões: {{ sessions.length }}
             </Tag>
           </div>
+
+          <div v-else class="header-badges">
+            <Tag class="pill subtle">
+              <i class="pi pi-book mr-2" /> Leitura
+            </Tag>
+            <Tag class="pill subtle">
+              <i class="pi pi-file mr-2" /> Página {{ readerPage }} / {{ readerTotalPages }}
+            </Tag>
+          </div>
         </div>
       </template>
 
       <template #end>
         <div class="header-right">
-          <div class="status-wrap">
+          <div v-if="!immersiveReader" class="status-wrap">
             <div class="status-pills">
               <div class="status-item">
                 <AnkiStatus />
@@ -1302,72 +1674,127 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <Divider layout="vertical" class="hdr-divider" />
+          <Divider v-if="!immersiveReader" layout="vertical" class="hdr-divider" />
 
           <div class="controls">
-            <Select
-              v-model="cardType"
-              :options="cardTypeOptions"
-              optionLabel="label"
-              optionValue="value"
-              class="cardtype"
-              :disabled="generating || isAnalyzing"
-            />
+            <!-- Controles do modo leitura -->
+            <template v-if="immersiveReader">
+              <Button
+                icon="pi pi-angle-double-left"
+                severity="secondary"
+                text
+                @click="readerFirstPage"
+                :disabled="readerPage <= 1"
+                title="Primeira (Home)"
+              />
+              <Button
+                icon="pi pi-angle-left"
+                severity="secondary"
+                text
+                @click="readerPrevPage"
+                :disabled="readerPage <= 1"
+                title="Anterior (← / PageUp)"
+              />
 
-            <Button
-              icon="pi pi-bolt"
-              label="Create Cards"
-              class="cta"
-              :disabled="!hasSelection || generating || isAnalyzing"
-              :loading="generating"
-              :title="hasSelection ? 'Ctrl+Enter também funciona' : 'Selecione um trecho no editor'"
-              @click="generateCardsFromSelection"
-            />
+              <Tag class="pill subtle page-chip">
+                <i class="pi pi-file mr-2" /> {{ readerPage }} / {{ readerTotalPages }}
+              </Tag>
 
-            <Button
-              icon="pi pi-database"
-              label="Browser"
-              severity="secondary"
-              outlined
-              @click="router.push('/browser')"
-            />
-            <Button
-              icon="pi pi-chart-bar"
-              label="Dashboard"
-              outlined
-              @click="router.push('/dashboard')"
-            />
+              <Button
+                icon="pi pi-angle-right"
+                severity="secondary"
+                text
+                @click="readerNextPage"
+                :disabled="readerPage >= readerTotalPages"
+                title="Próxima (→ / Space / PageDown)"
+              />
+              <Button
+                icon="pi pi-angle-double-right"
+                severity="secondary"
+                text
+                @click="readerLastPage"
+                :disabled="readerPage >= readerTotalPages"
+                title="Última (End)"
+              />
 
-            <Button
-              icon="pi pi-history"
-              label="Sessões"
-              severity="secondary"
-              outlined
-              :disabled="!savedSessionExists"
-              @click="toggleSessionsMenu"
-            />
+              <Divider layout="vertical" class="hdr-divider" />
 
-            <Button
-              icon="pi pi-times"
-              label="Limpar sessão"
-              severity="danger"
-              outlined
-              @click="clearCurrentSession"
-            />
+              <Button icon="pi pi-minus" severity="secondary" text @click="readerFontMinus" title="Diminuir fonte (Ctrl -)" />
+              <Tag class="pill subtle">{{ Math.round(readerFontScale * 100) }}%</Tag>
+              <Button icon="pi pi-plus" severity="secondary" text @click="readerFontPlus" title="Aumentar fonte (Ctrl +)" />
 
-            <Button
-              icon="pi pi-list"
-              label="Logs"
-              severity="secondary"
-              outlined
-              @click="logsVisible = true"
-            />
+              <Button
+                icon="pi pi-columns"
+                severity="secondary"
+                :outlined="!readerTwoPage"
+                :text="readerTwoPage"
+                @click="toggleTwoPage"
+                title="Alternar 1p / 2p (spread)"
+              />
 
-            <Button icon="pi pi-ellipsis-v" severity="secondary" outlined @click="toggleMenu" />
-            <Menu ref="menuRef" :model="menuItems" popup />
+              <Button
+                :icon="readerDark ? 'pi pi-sun' : 'pi pi-moon'"
+                severity="secondary"
+                text
+                @click="toggleReaderTheme"
+                :title="readerDark ? 'Modo claro (Kindle)' : 'Modo escuro'"
+              />
+
+              <Button icon="pi pi-times" severity="secondary" outlined @click="toggleReader" title="Sair (Esc)" />
+            </template>
+
+            <!-- Controles normais -->
+            <template v-else>
+              <Button
+                icon="pi pi-book"
+                :label="immersiveReader ? 'Sair leitura' : 'Leitura'"
+                severity="secondary"
+                outlined
+                @click="toggleReader"
+                title="Ativar modo leitura"
+              />
+
+              <Select
+                v-model="cardType"
+                :options="cardTypeOptions"
+                optionLabel="label"
+                optionValue="value"
+                class="cardtype"
+                :disabled="generating || isAnalyzing"
+              />
+
+              <Button
+                icon="pi pi-bolt"
+                label="Create Cards"
+                class="cta"
+                :disabled="!hasSelection || generating || isAnalyzing"
+                :loading="generating"
+                :title="hasSelection ? 'Ctrl+Enter também funciona' : 'Selecione um trecho no editor'"
+                @click="generateCardsFromSelection"
+              />
+
+              <Button icon="pi pi-database" label="Browser" severity="secondary" outlined @click="router.push('/browser')" />
+              <Button icon="pi pi-chart-bar" label="Dashboard" outlined @click="router.push('/dashboard')" />
+
+              <Button
+                icon="pi pi-history"
+                label="Sessões"
+                severity="secondary"
+                outlined
+                :disabled="!savedSessionExists"
+                @click="toggleSessionsMenu"
+              />
+
+              <Button icon="pi pi-times" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
+
+              <Button icon="pi pi-list" label="Logs" severity="secondary" outlined @click="logsVisible = true" />
+
+              <Button icon="pi pi-ellipsis-v" severity="secondary" outlined @click="toggleMenu" />
+              <Menu ref="menuRef" :model="menuItems" popup />
+            </template>
           </div>
 
-          <div v-if="processingTimerVisible" class="timer-chip">
+          <div v-if="processingTimerVisible && !immersiveReader" class="timer-chip">
             <span class="timer-ico">⏱️</span>
             <span class="timer-text">{{ timerText }}</span>
             <span class="timer-val">{{ timerSeconds }}s</span>
@@ -1380,13 +1807,14 @@ onBeforeUnmount(() => {
     <div class="main">
       <Splitter class="main-splitter" layout="vertical">
         <!-- Editor -->
-        <SplitterPanel :size="58" :minSize="25">
+        <SplitterPanel :size="immersiveReader ? 100 : 58" :minSize="25">
           <div class="panel panel-editor">
             <div class="panel-head">
               <div class="panel-title">
                 <i class="pi pi-pencil mr-2" />
                 Editor
               </div>
+
               <div class="panel-actions">
                 <Tag severity="secondary" class="pill subtle">
                   <i class="pi pi-mouse mr-2" /> Clique direito para opções
@@ -1394,19 +1822,26 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="panel-body">
-              <QuillEditor
-                ref="editorRef"
-                @selection-changed="onSelectionChanged"
-                @content-changed="onContentChanged"
-                @context-menu="onEditorContextMenu"
-              />
+            <div class="panel-body" :class="{ 'reader-body': immersiveReader }">
+              <div
+                ref="readerSurfaceRef"
+                class="editor-surface"
+                :class="{ 'reader-surface': immersiveReader }"
+                :style="immersiveReader ? readerVars : null"
+              >
+                <QuillEditor
+                  ref="editorRef"
+                  @selection-changed="onSelectionChanged"
+                  @content-changed="onContentChanged"
+                  @context-menu="onEditorContextMenu"
+                />
+              </div>
             </div>
           </div>
         </SplitterPanel>
 
         <!-- Cards -->
-        <SplitterPanel :size="42" :minSize="20">
+        <SplitterPanel class="cards-splitter" :size="immersiveReader ? 0 : 42" :minSize="immersiveReader ? 0 : 20">
           <div class="panel panel-output">
             <div class="panel-head">
               <div class="panel-title">
@@ -1423,7 +1858,6 @@ onBeforeUnmount(() => {
                   <InputText v-model="cardSearch" class="search" placeholder="Buscar em front/back/deck..." />
                 </div>
 
-                <!--<div class="export-group"style="display:flex;gap:1rem;align-items:center;">-->
                 <div class="export-group">
                   <Button
                     class="export-btn"
@@ -1524,16 +1958,16 @@ onBeforeUnmount(() => {
 
     <!-- EDIT DIALOG -->
     <Dialog
-        v-model:visible="editVisible"
-        header="Editar Card"
-        modal
-        appendTo="body"
-        :draggable="false"
-        :dismissableMask="true"
-        class="modern-dialog"
-        style="width: min(980px, 96vw);"
+      v-model:visible="editVisible"
+      header="Editar Card"
+      modal
+      appendTo="body"
+      :draggable="false"
+      :dismissableMask="true"
+      class="modern-dialog"
+      style="width: min(980px, 96vw);"
     >
-    <div class="edit-meta">
+      <div class="edit-meta">
         <Tag severity="info" class="pill">
           <i class="pi pi-hashtag mr-2" /> {{ editIndex + 1 }}
         </Tag>
@@ -1544,7 +1978,7 @@ onBeforeUnmount(() => {
 
         <Select
           v-model="editDraft.deck"
-          :options="availableDeckNames.map(x => ({ label: x, value: x }))"
+          :options="availableDeckNames.map((x) => ({ label: x, value: x }))"
           optionLabel="label"
           optionValue="value"
           class="deck-select"
@@ -1606,7 +2040,13 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- PROGRESS -->
-    <Dialog v-model:visible="progressVisible" :header="progressTitle" modal class="modern-dialog" style="width: min(520px, 95vw);">
+    <Dialog
+      v-model:visible="progressVisible"
+      :header="progressTitle"
+      modal
+      class="modern-dialog"
+      style="width: min(520px, 95vw);"
+    >
       <ProgressBar :value="progressValue" />
       <div class="mt-2 text-right">{{ progressValue }}%</div>
     </Dialog>
@@ -1614,7 +2054,8 @@ onBeforeUnmount(() => {
     <!-- API KEYS -->
     <Dialog v-model:visible="apiKeyVisible" header="API Key Setup" modal class="modern-dialog" style="width: min(760px, 96vw);">
       <div class="disclaimer">
-        ⚠️ I vibe coded this whole thing. I know nothing about security. Please don't use API keys with large balances or auto-refills.
+        ⚠️ I vibe coded this whole thing. I know nothing about security. Please don't use API keys with large balances or
+        auto-refills.
       </div>
 
       <div class="grid">
@@ -1683,6 +2124,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* =========================
+   Base
+========================= */
 .app-shell {
   height: 100vh;
   display: flex;
@@ -1742,14 +2186,10 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 24px rgba(0,0,0,0.28);
 }
 
-.brand-title {
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: -0.3px;
-}
-
 .brand-subtitle {
-  font-size: 12.5px;
+  font-size: 13px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-weight: 500;
   opacity: 0.78;
   margin-top: 2px;
 }
@@ -1784,6 +2224,10 @@ onBeforeUnmount(() => {
   opacity: 0.6;
 }
 
+.page-chip {
+  user-select: none;
+}
+
 .timer-chip {
   display: inline-flex;
   align-items: center;
@@ -1809,6 +2253,9 @@ onBeforeUnmount(() => {
   box-shadow: 0 10px 24px rgba(0,0,0,0.22);
 }
 
+/* =========================
+   Panels
+========================= */
 .panel {
   height: 100%;
   min-height: 0;
@@ -2096,7 +2543,7 @@ onBeforeUnmount(() => {
 }
 
 .brand-header-logo {
-  height: 34px;   /* ajuste fino aqui (32–42 costuma ficar ótimo) */
+  height: 34px;
   width: auto;
   display: block;
   user-select: none;
@@ -2108,6 +2555,7 @@ onBeforeUnmount(() => {
     height: 28px;
   }
 }
+
 /* =========================
    Status pills (Header)
 ========================= */
@@ -2146,13 +2594,11 @@ onBeforeUnmount(() => {
   border-radius: 999px;
 }
 
-/* deixa o AnkiStatus/OllamaStatus com “cara de chip” igual */
 .status-pills :deep(.anki-status),
 .status-pills :deep(.ollama-status) {
   border-radius: 10px;
 }
 
-/* some com labels em telas pequenas */
 @media (max-width: 720px) {
   .status-label { display: none; }
   .status-pills { padding: 6px 8px; gap: 8px; }
@@ -2204,13 +2650,11 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.10);
 }
 
-/* Máscara do modal (fica “Browser-like”) */
 :deep(.p-dialog-mask) {
   backdrop-filter: blur(8px);
   background: rgba(0, 0, 0, 0.55);
 }
 
-/* Inputs dentro do dialog mais arredondados/consistentes */
 :deep(.modern-dialog .p-inputtext),
 :deep(.modern-dialog .p-textarea),
 :deep(.modern-dialog .p-dropdown),
@@ -2226,32 +2670,151 @@ onBeforeUnmount(() => {
   border-color: rgba(99, 102, 241, 0.55);
 }
 
-
-/* deixa search + export alinhados e com espaço entre blocos */
+/* =========================
+   Espaços dos botões (Cards header)
+========================= */
 .panel-actions{
   display: flex;
   align-items: center;
-  gap: 12px;          /* espaço entre a busca e o grupo de botões */
-  flex-wrap: wrap;    /* quebra em telas menores */
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
-/* espaço ENTRE os botões */
 .export-group{
   display: flex;
   align-items: center;
-  gap: 10px;          /* ajuste aqui (8–14 costuma ficar bom) */
-  flex-wrap: wrap;    /* evita “colar” quando quebrar linha */
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-/* opcional: garante largura consistente/bonita */
 .export-btn{
   white-space: nowrap;
 }
 
-.brand-subtitle {
-  font-size: 13px;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  font-weight: 500;
+/* =========================
+   MODO LEITURA (full screen + paginação) — Melhorado
+========================= */
+.reader-mode .cards-splitter{
+  display: none;
 }
 
+/* remove gutters no modo leitura */
+.reader-mode :deep(.p-splitter-gutter){
+  display: none !important;
+}
+
+/* ocupa a tela, sem "margem" */
+.reader-mode .main{
+  padding: 0 !important;
+}
+
+/* painel do editor vira uma “tela” */
+.reader-mode .panel{
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+/* remove cabeçalho interno do editor (o topo fica no Toolbar) */
+.reader-mode .panel-editor .panel-head{
+  display: none;
+}
+
+/* sem padding interno; o editor toma tudo */
+.reader-mode .panel-editor .panel-body{
+  padding: 0 !important;
+}
+
+/* superfície do editor */
+.editor-surface{
+  height: 100%;
+  min-height: 0;
+}
+
+/* wrapper do leitor */
+.reader-surface{
+  height: 100%;
+  width: 100%;
+}
+
+/* ✅ Scroller no .ql-container (padding aqui vira “margem” fixa) */
+.reader-mode .reader-surface :deep(.ql-container){
+  height: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scroll-behavior: smooth;
+
+  padding: var(--reader-pad-y) var(--reader-pad-x);
+  box-sizing: border-box;
+
+  /* esconde scrollbar */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.reader-mode .reader-surface :deep(.ql-container::-webkit-scrollbar){
+  width: 0;
+  height: 0;
+}
+
+/* ✅ Conteúdo em colunas no .ql-editor (sem padding horizontal) */
+.reader-mode .reader-surface :deep(.ql-editor){
+  height: 100%;
+  min-height: 100%;
+  width: max-content !important;
+
+  padding: 0 !important;
+  margin: 0 !important;
+
+  overflow: visible !important;
+
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  font-size: calc(20px * var(--reader-scale));
+  line-height: 1.65;
+  letter-spacing: 0.15px;
+
+  column-width: var(--reader-page-width);
+  column-gap: var(--reader-gap);
+  column-fill: auto;
+}
+
+/* =========================
+   Tema Kindle (claro) — SOMENTE no campo de Leitura/Edição
+   (Header permanece no tema principal)
+========================= */
+.reader-mode.reader-kindle .panel-editor{
+  background: #ffffff !important;
+}
+
+.reader-mode.reader-kindle .reader-surface :deep(.ql-container),
+.reader-mode.reader-kindle .reader-surface :deep(.ql-editor){
+  background: #ffffff !important;
+  color: #111827 !important;
+}
+
+/* toolbar do Quill dentro do editor (se existir) */
+.reader-mode.reader-kindle .reader-surface :deep(.ql-toolbar){
+  background: rgba(255,255,255,0.92) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(0,0,0,0.10) !important;
+  color: #111827 !important;
+}
+
+/* =========================
+   Tema escuro (mantém look atual)
+========================= */
+.reader-mode.reader-dark .panel-editor{
+  background: rgba(17, 24, 39, 0.58);
+}
+
+/* =========================
+   Responsivo
+========================= */
+@media (max-width: 520px){
+  .reader-mode .reader-surface :deep(.ql-container){
+    padding: 28px 22px;
+  }
+  .reader-mode .reader-surface :deep(.ql-editor){
+    font-size: calc(18px * var(--reader-scale));
+  }
+}
 </style>
