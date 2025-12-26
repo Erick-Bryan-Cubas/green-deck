@@ -1,3 +1,4 @@
+# app/api/flashcards.py
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,7 +9,12 @@ from pathlib import Path
 
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, MAX_CTX_CHARS
 from app.services.ollama import ollama_generate_stream
-from app.services.parser import parse_flashcards_qa, normalize_cards, pick_default_deck
+from app.services.parser import (
+    parse_flashcards_qa,
+    parse_flashcards_json,
+    normalize_cards,
+    pick_default_deck,
+)
 from app.utils.text import truncate_source, guess_language_ptbr_en
 from app.services.storage import save_analysis, save_cards
 
@@ -239,13 +245,25 @@ COMECE:
             async for piece in ollama_generate_stream(OLLAMA_MODEL, prompt, system=None, options=options):
                 raw += piece
 
-            # Parse/normalize
+            # Parse/normalize (QA -> JSON fallback)
             cards_raw = normalize_cards(parse_flashcards_qa(raw))
-            yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'count': len(cards_raw)})}\n\n"
+            parse_mode = "qa"
+            if not cards_raw:
+                cards_raw = normalize_cards(parse_flashcards_json(raw))
+                parse_mode = "json"
+
+            yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw)})}\n\n"
 
             # SRC filter
             cards = _filter_cards_with_valid_src(cards_raw, src)
             yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards))})}\n\n"
+
+            # Fallback: se o filtro derrubar 100% mas há cards parseados, não zera tudo
+            if not cards and cards_raw:
+                for c in cards_raw:
+                    c.pop("src", None)
+                cards = cards_raw
+                yield f"event: stage\ndata: {json.dumps({'stage': 'src_bypassed', 'count': len(cards)})}\n\n"
 
             lang_hint = guess_language_ptbr_en(raw)
 
@@ -302,11 +320,24 @@ REESCREVA CORRETAMENTE:
                 ):
                     raw2 += piece
 
+                # Repair parse (QA -> JSON fallback)
                 cards2_raw = normalize_cards(parse_flashcards_qa(raw2))
-                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'count': len(cards2_raw)})}\n\n"
+                repair_mode = "qa"
+                if not cards2_raw:
+                    cards2_raw = normalize_cards(parse_flashcards_json(raw2))
+                    repair_mode = "json"
+
+                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'mode': repair_mode, 'count': len(cards2_raw)})}\n\n"
 
                 cards2 = _filter_cards_with_valid_src(cards2_raw, src)
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2))})}\n\n"
+
+                # Fallback no repair também
+                if not cards2 and cards2_raw:
+                    for c in cards2_raw:
+                        c.pop("src", None)
+                    cards2 = cards2_raw
+                    yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_bypassed', 'count': len(cards2)})}\n\n"
 
                 if cards2:
                     cards = cards2

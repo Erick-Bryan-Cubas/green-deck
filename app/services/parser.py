@@ -1,6 +1,14 @@
+# app/services/parser.py
+import json
 import re
-from typing import List, Dict
-from app.utils.text import ensure_prefix, is_valid_cloze, normalize_basic_answer, normalize_cloze_answer
+from typing import List, Dict, Any
+
+from app.utils.text import (
+    ensure_prefix,
+    is_valid_cloze,
+    normalize_basic_answer,
+    normalize_cloze_answer,
+)
 
 
 def parse_flashcards_qa(text: str) -> List[Dict[str, str]]:
@@ -77,11 +85,127 @@ def parse_flashcards_qa(text: str) -> List[Dict[str, str]]:
     if cur_q and cur_a:
         flush()
 
+    return _dedup_by_front(cards)
+
+
+def parse_flashcards_json(text: str) -> List[Dict[str, str]]:
+    """
+    Fallback: tenta parsear cards quando o modelo devolve JSON, por ex:
+    [
+      {"front":"...", "back":"...", "src":"..."},
+      ...
+    ]
+
+    Também aceita variações comuns:
+    - {"cards":[...]}
+    - chaves: q/Q/question/pergunta -> front
+             a/A/answer/resposta    -> back
+             src/SRC/source/ref/... -> src
+    """
+    if not text:
+        return []
+
+    t = text.strip()
+    if not t:
+        return []
+
+    data: Any = None
+
+    # 1) Tenta extrair o maior array JSON possível (muitos modelos embrulham com texto)
+    lb = t.find("[")
+    rb = t.rfind("]")
+    if lb != -1 and rb != -1 and rb > lb:
+        candidate = t[lb : rb + 1]
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            data = None
+
+    # 2) Se não rolou, tenta objeto JSON (ex: {"cards":[...]})
+    if data is None:
+        lc = t.find("{")
+        rc = t.rfind("}")
+        if lc != -1 and rc != -1 and rc > lc:
+            candidate = t[lc : rc + 1]
+            try:
+                data = json.loads(candidate)
+            except Exception:
+                data = None
+
+    if data is None:
+        return []
+
+    # normaliza para lista
+    if isinstance(data, dict):
+        # chaves mais prováveis
+        for k in ("cards", "flashcards", "items", "data"):
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
+
+    if not isinstance(data, list):
+        return []
+
+    cards: List[Dict[str, str]] = []
+
+    def _pick(d: dict, keys: tuple[str, ...]) -> str:
+        for k in keys:
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        front = _pick(
+            item,
+            (
+                "front",
+                "question",
+                "pergunta",
+                "q",
+                "Q",
+            ),
+        )
+        back = _pick(
+            item,
+            (
+                "back",
+                "answer",
+                "resposta",
+                "a",
+                "A",
+            ),
+        )
+        src = _pick(
+            item,
+            (
+                "src",
+                "SRC",
+                "source",
+                "reference",
+                "ref",
+                "fonte",
+            ),
+        ).strip().strip('"').strip()
+
+        if front and back:
+            out = {"front": front, "back": back}
+            if src:
+                out["src"] = src
+            cards.append(out)
+
+    return _dedup_by_front(cards)
+
+
+def _dedup_by_front(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
     # dedup por front (mantendo o primeiro)
     seen = set()
-    out = []
-    for c in cards:
-        k = re.sub(r"\s+", " ", c["front"]).strip().lower()
+    out: List[Dict[str, str]] = []
+    for c in cards or []:
+        k = re.sub(r"\s+", " ", (c.get("front") or "")).strip().lower()
         if k and k not in seen:
             seen.add(k)
             out.append(c)
@@ -105,7 +229,9 @@ def normalize_cards(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
         if q.startswith("[CLOZE]"):
             if not is_valid_cloze(q):
                 # Se cloze inválido, converte pra BASIC removendo {{c1::...}}
-                q = "[BASIC] " + re.sub(r"\{\{c1::([^}]+)\}\}", r"\1", q.replace("[CLOZE]", "")).strip()
+                q = "[BASIC] " + re.sub(
+                    r"\{\{c1::([^}]+)\}\}", r"\1", q.replace("[CLOZE]", "")
+                ).strip()
                 a = normalize_basic_answer(a)
             else:
                 a = normalize_cloze_answer(a)
