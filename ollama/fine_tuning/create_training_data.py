@@ -1,5 +1,5 @@
 import json
-from prompts import SUPERMEMO_RULES, BASIC_CARDS_PROMPT
+from ollama.fine_tuning.prompts import SUPERMEMO_RULES, BASIC_CARDS_PROMPT
 
 training_examples = [
     {
