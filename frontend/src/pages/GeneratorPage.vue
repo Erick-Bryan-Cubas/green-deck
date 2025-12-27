@@ -671,11 +671,11 @@ function refreshStoredKeys() {
 
 // Card type
 const cardType = ref('basic')
-const cardTypeOptions = [
-  { label: 'Gerar Cartões Básicos', value: 'basic' },
-  { label: 'Gerar Cartões Cloze', value: 'cloze' },
-  { label: 'Gerar Cartões Básicos e Cloze', value: 'both' }
-]
+const cardTypeOptions = ref([
+  { label: 'Básicos', value: 'basic', description: 'Gerar cartões do tipo básico' },
+  { label: 'Cloze', value: 'cloze', description: 'Gerar cartões Cloze (preenchimento)' },
+  { label: 'Básicos + Cloze', value: 'both', description: 'Gerar ambos os tipos' }
+])
 
 // Busca
 const cardSearch = ref('')
@@ -1762,7 +1762,24 @@ onBeforeUnmount(() => {
                 optionValue="value"
                 class="cardtype"
                 :disabled="generating || isAnalyzing"
-              />
+              >
+                <template #option="{ option }">
+                  <div class="card-type-item">
+                    <i class="pi pi-fw pi-book cardtype-icon" aria-hidden="true" />
+                    <div class="ct-body">
+                      <div class="ct-label">{{ option.label }}</div>
+                      <div class="ct-desc">{{ option.description }}</div>
+                    </div>
+                  </div>
+                </template>
+
+                <template #value="{ value }">
+                  <div class="card-type-selected">
+                    <i class="pi pi-fw pi-book cardtype-icon" aria-hidden="true" />
+                    <span class="ct-label">{{ (cardTypeOptions.find(o => o.value === value) || {}).label }}</span>
+                  </div>
+                </template>
+              </Select>
 
               <Button
                 icon="pi pi-bolt"
@@ -2821,5 +2838,43 @@ onBeforeUnmount(() => {
   .reader-mode .reader-surface :deep(.ql-editor){
     font-size: calc(18px * var(--reader-scale));
   }
+}
+
+/* Card type select styling */
+.cardtype {
+  --cardtype-bg: rgba(255,255,255,0.04);
+}
+.cardtype :deep(.p-dropdown){
+  min-width: 170px;
+}
+.card-type-item{
+  display:flex;
+  gap:0.6rem;
+  align-items:flex-start;
+  padding:8px 12px;
+}
+.cardtype-icon{
+  font-size:1rem;
+  color:var(--primary-color, #31C691);
+  margin-top:2px;
+}
+.ct-body{ }
+.ct-label{
+  font-size:0.86rem;
+  font-weight:600;
+  line-height:1;
+}
+.ct-desc{
+  font-size:0.72rem;
+  color:rgba(255,255,255,0.62);
+  margin-top:2px;
+}
+.card-type-selected{
+  display:flex;
+  gap:0.5rem;
+  align-items:center;
+}
+.cardtype :deep(.p-dropdown-label), .cardtype .card-type-selected .ct-label{
+  font-size:0.9rem;
 }
 </style>
