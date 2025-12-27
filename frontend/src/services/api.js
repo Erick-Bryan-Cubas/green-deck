@@ -5,7 +5,7 @@
  */
 
 // Local storage key for API keys
-const API_KEY_STORAGE_KEY = "mochi_card_generator_api_keys";
+const API_KEY_STORAGE_KEY = "flashcard_generator_api_keys";
 
 /**
  * Retrieves stored API keys from local storage
@@ -20,24 +20,26 @@ function getStoredApiKeys() {
   } catch (error) {
     console.error("Error reading stored API keys:", error);
   }
-  return { anthropicApiKey: null, mochiApiKey: null };
+  return { anthropicApiKey: null, openaiApiKey: null, perplexityApiKey: null };
 }
 
 /**
  * Stores API keys in local storage
  * @param {string} anthropicApiKey - Claude API key
- * @param {string} mochiApiKey - Mochi API key
+ * @param {string} openaiApiKey - OpenAI API key
+ * @param {string} perplexityApiKey - Perplexity API key
  * @param {boolean} storeLocally - Whether to store keys locally
  * @returns {boolean} Success status
  */
-function storeApiKeys(anthropicApiKey, mochiApiKey, storeLocally = true) {
+function storeApiKeys(anthropicApiKey, openaiApiKey, perplexityApiKey, storeLocally = true) {
   if (storeLocally) {
     try {
       localStorage.setItem(
         API_KEY_STORAGE_KEY,
         JSON.stringify({
           anthropicApiKey,
-          mochiApiKey,
+          openaiApiKey,
+          perplexityApiKey,
         })
       );
       return true;
@@ -102,8 +104,8 @@ function pickSrcField(card) {
 }
 
 /**
- * Parses Claude's response to extract structured card data
- * @param {Object} responseData - Raw response from Claude API
+ * Parses AI response to extract structured card data
+ * @param {Object} responseData - Raw response from AI API
  * @returns {Array} Array of card objects
  */
 function parseClaudeResponse(responseData) {
@@ -119,7 +121,7 @@ function parseClaudeResponse(responseData) {
   } else if (responseData.content && responseData.content[0] && responseData.content[0].text) {
     responseText = responseData.content[0].text;
   } else {
-    console.warn("Unexpected response format from Claude API");
+    console.warn("Unexpected response format from AI API");
     responseText = JSON.stringify(responseData);
   }
 
@@ -152,7 +154,7 @@ function parseClaudeResponse(responseData) {
   } catch (error) {
     console.warn("Failed to parse response as JSON:", error);
 
-    // Try searching for JSON inside the text (sometimes Claude wraps JSON in backticks or other text)
+    // Try searching for JSON inside the text (sometimes AI wraps JSON in backticks or other text)
     try {
       const jsonRegex = /```(?:json)?\s*(\[\s*\{[\s\S]*?\}\s*\])\s*```/;
       const match = responseText.match(jsonRegex);
@@ -186,7 +188,7 @@ function parseClaudeResponse(responseData) {
   }
 
   // Fallback: If JSON parsing fails, create a basic fallback card
-  console.warn("Could not parse any cards from Claude response, using fallback");
+  console.warn("Could not parse any cards from AI response, using fallback");
   return [
     {
       front: "What are the key concepts from this text?",
@@ -208,7 +210,7 @@ function parseClaudeResponse(responseData) {
  * @param {string} text - The full text to analyze
  * @returns {Promise<string>} - Context summary
  */
-async function analyzeTextWithClaude(text, onProgress = null) {
+async function analyzeText(text, onProgress = null) {
   try {
     const { anthropicApiKey } = getStoredApiKeys();
 
@@ -272,7 +274,7 @@ async function analyzeTextWithClaude(text, onProgress = null) {
 }
 
 /**
- * Calls Claude API to generate flashcards from text
+ * Calls AI API to generate flashcards from text
  * Uses server-side proxy with user-provided API key
  *
  * @param {string} text - The highlighted text selection to create cards from
@@ -280,7 +282,7 @@ async function analyzeTextWithClaude(text, onProgress = null) {
  * @param {string} textContext - Optional context summary for the document
  * @returns {Promise<Array>} - Array of card objects with front, back, and deck properties
  */
-async function generateCardsWithClaude(text, deckOptions = "", textContext = "") {
+async function generateCards(text, deckOptions = "", textContext = "") {
   try {
     // Get stored API key
     const { anthropicApiKey } = getStoredApiKeys();
@@ -340,7 +342,7 @@ async function generateCardsWithClaude(text, deckOptions = "", textContext = "")
 
     // Provide more user-friendly error messages
     if (error.message.includes("No API key provided")) {
-      throw new Error("Please add your Claude API key in the settings (gear icon).");
+      throw new Error("Please add your API key in the settings (gear icon).");
     } else if (
       error.message.includes("Network error") ||
       error.message.includes("Failed to fetch")
@@ -370,9 +372,10 @@ async function generateCardsWithStream(
   deckOptions = "",
   textContext = "",
   cardType = "basic",
+  model = "qwen-flashcard",
   onProgress = null
 ) {
-  const { anthropicApiKey } = getStoredApiKeys();
+  const keys = getStoredApiKeys();
 
   let response;
   try {
@@ -384,7 +387,10 @@ async function generateCardsWithStream(
         textContext,
         deckOptions,
         cardType,
-        userApiKey: anthropicApiKey || null,
+        model,
+        anthropicApiKey: keys.anthropicApiKey || null,
+        openaiApiKey: keys.openaiApiKey || null,
+        perplexityApiKey: keys.perplexityApiKey || null,
       }),
     });
   } catch (err) {
@@ -457,9 +463,9 @@ async function generateCardsWithStream(
 }
 
 export {
-  generateCardsWithClaude,
+  generateCards,
   generateCardsWithStream,
-  analyzeTextWithClaude,
+  analyzeText,
   getStoredApiKeys,
   storeApiKeys,
   validateAnthropicApiKey,

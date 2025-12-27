@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 from fastapi.responses import FileResponse, JSONResponse
-from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router
+from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router, models_router
 
 
 class AnkiStatusFilter(logging.Filter):
@@ -39,6 +39,7 @@ app.include_router(anki_router)
 app.include_router(flashcards_router)
 app.include_router(history_router)
 app.include_router(dashboard_router)
+app.include_router(models_router)
 
 @app.exception_handler(StarletteHTTPException)
 async def spa_fallback(request: Request, exc: StarletteHTTPException):
