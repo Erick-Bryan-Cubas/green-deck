@@ -1786,11 +1786,11 @@ onBeforeUnmount(() => {
                 @click="toggleSessionsMenu"
               />
 
-              <Button icon="pi pi-times" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
+              <Button icon="pi pi-eraser" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
 
-              <Button icon="pi pi-list" label="Logs" severity="secondary" outlined @click="logsVisible = true" />
+              <Button icon="pi pi-wave-pulse" label="Logs" severity="secondary" outlined @click="logsVisible = true" />
 
-              <Button icon="pi pi-ellipsis-v" severity="secondary" outlined @click="toggleMenu" />
+              <Button icon="pi pi-cog" severity="secondary" outlined @click="toggleMenu" />
               <Menu ref="menuRef" :model="menuItems" popup />
             </template>
           </div>
@@ -1896,7 +1896,7 @@ onBeforeUnmount(() => {
                     :disabled="!savedSessionExists"
                     @click="toggleSessionsMenu"
                   />
-                  <Button icon="pi pi-times" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
+                  <Button icon="pi pi-eraser" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
                 </div>
               </div>
 
@@ -1919,11 +1919,11 @@ onBeforeUnmount(() => {
                           </div>
 
                           <Button
-                            icon="pi pi-times"
+                            icon="pi pi-trash"
                             severity="danger"
                             text
                             class="icon-only"
-                            title="Excluir"
+                            title="Excluir Cartão"
                             @click.stop="deleteCard(cards.indexOf(c))"
                           />
                         </div>
