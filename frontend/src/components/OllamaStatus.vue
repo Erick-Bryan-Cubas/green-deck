@@ -46,7 +46,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="ollama-status" :class="connected ? 'connected' : 'disconnected'" :title="title">
     <i v-if="loading" class="pi pi-spinner pi-spin" />
-    <i v-else class="pi pi-microchip" />
+    <i v-else class="pi pi-microchip-ai" />
   </div>
 </template>
 
