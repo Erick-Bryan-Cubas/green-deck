@@ -15,6 +15,7 @@ class AnkiStatusFilter(logging.Filter):
             "/api/anki-status" not in msg
             and "/api/ollama-status" not in msg
             and "http://127.0.0.1:8765" not in msg
+            and "http://127.0.0.1:11434/api/tags" not in msg
         )
 
 logging.basicConfig(level=logging.INFO)
