@@ -6,8 +6,8 @@ load_dotenv()
 # Ollama
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_GENERATE_URL = os.getenv("OLLAMA_URL", f"{OLLAMA_HOST}/api/generate")
-# OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen-flashcard")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen-flashcard")
+# OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct")
 OLLAMA_ANALYSIS_MODEL = os.getenv("OLLAMA_ANALYSIS_MODEL", "embeddinggemma")
 OLLAMA_EMBED_URL = os.getenv("OLLAMA_EMBED_URL", f"{OLLAMA_HOST}/api/embed")
 
