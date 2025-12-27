@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, MAX_CTX_CHARS
 from app.services.ollama import ollama_generate_stream
+from app.services.api_providers import openai_generate_stream, perplexity_generate_stream
 from app.services.parser import (
     parse_flashcards_qa,
     parse_flashcards_json,
@@ -44,9 +45,11 @@ class CardsRequest(BaseModel):
     deckOptions: Optional[str] = "General"
     useRAG: Optional[bool] = False
     topK: Optional[int] = 0
-
-    # "basic" | "cloze" | "both"
     cardType: Optional[str] = "both"
+    model: Optional[str] = None
+    anthropicApiKey: Optional[str] = None
+    openaiApiKey: Optional[str] = None
+    perplexityApiKey: Optional[str] = None
 
 
 def _norm_ws(s: str) -> str:
@@ -255,7 +258,16 @@ async def analyze_text_stream(request: TextRequest):
 async def generate_cards_stream(request: CardsRequest):
     async def generate():
         try:
-            logger.info("Ollama generation model (cards): %s", OLLAMA_MODEL)
+            model = request.model or OLLAMA_MODEL
+            logger.info("Generation model: %s", model)
+
+            # Determina qual provedor usar baseado no nome do modelo
+            use_openai = request.openaiApiKey and ("gpt" in model.lower() or model.startswith("o1-"))
+            use_perplexity = request.perplexityApiKey and "sonar" in model.lower()
+            use_ollama = not use_openai and not use_perplexity
+            
+            provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
+            logger.info(f"Using provider: {provider}")
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'generation_started'})}\n\n"
 
@@ -311,9 +323,16 @@ Q: [BASIC] <pergunta específica em PT-BR>
 A: <resposta curta em PT-BR (1-2 frases)>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
-Q: [CLOZE] <frase em PT-BR com UMA lacuna {{c1::termo}}>
+Q: [CLOZE] <frase em PT-BR com UMA lacuna {{{{c1::termo}}}}>
 A: Extra: <1 frase de contexto adicional em PT-BR>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+
+EXEMPLO DE CLOZE CORRETO:
+Q: [CLOZE] A capital do Brasil é {{{{c1::Brasília}}}}.
+A: Extra: Brasília foi inaugurada em 1960.
+SRC: "A capital do Brasil é Brasília"
+
+ATENÇÃO: Use EXATAMENTE {{{{c1::palavra}}}} (dois dois-pontos, NÃO três)
 
 REGRAS CRÍTICAS:
 - SEM markdown, SEM listas, SEM numeração.
@@ -328,8 +347,16 @@ COMECE:
             raw = ""
             # temperature 0.0 tende a reduzir “desobediência” de idioma
             options = {"num_predict": 4096, "temperature": 0.0}
-            async for piece in ollama_generate_stream(OLLAMA_MODEL, prompt, system=SYSTEM_PTBR, options=options):
-                raw += piece
+            
+            if use_openai:
+                async for piece in openai_generate_stream(request.openaiApiKey, model, prompt, system=SYSTEM_PTBR, options=options):
+                    raw += piece
+            elif use_perplexity:
+                async for piece in perplexity_generate_stream(request.perplexityApiKey, model, prompt, system=SYSTEM_PTBR, options=options):
+                    raw += piece
+            else:
+                async for piece in ollama_generate_stream(model, prompt, system=SYSTEM_PTBR, options=options):
+                    raw += piece
 
             # Parse/normalize (QA -> JSON fallback)
             cards_raw = normalize_cards(parse_flashcards_qa(raw))
@@ -407,9 +434,14 @@ Q: [BASIC] ...
 A: ...
 SRC: "..."
 
-Q: [CLOZE] ... {{c1::...}} ...
+Q: [CLOZE] ... {{{{c1::...}}}} ...
 A: Extra: ...
 SRC: "..."
+
+EXEMPLO DE CLOZE CORRETO:
+Q: [CLOZE] A capital do Brasil é {{{{c1::Brasília}}}}.
+A: Extra: Brasília foi inaugurada em 1960.
+SRC: "A capital do Brasil é Brasília"
 
 PROIBIDO:
 - Qualquer idioma que NÃO seja Português do Brasil (pt-BR) fora do campo SRC
@@ -425,13 +457,16 @@ COMECE DIRETO (sem explicar nada):
 """.strip()
 
                 raw2 = ""
-                async for piece in ollama_generate_stream(
-                    OLLAMA_MODEL,
-                    repair_prompt,
-                    system=SYSTEM_PTBR,
-                    options={"num_predict": 4096, "temperature": 0.0},
-                ):
-                    raw2 += piece
+                
+                if use_openai:
+                    async for piece in openai_generate_stream(request.openaiApiKey, model, repair_prompt, system=SYSTEM_PTBR, options={"num_predict": 4096, "temperature": 0.0}):
+                        raw2 += piece
+                elif use_perplexity:
+                    async for piece in perplexity_generate_stream(request.perplexityApiKey, model, repair_prompt, system=SYSTEM_PTBR, options={"num_predict": 4096, "temperature": 0.0}):
+                        raw2 += piece
+                else:
+                    async for piece in ollama_generate_stream(model, repair_prompt, system=SYSTEM_PTBR, options={"num_predict": 4096, "temperature": 0.0}):
+                        raw2 += piece
 
                 # Repair parse (QA -> JSON fallback)
                 cards2_raw = normalize_cards(parse_flashcards_qa(raw2))
