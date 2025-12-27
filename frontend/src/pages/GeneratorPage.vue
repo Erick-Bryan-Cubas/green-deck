@@ -31,11 +31,11 @@ import { useRouter } from 'vue-router'
 // Services
 import {
   generateCardsWithStream,
-  analyzeTextWithClaude,
+  analyzeText,
   getStoredApiKeys,
   storeApiKeys,
   validateAnthropicApiKey
-} from '@/services/claude-api.js'
+} from '@/services/api.js'
 
 const toast = useToast()
 const router = useRouter()
@@ -677,6 +677,11 @@ const cardTypeOptions = ref([
   { label: 'Básicos + Cloze', value: 'both', description: 'Gerar ambos os tipos' }
 ])
 
+// Model selection
+const selectedModel = ref('qwen-flashcard')
+const availableModels = ref([])
+const isLoadingModels = ref(false)
+
 // Busca
 const cardSearch = ref('')
 const filteredCards = computed(() => {
@@ -756,18 +761,61 @@ function completeProgress() {
 }
 
 // ============================================================
+// Model Selection Dialog
+// ============================================================
+const modelSelectionVisible = ref(false)
+
+async function fetchAvailableModels() {
+  try {
+    isLoadingModels.value = true
+    const keys = getStoredApiKeys()
+    
+    const headers = {}
+    if (keys.openaiApiKey) headers['X-OpenAI-Key'] = keys.openaiApiKey
+    if (keys.perplexityApiKey) headers['X-Perplexity-Key'] = keys.perplexityApiKey
+    
+    const resp = await fetch('/api/all-models', { headers })
+    if (resp.ok) {
+      const data = await resp.json()
+      availableModels.value = data.models || []
+    }
+  } catch (e) {
+    notify('Erro ao carregar modelos disponíveis', 'error', 4000)
+  } finally {
+    isLoadingModels.value = false
+  }
+}
+
+function openModelSelection() {
+  modelSelectionVisible.value = true
+  fetchAvailableModels()
+}
+
+function saveModelSelection() {
+  try {
+    localStorage.setItem('spaced-rep.selected-model', selectedModel.value)
+    modelSelectionVisible.value = false
+    notify('Modelo selecionado: ' + selectedModel.value, 'success', 3000)
+  } catch (e) {
+    notify('Erro ao salvar modelo', 'error', 3000)
+  }
+}
+
+// ============================================================
 // API Keys Dialog
 // ============================================================
 const apiKeyVisible = ref(false)
 const anthropicApiKey = ref('')
-const mochiApiKey = ref('')
+const openaiApiKey = ref('')
+const perplexityApiKey = ref('')
 const storeLocally = ref(true)
 const anthropicApiKeyError = ref('')
 
 function loadStoredKeysToForm() {
   refreshStoredKeys()
   anthropicApiKey.value = storedKeys.value.anthropicApiKey || ''
-  mochiApiKey.value = storedKeys.value.mochiApiKey || ''
+  openaiApiKey.value = storedKeys.value.openaiApiKey || ''
+  perplexityApiKey.value = storedKeys.value.perplexityApiKey || ''
 }
 
 function openApiKeys() {
@@ -778,14 +826,15 @@ function openApiKeys() {
 
 async function saveApiKeys() {
   const aKey = anthropicApiKey.value.trim()
-  const mKey = mochiApiKey.value.trim()
+  const oKey = openaiApiKey.value.trim()
+  const pKey = perplexityApiKey.value.trim()
 
   if (aKey && !validateAnthropicApiKey(aKey)) {
     anthropicApiKeyError.value = 'Required: Enter a valid Claude API key (starts with sk-ant-)'
     return
   }
 
-  const ok = storeApiKeys(aKey, mKey, storeLocally.value)
+  const ok = storeApiKeys(aKey, oKey, pKey, storeLocally.value)
   if (!ok) {
     notify('Failed to save API keys', 'error')
     return
@@ -794,66 +843,13 @@ async function saveApiKeys() {
   refreshStoredKeys()
   apiKeyVisible.value = false
   notify('API keys saved successfully', 'success')
-
-  if (mKey) {
-    try {
-      await fetchDecks()
-    } catch {
-      notify('Failed to connect to Mochi API', 'error')
-    }
-  }
 }
 
 // ============================================================
-// Decks Mochi
+// Decks
 // ============================================================
 async function fetchDecks() {
   refreshStoredKeys()
-  const userMochiKey = storedKeys.value.mochiApiKey
-
-  if (!userMochiKey) {
-    decks.value = { General: 'general' }
-    currentDeck.value = 'General'
-    return
-  }
-
-  // backend
-  try {
-    const resp = await fetch(`/api/mochi-decks?userMochiKey=${encodeURIComponent(userMochiKey)}`)
-    if (resp.ok) {
-      const data = await resp.json()
-      if (data?.success && data?.decks) {
-        decks.value = data.decks
-        currentDeck.value = Object.keys(data.decks)[0] || 'General'
-        return
-      }
-    }
-  } catch {}
-
-  // client-side
-  try {
-    const authHeader = `Basic ${btoa(`${userMochiKey}:`)}`
-    const resp = await fetch('https://app.mochi.cards/api/decks/', {
-      method: 'GET',
-      headers: { Authorization: authHeader }
-    })
-    if (!resp.ok) throw new Error(await resp.text())
-
-    const decksData = await resp.json()
-    const formatted = {}
-    decksData.docs.forEach((deck) => {
-      if (deck['trashed?'] || deck['archived?']) return
-      const cleanId = String(deck.id).replace(/\[\[|\]\]/g, '')
-      formatted[deck.name] = cleanId
-    })
-
-    decks.value = formatted
-    currentDeck.value = Object.keys(formatted)[0] || 'General'
-    return
-  } catch (e) {
-    console.error('Error using client-side Mochi API:', e)
-  }
-
   decks.value = { General: 'general' }
   currentDeck.value = 'General'
 }
@@ -884,7 +880,7 @@ async function analyzeDocumentContext(text) {
     showProgress('Analisando texto...')
     setProgress(25)
 
-    const contextSummary = await analyzeTextWithClaude(text)
+    const contextSummary = await analyzeText(text)
     setProgress(92)
 
     addLog('Text analysis completed', 'success')
@@ -924,6 +920,7 @@ async function generateCardsFromSelection() {
     generating.value = true
     startTimer('Gerando...')
     addLog(`Starting card generation (${cardType.value})...`, 'info')
+    console.log('Card type being sent:', cardType.value)
     showProgress('Gerando cards...')
     setProgress(10)
 
@@ -933,6 +930,7 @@ async function generateCardsFromSelection() {
       deckNames,
       documentContext.value,
       cardType.value,
+      selectedModel.value,
       ({ stage, data }) => {
         try {
           if (stage === 'stage' && data?.stage) {
@@ -1091,29 +1089,8 @@ function previewText(text, max = 260) {
 }
 
 // ============================================================
-// Export Mochi / Markdown
+// Export Markdown
 // ============================================================
-const exportLabel = computed(() => (storedKeys.value.mochiApiKey ? 'Export to Mochi' : 'Export as Markdown'))
-
-function formatCardsForMochi() {
-  const deckMap = {}
-
-  cards.value.forEach((card) => {
-    const deckName = card.deck || 'General'
-    const deckId = decks.value[deckName]
-    if (!deckId) return
-
-    if (!deckMap[deckId]) deckMap[deckId] = []
-    deckMap[deckId].push({ content: `${card.front}\n---\n${card.back}` })
-  })
-
-  const data = { version: 2, cards: [] }
-  for (const [deckId, arr] of Object.entries(deckMap)) {
-    arr.forEach((c) => data.cards.push({ ...c, 'deck-id': deckId }))
-  }
-  return data
-}
-
 function exportAsMarkdown() {
   if (!cards.value.length) {
     notify('No cards to export', 'info')
@@ -1153,46 +1130,6 @@ function exportAsMarkdown() {
   }, 100)
 
   notify(`${cards.value.length} cards exportados em markdown`, 'success')
-}
-
-async function exportToMochi() {
-  if (!cards.value.length) {
-    notify('No cards to export', 'info')
-    return
-  }
-
-  refreshStoredKeys()
-  const userMochiKey = storedKeys.value.mochiApiKey
-  if (!userMochiKey) {
-    exportAsMarkdown()
-    return
-  }
-
-  try {
-    addLog('Uploading to Mochi...', 'info')
-    showProgress('Enviando para Mochi...')
-    setProgress(20)
-
-    const payload = formatCardsForMochi()
-    const response = await fetch('/api/upload-to-mochi', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards: payload.cards, userMochiKey })
-    })
-
-    if (!response.ok) throw new Error('Failed to upload to Mochi')
-    const result = await response.json()
-
-    setProgress(100)
-    completeProgress()
-    notify(`${result.totalSuccess} de ${result.totalCards} enviados ao Mochi!`, 'success')
-    addLog(`Mochi upload completed: ${result.totalSuccess}/${result.totalCards}`, 'success')
-  } catch (error) {
-    notify('Erro no Mochi. Exportando em markdown.', 'error')
-    exportAsMarkdown()
-  } finally {
-    progressVisible.value = false
-  }
 }
 
 // ============================================================
@@ -1298,12 +1235,6 @@ async function exportToAnkiConfirm() {
 const menuRef = ref(null)
 const menuItems = computed(() => [
   {
-    label: exportLabel.value,
-    icon: 'pi pi-upload',
-    disabled: !cards.value.length,
-    command: exportToMochi
-  },
-  {
     label: 'Export to Anki',
     icon: 'pi pi-send',
     disabled: !cards.value.length,
@@ -1316,6 +1247,7 @@ const menuItems = computed(() => [
     command: clearAllCards
   },
   { separator: true },
+  { label: 'Escolher Modelo', icon: 'pi pi-microchip', command: openModelSelection },
   { label: 'API Keys', icon: 'pi pi-key', command: openApiKeys }
 ])
 
@@ -1501,6 +1433,12 @@ onMounted(async () => {
     readerTwoPage.value = saved.readerTwoPage ?? true
     readerFontScale.value = saved.readerFontScale ?? 1
     readerDark.value = saved.readerDark ?? false
+  } catch {}
+
+  // carrega modelo selecionado
+  try {
+    const savedModel = localStorage.getItem('spaced-rep.selected-model')
+    if (savedModel) selectedModel.value = savedModel
   } catch {}
 
   ensureActiveSession()
@@ -1880,15 +1818,7 @@ onBeforeUnmount(() => {
                   <Button
                     class="export-btn"
                     :disabled="!hasCards"
-                    :label="exportLabel"
-                    icon="pi pi-upload"
-                    outlined
-                    @click="exportToMochi"
-                  />
-                  <Button
-                    class="export-btn"
-                    :disabled="!hasCards"
-                    label="Anki"
+                    label="Export to Anki"
                     icon="pi pi-send"
                     outlined
                     @click="exportToAnkiOpenConfig"
@@ -2082,18 +2012,22 @@ onBeforeUnmount(() => {
 
       <div class="grid">
         <div class="col-12">
-          <label class="font-semibold">Claude API Key <span class="req">(Required se você usar Claude)</span></label>
+          <label class="font-semibold">Claude API Key <span class="opt">(Optional)</span></label>
           <InputText v-model="anthropicApiKey" class="w-full" placeholder="sk-ant-api03-..." autocomplete="off" />
           <small class="text-color-secondary">Get your API key from console.anthropic.com/keys</small>
           <div v-if="anthropicApiKeyError" class="err">{{ anthropicApiKeyError }}</div>
         </div>
 
         <div class="col-12 mt-3">
-          <label class="font-semibold">Mochi API Key <span class="opt">(Optional)</span></label>
-          <InputText v-model="mochiApiKey" class="w-full" placeholder="Your Mochi API key (optional)" autocomplete="off" />
-          <small class="text-color-secondary">
-            Opcional — permite exportar direto pro Mochi. Sem ela, exporta em markdown.
-          </small>
+          <label class="font-semibold">OpenAI API Key <span class="opt">(Optional)</span></label>
+          <InputText v-model="openaiApiKey" class="w-full" placeholder="sk-..." autocomplete="off" />
+          <small class="text-color-secondary">Get your API key from platform.openai.com/api-keys</small>
+        </div>
+
+        <div class="col-12 mt-3">
+          <label class="font-semibold">Perplexity API Key <span class="opt">(Optional)</span></label>
+          <InputText v-model="perplexityApiKey" class="w-full" placeholder="pplx-..." autocomplete="off" />
+          <small class="text-color-secondary">Get your API key from perplexity.ai/settings/api</small>
         </div>
 
         <div class="col-12 mt-3 flex align-items-center gap-2">
@@ -2105,6 +2039,63 @@ onBeforeUnmount(() => {
       <template #footer>
         <Button label="Cancel" severity="secondary" outlined @click="apiKeyVisible = false" />
         <Button label="Save API Keys" icon="pi pi-save" @click="saveApiKeys" />
+      </template>
+    </Dialog>
+
+    <!-- MODEL SELECTION -->
+    <Dialog v-model:visible="modelSelectionVisible" header="Escolher Modelo" modal class="modern-dialog" style="width: min(760px, 96vw);">
+      <div class="model-info">
+        <i class="pi pi-info-circle mr-2" />
+        Escolha o modelo para geração de cartões. Modelos Ollama são locais (privacidade total). Modelos de API requerem chaves configuradas.
+      </div>
+
+      <div class="grid mt-3">
+        <div class="col-12">
+          <label class="font-semibold">Modelo Selecionado</label>
+          <Select 
+            v-model="selectedModel" 
+            :options="availableModels" 
+            optionLabel="name" 
+            optionValue="name" 
+            class="w-full" 
+            filter
+            :loading="isLoadingModels"
+            placeholder="Selecione um modelo"
+          >
+            <template #option="{ option }">
+              <div class="model-option">
+                <span class="model-name">{{ option.name }}</span>
+                <Tag 
+                  :severity="option.provider === 'ollama' ? 'success' : option.provider === 'openai' ? 'info' : 'warning'" 
+                  class="pill model-tag"
+                >
+                  {{ option.provider === 'ollama' ? 'Ollama' : option.provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
+                </Tag>
+              </div>
+            </template>
+            <template #value="{ value }">
+              <div v-if="value" class="model-selected">
+                <span class="model-name">{{ value }}</span>
+                <Tag 
+                  v-if="availableModels.find(m => m.name === value)"
+                  :severity="availableModels.find(m => m.name === value).provider === 'ollama' ? 'success' : availableModels.find(m => m.name === value).provider === 'openai' ? 'info' : 'warning'" 
+                  class="pill model-tag"
+                >
+                  {{ availableModels.find(m => m.name === value).provider === 'ollama' ? 'Ollama' : availableModels.find(m => m.name === value).provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
+                </Tag>
+              </div>
+            </template>
+          </Select>
+          <small class="text-color-secondary mt-2 block">
+            Modelo atual: <strong>{{ selectedModel }}</strong>
+          </small>
+        </div>
+      </div>
+
+      <template #footer>
+        <Button label="Atualizar Lista" icon="pi pi-refresh" severity="secondary" outlined @click="fetchAvailableModels" :loading="isLoadingModels" />
+        <Button label="Cancelar" severity="secondary" outlined @click="modelSelectionVisible = false" />
+        <Button label="Salvar" icon="pi pi-check" @click="saveModelSelection" />
       </template>
     </Dialog>
 
@@ -2524,6 +2515,16 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.05);
   margin-bottom: 14px;
 }
+.model-info {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(99, 102, 241, 0.08);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .req { color: #ef4444; font-weight: 900; margin-left: 6px; }
 .opt { opacity: 0.7; margin-left: 6px; }
 .err { color: #ef4444; margin-top: 8px; font-weight: 800; }
@@ -2905,5 +2906,30 @@ onBeforeUnmount(() => {
 }
 .cardtype :deep(.p-dropdown-label), .cardtype .card-type-selected .ct-label{
   font-size:0.9rem;
+}
+
+/* Model selection styling */
+.model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
+.model-selected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.model-tag {
+  font-size: 11px;
+  padding: 2px 8px;
 }
 </style>

@@ -230,7 +230,7 @@ def normalize_cards(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
             if not is_valid_cloze(q):
                 # Se cloze inválido, converte pra BASIC removendo {{c1::...}}
                 q = "[BASIC] " + re.sub(
-                    r"\{\{c1::([^}]+)\}\}", r"\1", q.replace("[CLOZE]", "")
+                    r"\{\{c\d+::([^}]+)\}\}", r"\1", q.replace("[CLOZE]", "")
                 ).strip()
                 a = normalize_basic_answer(a)
             else:

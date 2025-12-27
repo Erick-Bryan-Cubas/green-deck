@@ -3,6 +3,7 @@ from .anki import router as anki_router
 from .flashcards import router as flashcards_router
 from .history import router as history_router
 from .dashboard import router as dashboard_router
+from .models import router as models_router
 
 __all__ = [
     "health_router",
@@ -10,4 +11,5 @@ __all__ = [
     "flashcards_router",
     "history_router",
     "dashboard_router",
+    "models_router",
 ]
