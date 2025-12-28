@@ -1,12 +1,51 @@
 import os
+import json
+import duckdb
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
 
-DATA_DIR = Path("data")
+DATA_DIR = Path("data/generator")
+DB_PATH = Path("data/storage.duckdb")
 
 def _ensure_data_dir():
     DATA_DIR.mkdir(exist_ok=True)
+
+def _get_connection():
+    _ensure_data_dir()
+    conn = duckdb.connect(str(DB_PATH))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analyses (
+            id VARCHAR PRIMARY KEY,
+            timestamp TIMESTAMP,
+            text TEXT,
+            summary TEXT,
+            metadata TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cards (
+            id VARCHAR PRIMARY KEY,
+            timestamp TIMESTAMP,
+            analysis_id VARCHAR,
+            source_text TEXT,
+            cards_count INTEGER,
+            cards TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_responses (
+            id VARCHAR PRIMARY KEY,
+            timestamp TIMESTAMP,
+            provider VARCHAR,
+            model VARCHAR,
+            prompt TEXT,
+            response TEXT,
+            cards_id VARCHAR,
+            analysis_id VARCHAR
+        )
+    """)
+    return conn
 
 def _to_toon(data: Dict) -> str:
     """Converte dict para formato TOON"""
@@ -29,49 +68,19 @@ def _to_toon(data: Dict) -> str:
             lines.append(f":{key} {value}")
     return "\n".join(lines)
 
-def _from_toon(content: str) -> Dict:
-    """Converte TOON para dict"""
-    data = {}
-    current_key = None
-    current_list = []
-    current_dict = {}
-    
-    for line in content.split("\n"):
-        if line.startswith("@"):
-            if current_key and current_list:
-                data[current_key] = current_list
-            current_key = line[1:]
-            current_list = []
-            current_dict = {}
-        elif line.startswith("  :"):
-            parts = line[3:].split(" ", 1)
-            current_dict[parts[0]] = parts[1] if len(parts) > 1 else ""
-        elif line.startswith(":"):
-            parts = line[1:].split(" ", 1)
-            data[parts[0]] = parts[1] if len(parts) > 1 else ""
-        elif line.strip() == "" and current_dict:
-            current_list.append(current_dict.copy())
-            current_dict = {}
-    
-    if current_key and current_list:
-        data[current_key] = current_list
-    elif current_key and current_dict:
-        data[current_key] = current_dict
-    
-    return data
-
 def save_analysis(text: str, summary: str, metadata: Optional[Dict] = None) -> str:
-    _ensure_data_dir()
-    
     analysis_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    record = {
-        "id": analysis_id,
-        "timestamp": datetime.now().isoformat(),
-        "text": text,
-        "summary": summary,
-        "metadata": metadata or {}
-    }
+    timestamp = datetime.now()
     
+    conn = _get_connection()
+    conn.execute("""
+        INSERT INTO analyses (id, timestamp, text, summary, metadata)
+        VALUES (?, ?, ?, ?, ?)
+    """, [analysis_id, timestamp, text, summary, json.dumps(metadata or {})])
+    conn.close()
+    
+    # Salvar arquivo TOON para compatibilidade
+    record = {"id": analysis_id, "timestamp": timestamp.isoformat(), "text": text, "summary": summary, "metadata": metadata or {}}
     filepath = DATA_DIR / f"analysis_{analysis_id}.toon"
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(_to_toon(record))
@@ -79,18 +88,18 @@ def save_analysis(text: str, summary: str, metadata: Optional[Dict] = None) -> s
     return analysis_id
 
 def save_cards(cards: List[Dict], analysis_id: Optional[str] = None, source_text: Optional[str] = None) -> str:
-    _ensure_data_dir()
-    
     cards_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    record = {
-        "id": cards_id,
-        "timestamp": datetime.now().isoformat(),
-        "analysis_id": analysis_id or "",
-        "source_text": source_text or "",
-        "cards_count": str(len(cards)),
-        "cards": cards
-    }
+    timestamp = datetime.now()
     
+    conn = _get_connection()
+    conn.execute("""
+        INSERT INTO cards (id, timestamp, analysis_id, source_text, cards_count, cards)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, [cards_id, timestamp, analysis_id or "", source_text or "", len(cards), json.dumps(cards)])
+    conn.close()
+    
+    # Salvar arquivo TOON para compatibilidade
+    record = {"id": cards_id, "timestamp": timestamp.isoformat(), "analysis_id": analysis_id or "", "source_text": source_text or "", "cards_count": str(len(cards)), "cards": cards}
     filepath = DATA_DIR / f"cards_{cards_id}.toon"
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(_to_toon(record))
@@ -98,24 +107,50 @@ def save_cards(cards: List[Dict], analysis_id: Optional[str] = None, source_text
     return cards_id
 
 def get_recent_analyses(limit: int = 10) -> List[Dict]:
-    _ensure_data_dir()
-    files = sorted(DATA_DIR.glob("analysis_*.toon"), reverse=True)[:limit]
-    return [_from_toon(open(f, encoding="utf-8").read()) for f in files]
+    conn = _get_connection()
+    result = conn.execute("""
+        SELECT id, timestamp, text, summary, metadata
+        FROM analyses
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, [limit]).fetchall()
+    conn.close()
+    
+    return [{"id": r[0], "timestamp": r[1].isoformat(), "text": r[2], "summary": r[3], "metadata": json.loads(r[4])} for r in result]
 
 def get_recent_cards(limit: int = 10) -> List[Dict]:
-    _ensure_data_dir()
-    files = sorted(DATA_DIR.glob("cards_*.toon"), reverse=True)[:limit]
-    return [_from_toon(open(f, encoding="utf-8").read()) for f in files]
+    conn = _get_connection()
+    result = conn.execute("""
+        SELECT id, timestamp, analysis_id, source_text, cards_count, cards
+        FROM cards
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """, [limit]).fetchall()
+    conn.close()
+    
+    return [{"id": r[0], "timestamp": r[1].isoformat(), "analysis_id": r[2], "source_text": r[3], "cards_count": str(r[4]), "cards": json.loads(r[5])} for r in result]
 
 def get_stats() -> Dict:
-    _ensure_data_dir()
-    analyses = list(DATA_DIR.glob("analysis_*.toon"))
-    cards_files = list(DATA_DIR.glob("cards_*.toon"))
-    
-    total_cards = sum(int(_from_toon(open(f, encoding="utf-8").read()).get("cards_count", 0)) for f in cards_files)
+    conn = _get_connection()
+    analyses_count = conn.execute("SELECT COUNT(*) FROM analyses").fetchone()[0]
+    cards_count = conn.execute("SELECT SUM(cards_count) FROM cards").fetchone()[0] or 0
+    conn.close()
     
     return {
-        "total_analyses": len(analyses),
-        "total_cards": total_cards,
+        "total_analyses": analyses_count,
+        "total_cards": cards_count,
         "data_dir": str(DATA_DIR.absolute())
     }
+
+def save_llm_response(provider: str, model: str, prompt: str, response: str, cards_id: Optional[str] = None, analysis_id: Optional[str] = None) -> str:
+    response_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = datetime.now()
+    
+    conn = _get_connection()
+    conn.execute("""
+        INSERT INTO llm_responses (id, timestamp, provider, model, prompt, response, cards_id, analysis_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, [response_id, timestamp, provider, model, prompt, response, cards_id or "", analysis_id or ""])
+    conn.close()
+    
+    return response_id
