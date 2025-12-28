@@ -229,6 +229,7 @@ async function analyzeText(text, onProgress = null) {
     const decoder = new TextDecoder();
     let buffer = "";
     let result = null;
+    let analysisId = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -251,8 +252,10 @@ async function analyzeText(text, onProgress = null) {
           const parsed = data ? JSON.parse(data) : null;
           if (event === "progress" && onProgress) {
             onProgress(parsed.percent || 0);
+            if (parsed.analysis_id) analysisId = parsed.analysis_id;
           } else if (event === "result") {
             result = parsed;
+            if (parsed.analysis_id) analysisId = parsed.analysis_id;
           }
         } catch (e) {}
       }
@@ -263,7 +266,7 @@ async function analyzeText(text, onProgress = null) {
       for (const item of result.content) {
         if (item.type === "text") contextSummary += item.text;
       }
-      return contextSummary;
+      return { summary: contextSummary, analysisId };
     }
 
     throw new Error("No result from analysis");
@@ -373,7 +376,8 @@ async function generateCardsWithStream(
   textContext = "",
   cardType = "basic",
   model = "qwen-flashcard",
-  onProgress = null
+  onProgress = null,
+  analysisId = null
 ) {
   const keys = getStoredApiKeys();
 
@@ -388,6 +392,7 @@ async function generateCardsWithStream(
         deckOptions,
         cardType,
         model,
+        analysisId,
         anthropicApiKey: keys.anthropicApiKey || null,
         openaiApiKey: keys.openaiApiKey || null,
         perplexityApiKey: keys.perplexityApiKey || null,

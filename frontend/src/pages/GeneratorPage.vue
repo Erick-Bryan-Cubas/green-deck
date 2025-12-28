@@ -649,6 +649,7 @@ function newSession() {
 const cards = ref([])
 const selectedText = ref('')
 const documentContext = ref('')
+const currentAnalysisId = ref(null)
 const isAnalyzing = ref(false)
 
 const decks = ref({})
@@ -880,11 +881,18 @@ async function analyzeDocumentContext(text) {
     showProgress('Analisando texto...')
     setProgress(25)
 
-    const contextSummary = await analyzeText(text)
+    const result = await analyzeText(text)
     setProgress(92)
 
     addLog('Text analysis completed', 'success')
-    if (contextSummary) documentContext.value = contextSummary
+    if (result) {
+      if (typeof result === 'string') {
+        documentContext.value = result
+      } else {
+        documentContext.value = result.summary || ''
+        currentAnalysisId.value = result.analysisId || null
+      }
+    }
 
     lastTextForAnalysis.value = normalized
 
@@ -947,7 +955,8 @@ async function generateCardsFromSelection() {
         }
 
         if (progressValue.value < 92) setProgress(progressValue.value + 4)
-      }
+      },
+      currentAnalysisId.value
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')

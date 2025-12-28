@@ -22,7 +22,7 @@ from app.utils.text import (
     strip_src_lines,
     detect_language_pt_en_es,
 )
-from app.services.storage import save_analysis, save_cards
+from app.services.storage import save_analysis, save_cards, save_llm_response, _get_connection
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ class CardsRequest(BaseModel):
     topK: Optional[int] = 0
     cardType: Optional[str] = "both"
     model: Optional[str] = None
+    analysisId: Optional[str] = None
     anthropicApiKey: Optional[str] = None
     openaiApiKey: Optional[str] = None
     perplexityApiKey: Optional[str] = None
@@ -245,7 +246,7 @@ async def analyze_text_stream(request: TextRequest):
             analysis_id = save_analysis(src, summary, {"chunks": len(chunks), "top_chunks": len(top_chunks)})
             result["analysis_id"] = analysis_id
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done'})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done', 'analysis_id': analysis_id})}\n\n"
             yield f"event: result\ndata: {json.dumps(result)}\n\n"
 
         except Exception as e:
@@ -357,6 +358,8 @@ COMECE:
             else:
                 async for piece in ollama_generate_stream(model, prompt, system=SYSTEM_PTBR, options=options):
                     raw += piece
+
+            save_llm_response(provider, model, prompt, raw, analysis_id=request.analysisId)
 
             # Parse/normalize (QA -> JSON fallback)
             cards_raw = normalize_cards(parse_flashcards_qa(raw))
@@ -521,7 +524,11 @@ COMECE DIRETO (sem explicar nada):
                     item["src"] = c["src"]
                 result_cards.append(item)
 
-            cards_id = save_cards(result_cards, source_text=src)
+            cards_id = save_cards(result_cards, analysis_id=request.analysisId, source_text=src)
+            
+            conn = _get_connection()
+            conn.execute("UPDATE llm_responses SET cards_id = ? WHERE analysis_id = ? AND cards_id = ''", [cards_id, request.analysisId or ""])
+            conn.close()
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'done', 'total_cards': len(result_cards), 'cards_id': cards_id})}\n\n"
             yield f"event: result\ndata: {json.dumps({'success': True, 'cards': result_cards})}\n\n"
