@@ -153,15 +153,10 @@ def normalize_cloze_answer(a: str) -> str:
     return out
 
 
-def ensure_prefix(q: str) -> str:
+def get_card_type(q: str) -> str:
+    """Retorna 'cloze' ou 'basic' baseado no conteúdo do cartão."""
     q = (q or "").strip()
-    if not q:
-        return q
-    if q.startswith("[BASIC]") or q.startswith("[CLOZE]"):
-        return q
-    if "{{c1::" in q:
-        return "[CLOZE] " + q
-    return "[BASIC] " + q
+    return "cloze" if "{{c1::" in q else "basic"
 
 
 def is_valid_cloze(q: str) -> bool:

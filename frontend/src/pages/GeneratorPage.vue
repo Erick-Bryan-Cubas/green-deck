@@ -56,6 +56,11 @@ function normalizePlainText(t) {
     .trim()
 }
 
+function getCardType(front) {
+  const q = String(front || '').trim()
+  return q.includes('{{c1::') ? 'cloze' : 'basic'
+}
+
 function safeId() {
   try {
     return crypto.randomUUID()
@@ -1928,6 +1933,12 @@ onBeforeUnmount(() => {
                         <div class="card-head">
                           <div class="card-left">
                             <span class="card-index">Card {{ cards.indexOf(c) + 1 }}</span>
+                            <Tag 
+                              :severity="getCardType(c.front) === 'cloze' ? 'warning' : 'info'" 
+                              class="pill card-type-tag"
+                            >
+                              {{ getCardType(c.front) === 'cloze' ? 'CLOZE' : 'BASIC' }}
+                            </Tag>
                             <span class="deck-pill">
                               <i class="pi pi-tag mr-2" /> {{ c.deck || 'General' }}
                             </span>
@@ -1990,6 +2001,13 @@ onBeforeUnmount(() => {
       <div class="edit-meta">
         <Tag severity="info" class="pill">
           <i class="pi pi-hashtag mr-2" /> {{ editIndex + 1 }}
+        </Tag>
+
+        <Tag 
+          :severity="getCardType(editDraft.front) === 'cloze' ? 'warning' : 'info'" 
+          class="pill card-type-tag"
+        >
+          {{ getCardType(editDraft.front) === 'cloze' ? 'CLOZE' : 'BASIC' }}
         </Tag>
 
         <Tag severity="secondary" class="pill">
@@ -2729,6 +2747,12 @@ onBeforeUnmount(() => {
 .card-index {
   font-weight: 900;
   opacity: 0.92;
+}
+.card-type-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 800;
 }
 .deck-pill {
   display: inline-flex;
