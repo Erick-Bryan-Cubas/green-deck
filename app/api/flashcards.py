@@ -1,4 +1,3 @@
-# app/api/flashcards.py
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -28,7 +27,7 @@ router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
 
 SYSTEM_PTBR = (
-    "Você é um gerador de flashcards.\n"
+    "Você é um gerador de flashcards Anki.\n"
     "Fora do campo SRC, escreva SEMPRE em Português do Brasil (pt-BR).\n"
     "No campo SRC, COPIE literalmente do texto-fonte (pode estar em inglês).\n"
     "NUNCA responda em espanhol.\n"
@@ -192,6 +191,25 @@ def _relax_src_if_needed(cards_with_src, cards_raw, *, target_min: int, target_m
     return out
 
 
+# =============================================================================
+# Filtro por tipo de card (basic / cloze)
+# =============================================================================
+
+def _filter_by_card_type(cards, card_type: str):
+    """
+    Garante que só passem cards do tipo solicitado:
+    - cloze  -> front contém "{{c1::"
+    - basic  -> front NÃO contém "{{c1::"
+    - both   -> não filtra
+    """
+    cards = cards or []
+    if card_type == "cloze":
+        return [c for c in cards if "{{c1::" in (c.get("front") or "")]
+    if card_type == "basic":
+        return [c for c in cards if "{{c1::" not in (c.get("front") or "")]
+    return cards
+
+
 def _cards_lang_from_cards(cards) -> str:
     """
     Detecta o idioma a partir do conteúdo REAL que importa (front/back),
@@ -292,9 +310,48 @@ async def generate_cards_stream(request: CardsRequest):
 
             type_instruction = {
                 "basic": "Gere APENAS cards básicos (perguntas e respostas). NÃO gere cards cloze.",
-                "cloze": "Gere APENAS cards cloze (frases com lacunas {{{{c1::termo}}}}). NÃO gere perguntas e respostas.",
+                "cloze": "Gere APENAS cards cloze (frases com lacunas {{c1::termo}}). NÃO gere perguntas e respostas.",
                 "both": "Para cada conceito importante, gere 1 card básico + 1 card cloze.",
             }[card_type]
+
+            # Bloco de formato dependente do tipo
+            if card_type == "basic":
+                format_block = """
+FORMATO OBRIGATÓRIO (use exatamente estas chaves):
+
+Q: <pergunta específica em PT-BR>
+A: <resposta curta em PT-BR (1-2 frases)>
+SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+
+RESTRIÇÕES:
+- NUNCA use {{c1::...}}.
+- Não gere nenhum card que seja cloze.
+""".strip()
+            elif card_type == "cloze":
+                format_block = """
+FORMATO OBRIGATÓRIO (use exatamente estas chaves):
+
+Q: <frase em PT-BR com UMA lacuna {{c1::termo}}>
+A: Extra: <1 frase de contexto adicional em PT-BR>
+SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+
+RESTRIÇÕES:
+- NUNCA use o formato de pergunta e resposta.
+- Cada card DEVE ter exatamente uma ocorrência de "{{c1::".
+- Se não conseguir escrever uma frase com lacuna para um conceito, simplesmente NÃO crie card básico; apenas ignore o conceito.
+""".strip()
+            else:  # both
+                format_block = """
+FORMATO OBRIGATÓRIO (use exatamente estas chaves):
+
+Q: <pergunta específica em PT-BR>
+A: <resposta curta em PT-BR (1-2 frases)>
+SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+
+Q: <frase em PT-BR com UMA lacuna {{c1::termo}}>
+A: Extra: <1 frase de contexto adicional em PT-BR>
+SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+""".strip()
 
             checklist_block = _format_checklist_block()
 
@@ -319,14 +376,7 @@ QUANTIDADE:
 TIPOS:
 {type_instruction}
 
-FORMATO OBRIGATÓRIO (use exatamente estas chaves):
-Q: <pergunta específica em PT-BR>
-A: <resposta curta em PT-BR (1-2 frases)>
-SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
-
-Q: <frase em PT-BR com UMA lacuna {{{{c1::termo}}}}>
-A: Extra: <1 frase de contexto adicional em PT-BR>
-SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+{format_block}
 
 EXEMPLO DE CLOZE CORRETO:
 Q: A capital do Brasil é {{{{c1::Brasília}}}}.
@@ -367,6 +417,9 @@ COMECE:
             if not cards_raw:
                 cards_raw = normalize_cards(parse_flashcards_json(raw))
                 parse_mode = "json"
+
+            # Aplica filtro por tipo de card (basic / cloze / both)
+            cards_raw = _filter_by_card_type(cards_raw, card_type)
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw)})}\n\n"
 
@@ -432,14 +485,7 @@ Reescreva em PT-BR seguindo RIGOROSAMENTE o formato e garantindo que CADA card t
 Se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido). Fora do campo SRC, escreva em PT-BR.
 Gere entre {target_min} e {target_max} cards.
 
-FORMATO:
-Q: ...
-A: ...
-SRC: "..."
-
-Q: ... {{{{c1::...}}}} ...
-A: Extra: ...
-SRC: "..."
+{format_block}
 
 EXEMPLO DE CLOZE CORRETO:
 Q: A capital do Brasil é {{{{c1::Brasília}}}}.
@@ -462,13 +508,30 @@ COMECE DIRETO (sem explicar nada):
                 raw2 = ""
                 
                 if use_openai:
-                    async for piece in openai_generate_stream(request.openaiApiKey, model, repair_prompt, system=SYSTEM_PTBR, options={"num_predict": 4096, "temperature": 0.0}):
+                    async for piece in openai_generate_stream(
+                        request.openaiApiKey,
+                        model,
+                        repair_prompt,
+                        system=SYSTEM_PTBR,
+                        options={"num_predict": 4096, "temperature": 0.0},
+                    ):
                         raw2 += piece
                 elif use_perplexity:
-                    async for piece in perplexity_generate_stream(request.perplexityApiKey, model, repair_prompt, system=SYSTEM_PTBR, options={"num_predict": 4096, "temperature": 0.0}):
+                    async for piece in perplexity_generate_stream(
+                        request.perplexityApiKey,
+                        model,
+                        repair_prompt,
+                        system=SYSTEM_PTBR,
+                        options={"num_predict": 4096, "temperature": 0.0},
+                    ):
                         raw2 += piece
                 else:
-                    async for piece in ollama_generate_stream(model, repair_prompt, system=SYSTEM_PTBR, options={"num_predict": 4096, "temperature": 0.0}):
+                    async for piece in ollama_generate_stream(
+                        model,
+                        repair_prompt,
+                        system=SYSTEM_PTBR,
+                        options={"num_predict": 4096, "temperature": 0.0},
+                    ):
                         raw2 += piece
 
                 # Repair parse (QA -> JSON fallback)
@@ -477,6 +540,9 @@ COMECE DIRETO (sem explicar nada):
                 if not cards2_raw:
                     cards2_raw = normalize_cards(parse_flashcards_json(raw2))
                     repair_mode = "json"
+
+                # Aplica filtro por tipo também no repair
+                cards2_raw = _filter_by_card_type(cards2_raw, card_type)
 
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'mode': repair_mode, 'count': len(cards2_raw)})}\n\n"
 
@@ -527,7 +593,10 @@ COMECE DIRETO (sem explicar nada):
             cards_id = save_cards(result_cards, analysis_id=request.analysisId, source_text=src)
             
             conn = _get_connection()
-            conn.execute("UPDATE llm_responses SET cards_id = ? WHERE analysis_id = ? AND cards_id = ''", [cards_id, request.analysisId or ""])
+            conn.execute(
+                "UPDATE llm_responses SET cards_id = ? WHERE analysis_id = ? AND cards_id = ''",
+                [cards_id, request.analysisId or ""],
+            )
             conn.close()
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'done', 'total_cards': len(result_cards), 'cards_id': cards_id})}\n\n"
