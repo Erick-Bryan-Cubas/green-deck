@@ -1239,69 +1239,83 @@ async function exportToAnkiConfirm() {
 }
 
 // ============================================================
-// Header menus
+// Sidebar Menu
 // ============================================================
-const menuRef = ref(null)
-const menuItems = computed(() => [
+const sidebarOpen = ref(true)
+const sidebarExpanded = ref(false)
+const expandedMenus = ref(new Set())
+
+function toggleSidebar() {
+  sidebarOpen.value = !sidebarOpen.value
+}
+
+function toggleSidebarExpand() {
+  sidebarExpanded.value = !sidebarExpanded.value
+  if (!sidebarExpanded.value) {
+    expandedMenus.value.clear()
+  }
+}
+
+function toggleSubmenu(key) {
+  if (!sidebarExpanded.value) return
+  if (expandedMenus.value.has(key)) {
+    expandedMenus.value.delete(key)
+  } else {
+    expandedMenus.value.add(key)
+  }
+}
+
+function closeSidebar() {
+  sidebarOpen.value = false
+}
+
+const sidebarMenuItems = computed(() => [
   {
-    label: 'Export to Anki',
-    icon: 'pi pi-send',
-    disabled: !cards.value.length,
-    command: exportToAnkiOpenConfig
+    key: 'sessions',
+    label: 'Sessões',
+    icon: 'pi pi-history',
+    badge: sessions.value.length,
+    submenu: [
+      { label: 'Nova sessão', icon: 'pi pi-plus', command: () => { newSession(); closeSidebar() } },
+      { separator: true },
+      ...sessions.value
+        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+        .map((s) => ({
+          label: `${s.title}`,
+          sublabel: formatSessionStamp(s.updatedAt),
+          icon: s.id === activeSessionId.value ? 'pi pi-check' : 'pi pi-file',
+          command: () => { restoreSessionById(s.id); closeSidebar() }
+        })),
+      { separator: true },
+      { label: 'Limpar sessão atual', icon: 'pi pi-times', command: () => { clearCurrentSession(); closeSidebar() } },
+      { label: 'Limpar todas', icon: 'pi pi-ban', command: () => { clearAllSessions(); clearCurrentSession(); closeSidebar() } }
+    ]
   },
   {
-    label: 'Clear Cards (apenas UI)',
-    icon: 'pi pi-times',
-    disabled: !cards.value.length,
-    command: clearAllCards
+    key: 'cards',
+    label: 'Cards',
+    icon: 'pi pi-clone',
+    badge: cards.value.length,
+    submenu: [
+      { label: 'Export to Anki', icon: 'pi pi-send', disabled: !cards.value.length, command: () => { exportToAnkiOpenConfig(); closeSidebar() } },
+      { label: 'Export Markdown', icon: 'pi pi-download', disabled: !cards.value.length, command: () => { exportAsMarkdown(); closeSidebar() } },
+      { label: 'Clear Cards', icon: 'pi pi-times', disabled: !cards.value.length, command: () => { clearAllCards(); closeSidebar() } }
+    ]
+  },
+  {
+    key: 'config',
+    label: 'Configurações',
+    icon: 'pi pi-cog',
+    submenu: [
+      { label: 'Escolher Modelo', icon: 'pi pi-microchip', command: () => { openModelSelection(); closeSidebar() } },
+      { label: 'API Keys', icon: 'pi pi-key', command: () => { openApiKeys(); closeSidebar() } }
+    ]
   },
   { separator: true },
-  { label: 'Escolher Modelo', icon: 'pi pi-microchip', command: openModelSelection },
-  { label: 'API Keys', icon: 'pi pi-key', command: openApiKeys }
+  { label: 'Browser', icon: 'pi pi-database', command: () => { router.push('/browser'); closeSidebar() } },
+  { label: 'Dashboard', icon: 'pi pi-chart-bar', command: () => { router.push('/dashboard'); closeSidebar() } },
+  { label: 'Logs', icon: 'pi pi-wave-pulse', command: () => { logsVisible.value = true; closeSidebar() } }
 ])
-
-function toggleMenu(event) {
-  menuRef.value?.toggle(event)
-}
-
-// Menu de sessões
-const sessionsMenuRef = ref(null)
-function toggleSessionsMenu(event) {
-  sessionsMenuRef.value?.toggle(event)
-}
-
-const sessionsMenuItems = computed(() => {
-  const sorted = [...sessions.value].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-
-  const restoreItems = sorted.length
-    ? sorted.map((s) => ({
-        label: `${s.title} — ${formatSessionStamp(s.updatedAt)}`,
-        icon: s.id === activeSessionId.value ? 'pi pi-check' : 'pi pi-file',
-        command: () => restoreSessionById(s.id)
-      }))
-    : [{ label: 'Nenhuma sessão salva', icon: 'pi pi-inbox', disabled: true }]
-
-  return [
-    { label: 'Nova sessão', icon: 'pi pi-plus', command: newSession },
-    { separator: true },
-    { label: 'Restaurar sessão', icon: 'pi pi-history', disabled: true },
-    ...restoreItems,
-    { separator: true },
-    {
-      label: 'Limpar sessão atual (UI + storage)',
-      icon: 'pi pi-times',
-      command: clearCurrentSession
-    },
-    {
-      label: 'Limpar todas as sessões',
-      icon: 'pi pi-ban',
-      command: () => {
-        clearAllSessions()
-        clearCurrentSession()
-      }
-    }
-  ]
-})
 
 // ============================================================
 // Context menu do editor
@@ -1553,8 +1567,70 @@ onBeforeUnmount(() => {
   <Toast />
   <ContextMenu ref="contextMenuRef" :model="contextMenuModel" appendTo="body" />
 
-  <!-- Menu popup de sessões -->
-  <Menu ref="sessionsMenuRef" :model="sessionsMenuItems" popup />
+  <!-- Sidebar -->
+  <aside v-if="sidebarOpen" class="sidebar" :class="{ 'expanded': sidebarExpanded }">
+    <div class="sidebar-header">
+      <Button 
+        :icon="sidebarExpanded ? 'pi pi-angle-left' : 'pi pi-angle-right'" 
+        text 
+        rounded 
+        @click="toggleSidebarExpand" 
+        class="sidebar-toggle"
+        :title="sidebarExpanded ? 'Recolher' : 'Expandir'"
+      />
+    </div>
+
+    <nav class="sidebar-nav">
+      <template v-for="(item, idx) in sidebarMenuItems" :key="idx">
+        <div v-if="item.separator" class="sidebar-separator"></div>
+        
+        <div v-else-if="item.submenu" class="sidebar-item has-submenu">
+          <button 
+            class="sidebar-link" 
+            :class="{ 'expanded': expandedMenus.has(item.key) }"
+            @click="toggleSubmenu(item.key)"
+            :title="!sidebarExpanded ? item.label : ''"
+          >
+            <i :class="item.icon" class="sidebar-icon"></i>
+            <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
+            <Tag v-if="sidebarExpanded && item.badge" severity="secondary" class="sidebar-badge">{{ item.badge }}</Tag>
+            <i v-if="sidebarExpanded" class="pi pi-chevron-down sidebar-chevron"></i>
+          </button>
+          
+          <Transition name="submenu">
+            <div v-if="sidebarExpanded && expandedMenus.has(item.key)" class="sidebar-submenu">
+              <template v-for="(sub, subIdx) in item.submenu" :key="subIdx">
+                <div v-if="sub.separator" class="submenu-separator"></div>
+                <button 
+                  v-else
+                  class="submenu-link" 
+                  :class="{ 'disabled': sub.disabled }"
+                  :disabled="sub.disabled"
+                  @click="sub.command?.()"
+                >
+                  <i :class="sub.icon" class="submenu-icon"></i>
+                  <div class="submenu-text">
+                    <span class="submenu-label">{{ sub.label }}</span>
+                    <span v-if="sub.sublabel" class="submenu-sublabel">{{ sub.sublabel }}</span>
+                  </div>
+                </button>
+              </template>
+            </div>
+          </Transition>
+        </div>
+
+        <button 
+          v-else 
+          class="sidebar-link" 
+          @click="item.command?.()"
+          :title="!sidebarExpanded ? item.label : ''"
+        >
+          <i :class="item.icon" class="sidebar-icon"></i>
+          <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
+        </button>
+      </template>
+    </nav>
+  </aside>
 
   <div
     class="app-shell"
@@ -1569,6 +1645,8 @@ onBeforeUnmount(() => {
     <Toolbar class="app-header">
       <template #start>
         <div class="header-left">
+          <Button icon="pi pi-bars" text rounded @click="toggleSidebar" class="menu-toggle" title="Menu" v-if="!sidebarOpen" />
+          
           <div class="brand">
             <div class="brand-icon">
               <img class="brand-icon-img" src="/green.svg" alt="Green Deck" />
@@ -1738,24 +1816,7 @@ onBeforeUnmount(() => {
                 @click="generateCardsFromSelection"
               />
 
-              <Button icon="pi pi-database" label="Browser" severity="secondary" outlined @click="router.push('/browser')" />
-              <Button icon="pi pi-chart-bar" label="Dashboard" outlined @click="router.push('/dashboard')" />
 
-              <Button
-                icon="pi pi-history"
-                label="Sessões"
-                severity="secondary"
-                outlined
-                :disabled="!savedSessionExists"
-                @click="toggleSessionsMenu"
-              />
-
-              <Button icon="pi pi-eraser" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
-
-              <Button icon="pi pi-wave-pulse" label="Logs" severity="secondary" outlined @click="logsVisible = true" />
-
-              <Button icon="pi pi-cog" severity="secondary" outlined @click="toggleMenu" />
-              <Menu ref="menuRef" :model="menuItems" popup />
             </template>
           </div>
 
@@ -2147,6 +2208,238 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* =========================
+   Sidebar Menu
+========================= */
+.sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 70px;
+  background: rgba(17, 24, 39, 0.98);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar.expanded {
+  width: 280px;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.03);
+  min-height: 70px;
+}
+
+.sidebar-toggle {
+  width: 38px;
+  height: 38px;
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 8px;
+}
+
+.sidebar-separator {
+  height: 1px;
+  background: rgba(148, 163, 184, 0.12);
+  margin: 8px 12px;
+}
+
+.sidebar-item {
+  margin-bottom: 4px;
+}
+
+.sidebar-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  position: relative;
+}
+
+.sidebar-link:hover {
+  background: rgba(99, 102, 241, 0.12);
+  color: #fff;
+}
+
+.sidebar-link.expanded {
+  background: rgba(99, 102, 241, 0.15);
+  color: #fff;
+}
+
+.sidebar-icon {
+  font-size: 18px;
+  width: 20px;
+  text-align: center;
+  opacity: 0.9;
+  flex-shrink: 0;
+}
+
+.sidebar-label {
+  flex: 1;
+  opacity: 0;
+  transition: opacity 0.2s ease 0.1s;
+}
+
+.sidebar.expanded .sidebar-label {
+  opacity: 1;
+}
+
+.sidebar-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 800;
+  opacity: 0;
+  transition: opacity 0.2s ease 0.1s;
+}
+
+.sidebar.expanded .sidebar-badge {
+  opacity: 1;
+}
+
+.sidebar-chevron {
+  font-size: 12px;
+  transition: transform 0.3s ease, opacity 0.2s ease 0.1s;
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.sidebar.expanded .sidebar-chevron {
+  opacity: 0.7;
+}
+
+.sidebar-link.expanded .sidebar-chevron {
+  transform: rotate(180deg);
+}
+
+.sidebar-submenu {
+  padding-left: 12px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.submenu-separator {
+  height: 1px;
+  background: rgba(148, 163, 184, 0.08);
+  margin: 6px 12px;
+}
+
+.submenu-link {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 13px;
+  text-align: left;
+  margin-bottom: 2px;
+}
+
+.submenu-link:hover:not(.disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.submenu-link.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.submenu-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.submenu-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.submenu-label {
+  font-weight: 600;
+}
+
+.submenu-sublabel {
+  font-size: 11px;
+  opacity: 0.6;
+  font-weight: 500;
+}
+
+.submenu-enter-active {
+  animation: submenu-expand 0.3s ease;
+}
+
+.submenu-leave-active {
+  animation: submenu-collapse 0.2s ease;
+}
+
+@keyframes submenu-expand {
+  from {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+    transform: translateY(0);
+  }
+}
+
+@keyframes submenu-collapse {
+  from {
+    opacity: 1;
+    max-height: 1000px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+  }
+}
+
+.menu-toggle {
+  width: 40px;
+  height: 40px;
+}
+
+/* =========================
    Base
 ========================= */
 .app-shell {
@@ -2154,11 +2447,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  margin-left: 70px;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   background:
     radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.25), transparent 55%),
     radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.18), transparent 60%),
     radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.14), transparent 55%),
     linear-gradient(180deg, rgba(10, 10, 12, 0.0), rgba(10, 10, 12, 0.35));
+}
+
+.sidebar.expanded ~ .app-shell {
+  margin-left: 280px;
 }
 
 .main {
@@ -2187,8 +2486,8 @@ onBeforeUnmount(() => {
 
 .header-left {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  gap: 16px;
 }
 
 .brand {
@@ -2198,82 +2497,95 @@ onBeforeUnmount(() => {
 }
 
 .brand-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(16, 185, 129, 0.15));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.brand-icon-img {
+  width: 24px;
+  height: 24px;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand-header-logo {
+  height: 28px;
+  width: auto;
 }
 
 .brand-subtitle {
-  font-size: 13px;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  font-weight: 500;
-  opacity: 0.78;
-  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.6;
+  letter-spacing: 0.3px;
 }
 
 .header-badges {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
 }
 
 .header-right {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .controls {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .cardtype {
-  width: 12rem; /* mais compacto, alinhado com demais controles */
+  width: 11rem;
   min-width: 10rem;
 }
 
 .hdr-divider {
-  height: 26px;
-  opacity: 0.6;
-}
-
-.page-chip {
-  user-select: none;
-}
-
-.timer-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.timer-text {
-  opacity: 0.85;
-  font-size: 12.5px;
-}
-
-.timer-val {
-  font-weight: 800;
-  font-size: 12.5px;
+  height: 24px;
+  opacity: 0.5;
 }
 
 :deep(.cta.p-button) {
-  border-radius: 999px;
-  box-shadow: 0 10px 24px rgba(0,0,0,0.22);
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border: none;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+:deep(.cta.p-button:hover) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+}
+
+@media (max-width: 768px) {
+  .header-left {
+    gap: 12px;
+  }
+  .brand-subtitle {
+    display: none;
+  }
+  .header-badges {
+    display: none;
+  }
+  .status-wrap {
+    display: none;
+  }
+  .hdr-divider {
+    display: none;
+  }
 }
 
 /* =========================
@@ -2595,46 +2907,37 @@ onBeforeUnmount(() => {
 .status-wrap {
   display: flex;
   align-items: center;
+  gap: 8px;
 }
 
 .status-pills {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.15);
 }
 
 .status-item {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .status-label {
-  font-weight: 900;
-  font-size: 12px;
-  opacity: 0.85;
+  font-weight: 700;
+  font-size: 11px;
+  opacity: 0.8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .status-sep {
   width: 1px;
-  height: 18px;
-  background: rgba(148, 163, 184, 0.22);
-  border-radius: 999px;
-}
-
-.status-pills :deep(.anki-status),
-.status-pills :deep(.ollama-status) {
-  border-radius: 10px;
-}
-
-@media (max-width: 720px) {
-  .status-label { display: none; }
-  .status-pills { padding: 6px 8px; gap: 8px; }
+  height: 16px;
+  background: rgba(148, 163, 184, 0.2);
 }
 
 /* =========================
