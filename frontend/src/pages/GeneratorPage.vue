@@ -1829,9 +1829,9 @@ onBeforeUnmount(() => {
 
     <!-- MAIN -->
     <div class="main">
-      <Splitter class="main-splitter" layout="vertical">
+      <Splitter class="main-splitter" layout="horizontal">
         <!-- Editor -->
-        <SplitterPanel :size="immersiveReader ? 100 : 58" :minSize="25">
+        <SplitterPanel :size="immersiveReader ? 100 : 70" :minSize="25">
           <div class="panel panel-editor">
             <div class="panel-head">
               <div class="panel-title">
