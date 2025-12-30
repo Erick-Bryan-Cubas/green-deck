@@ -4,7 +4,7 @@ import re
 from typing import List, Dict, Any
 
 from app.utils.text import (
-    ensure_prefix,
+    get_card_type,
     is_valid_cloze,
     normalize_basic_answer,
     normalize_cloze_answer,
@@ -215,23 +215,23 @@ def _dedup_by_front(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
 def normalize_cards(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Normaliza:
-    - prefixo [BASIC]/[CLOZE]
     - valida/ajusta cloze inválido
     - limpa resposta
     - preserva `src` (quando existir)
+    - NÃO adiciona prefixos [BASIC]/[CLOZE]
     """
     normalized: List[Dict[str, str]] = []
     for c in cards or []:
-        q = ensure_prefix(c.get("front", ""))
+        q = (c.get("front", "") or "").strip()
         a = (c.get("back", "") or "").strip()
         src = (c.get("src", "") or "").strip().strip('"').strip()
 
-        if q.startswith("[CLOZE]"):
+        card_type = get_card_type(q)
+
+        if card_type == "cloze":
             if not is_valid_cloze(q):
                 # Se cloze inválido, converte pra BASIC removendo {{c1::...}}
-                q = "[BASIC] " + re.sub(
-                    r"\{\{c\d+::([^}]+)\}\}", r"\1", q.replace("[CLOZE]", "")
-                ).strip()
+                q = re.sub(r"\{\{c\d+::([^}]+)\}\}", r"\1", q).strip()
                 a = normalize_basic_answer(a)
             else:
                 a = normalize_cloze_answer(a)

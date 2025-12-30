@@ -291,9 +291,9 @@ async def generate_cards_stream(request: CardsRequest):
                 target_min, target_max = 10, 30
 
             type_instruction = {
-                "basic": "Gere APENAS cards [BASIC].",
-                "cloze": "Gere APENAS cards [CLOZE].",
-                "both": "Para cada conceito importante, gere 1 [BASIC] + 1 [CLOZE].",
+                "basic": "Gere APENAS cards básicos (perguntas e respostas). NÃO gere cards cloze.",
+                "cloze": "Gere APENAS cards cloze (frases com lacunas {{{{c1::termo}}}}). NÃO gere perguntas e respostas.",
+                "both": "Para cada conceito importante, gere 1 card básico + 1 card cloze.",
             }[card_type]
 
             checklist_block = _format_checklist_block()
@@ -320,16 +320,16 @@ TIPOS:
 {type_instruction}
 
 FORMATO OBRIGATÓRIO (use exatamente estas chaves):
-Q: [BASIC] <pergunta específica em PT-BR>
+Q: <pergunta específica em PT-BR>
 A: <resposta curta em PT-BR (1-2 frases)>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
-Q: [CLOZE] <frase em PT-BR com UMA lacuna {{{{c1::termo}}}}>
+Q: <frase em PT-BR com UMA lacuna {{{{c1::termo}}}}>
 A: Extra: <1 frase de contexto adicional em PT-BR>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
 EXEMPLO DE CLOZE CORRETO:
-Q: [CLOZE] A capital do Brasil é {{{{c1::Brasília}}}}.
+Q: A capital do Brasil é {{{{c1::Brasília}}}}.
 A: Extra: Brasília foi inaugurada em 1960.
 SRC: "A capital do Brasil é Brasília"
 
@@ -433,16 +433,16 @@ Se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido
 Gere entre {target_min} e {target_max} cards.
 
 FORMATO:
-Q: [BASIC] ...
+Q: ...
 A: ...
 SRC: "..."
 
-Q: [CLOZE] ... {{{{c1::...}}}} ...
+Q: ... {{{{c1::...}}}} ...
 A: Extra: ...
 SRC: "..."
 
 EXEMPLO DE CLOZE CORRETO:
-Q: [CLOZE] A capital do Brasil é {{{{c1::Brasília}}}}.
+Q: A capital do Brasil é {{{{c1::Brasília}}}}.
 A: Extra: Brasília foi inaugurada em 1960.
 SRC: "A capital do Brasil é Brasília"
 
