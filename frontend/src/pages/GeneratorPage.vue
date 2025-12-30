@@ -690,6 +690,7 @@ const isLoadingModels = ref(false)
 
 // Busca
 const cardSearch = ref('')
+const searchExpanded = ref(false)
 const filteredCards = computed(() => {
   const q = (cardSearch.value || '').trim().toLowerCase()
   if (!q) return cards.value
@@ -994,9 +995,15 @@ function deleteCard(index) {
   cards.value.splice(index, 1)
 }
 
+function openClearAllCards() {
+  clearCardsVisible.value = true
+}
+
 function clearAllCards() {
   cards.value = []
-  notify('Cards limpos (apenas UI).', 'info', 2500)
+  clearCardsVisible.value = false
+  notify('Todos os cards foram removidos.', 'success', 3000)
+  schedulePersistActiveSession()
 }
 
 // ============================================================
@@ -1270,6 +1277,7 @@ const ankiBackField = ref('')
 const ankiDeckField = ref('')
 const ankiTags = ref('')
 const ankiExporting = ref(false)
+const clearCardsVisible = ref(false)
 
 const ankiModelOptions = computed(() => {
   const d = ankiModelsData.value
@@ -1993,12 +2001,41 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="panel-actions">
-                <div class="search-wrap">
-                  <i class="pi pi-search search-ico" />
-                  <InputText v-model="cardSearch" class="search" placeholder="Buscar em front/back/deck..." />
+                <div class="search-wrap" :class="{ 'expanded': searchExpanded }">
+                  <button class="search-toggle" @click="searchExpanded = !searchExpanded" type="button">
+                    <i class="pi pi-search" />
+                  </button>
+                  <InputText 
+                    v-show="searchExpanded" 
+                    v-model="cardSearch" 
+                    class="search" 
+                    placeholder="Buscar..."
+                    @blur="!cardSearch && (searchExpanded = false)"
+                  />
                 </div>
 
                 <div class="export-group">
+                  <Button
+                    class="clear-all-btn"
+                    :disabled="!hasCards"
+                    severity="danger"
+                    text
+                    rounded
+                    @click="openClearAllCards"
+                    title="Limpar todos os cards"
+                  >
+                    <template #icon>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <!-- Cards empilhados -->
+                        <rect x="4" y="8" width="12" height="14" rx="2" stroke="currentColor" stroke-width="2" fill="none" opacity="0.3"/>
+                        <rect x="6" y="6" width="12" height="14" rx="2" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/>
+                        <rect x="8" y="4" width="12" height="14" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+                        <!-- X grande sobre os cards -->
+                        <line x1="10" y1="8" x2="18" y2="16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="18" y1="8" x2="10" y2="16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                      </svg>
+                    </template>
+                  </Button>
                   <Button
                     class="export-btn"
                     :disabled="!hasCards"
@@ -2407,6 +2444,31 @@ onBeforeUnmount(() => {
         <Button label="Atualizar Lista" icon="pi pi-refresh" severity="secondary" outlined @click="fetchAvailableModels" :loading="isLoadingModels" />
         <Button label="Cancelar" severity="secondary" outlined @click="modelSelectionVisible = false" />
         <Button label="Salvar" icon="pi pi-check" @click="saveModelSelection" />
+      </template>
+    </Dialog>
+
+    <!-- CLEAR ALL CARDS CONFIRMATION -->
+    <Dialog
+      v-model:visible="clearCardsVisible"
+      header="Confirmar Exclusão"
+      modal
+      appendTo="body"
+      class="modern-dialog"
+      style="width: min(480px, 96vw);"
+    >
+      <div class="confirmation-content">
+        <i class="pi pi-exclamation-triangle confirmation-icon"></i>
+        <p class="confirmation-text">
+          Tem certeza que deseja apagar todos os <strong>{{ cards.length }} cards</strong>?
+        </p>
+        <p class="confirmation-warning">
+          Esta ação não pode ser desfeita.
+        </p>
+      </div>
+
+      <template #footer>
+        <Button label="Cancelar" severity="secondary" outlined @click="clearCardsVisible = false" />
+        <Button label="Sim, apagar tudo" icon="pi pi-trash" severity="danger" @click="clearAllCards" />
       </template>
     </Dialog>
 
@@ -2896,19 +2958,67 @@ onBeforeUnmount(() => {
 /* Search */
 .search-wrap {
   position: relative;
-  width: 18rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+.search-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.search-toggle:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: rgba(99, 102, 241, 0.9);
+  transform: scale(1.05);
+}
+
+.search-wrap.expanded .search-toggle {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: rgba(99, 102, 241, 1);
+}
+
 .search {
-  width: 100%;
-  padding-left: 34px;
-  border-radius: 999px;
+  width: 0;
+  opacity: 0;
+  padding: 0;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-size: 14px;
 }
-.search-ico {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  opacity: 0.75;
+
+.search-wrap.expanded .search {
+  width: 200px;
+  opacity: 1;
+  padding: 0 12px;
+}
+
+.search:focus {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.search::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 500;
 }
 
 /* Empty */
@@ -3534,5 +3644,53 @@ onBeforeUnmount(() => {
 .model-tag {
   font-size: 11px;
   padding: 2px 8px;
+}
+
+/* Confirmation dialog */
+.confirmation-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 20px 10px;
+  gap: 12px;
+}
+
+.confirmation-icon {
+  font-size: 48px;
+  color: #f59e0b;
+  margin-bottom: 8px;
+}
+
+.confirmation-text {
+  font-size: 16px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.confirmation-warning {
+  font-size: 14px;
+  opacity: 0.7;
+  margin: 0;
+}
+
+/* Clear all button */
+.clear-all-btn {
+  width: 40px;
+  height: 40px;
+  transition: all 0.2s ease;
+}
+
+.clear-all-btn:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.15) !important;
+  transform: scale(1.08);
+}
+
+.clear-all-btn svg {
+  transition: all 0.2s ease;
+}
+
+.clear-all-btn:not(:disabled):hover svg {
+  transform: scale(1.1);
 }
 </style>
