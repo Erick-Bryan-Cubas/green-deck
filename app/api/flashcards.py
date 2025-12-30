@@ -379,12 +379,11 @@ TIPOS:
 {format_block}
 
 EXEMPLO DE CLOZE CORRETO:
-Q: A capital do Brasil é {{{{c1::Brasília}}}}.
+Q: A capital do Brasil é {{c1::Brasília}}.
 A: Extra: Brasília foi inaugurada em 1960.
 SRC: "A capital do Brasil é Brasília"
 
-ATENÇÃO: Use EXATAMENTE {{{{c1::palavra}}}} (dois dois-pontos, NÃO três)
-
+ATENÇÃO: Use EXATAMENTE {{c1::palavra}} (dois dois-pontos, NÃO três)
 REGRAS CRÍTICAS:
 - SEM markdown, SEM listas, SEM numeração.
 - Uma linha em branco entre cards.
@@ -488,7 +487,7 @@ Gere entre {target_min} e {target_max} cards.
 {format_block}
 
 EXEMPLO DE CLOZE CORRETO:
-Q: A capital do Brasil é {{{{c1::Brasília}}}}.
+Q: A capital do Brasil é {{c1::Brasília}}.
 A: Extra: Brasília foi inaugurada em 1960.
 SRC: "A capital do Brasil é Brasília"
 

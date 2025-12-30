@@ -297,6 +297,8 @@ def _span_cloze_to_mustaches(html: str) -> str:
                 chosen = dc
         if not chosen:
             chosen = inner_txt or dc or "..."
+        
+        chosen = chosen.replace("}", "").replace("{", "")
 
         return f"{{{{c{n}::{chosen}}}}}"
 
@@ -333,7 +335,7 @@ def _renumber_clozes_sequential(s: str) -> str:
         nonlocal idx
         idx += 1
         body = m.group(2)
-        return f"{{{{c{idx}::{body}}}}}"
+        return f"{{c{idx}::{body}}}"
 
     return pat.sub(repl, s)
 
