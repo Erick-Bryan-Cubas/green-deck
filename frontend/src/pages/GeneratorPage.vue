@@ -1010,11 +1010,43 @@ const editSelectedText = ref('')
 const editCustomInstructionVisible = ref(false)
 const editCustomInstruction = ref('')
 const editPendingCardType = ref('')
+const expandedCards = ref(new Set())
 
 const availableDeckNames = computed(() => {
   const names = Object.keys(decks.value || {})
   return names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
 })
+
+const hierarchicalCards = computed(() => {
+  const result = []
+  const childrenMap = new Map()
+  
+  filteredCards.value.forEach((card, idx) => {
+    const actualIdx = cards.value.indexOf(card)
+    if (card.src && card.src.startsWith('Card #')) {
+      const parentNum = parseInt(card.src.replace('Card #', ''))
+      if (!childrenMap.has(parentNum)) childrenMap.set(parentNum, [])
+      childrenMap.get(parentNum).push({ card, actualIdx })
+    } else {
+      result.push({ card, actualIdx, children: [] })
+    }
+  })
+  
+  result.forEach((item, idx) => {
+    const cardNum = cards.value.indexOf(item.card) + 1
+    item.children = childrenMap.get(cardNum) || []
+  })
+  
+  return result
+})
+
+function toggleCardExpand(idx) {
+  if (expandedCards.value.has(idx)) {
+    expandedCards.value.delete(idx)
+  } else {
+    expandedCards.value.add(idx)
+  }
+}
 
 function openEditCard(index) {
   const c = cards.value[index]
@@ -2003,64 +2035,137 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <DataView v-else :value="filteredCards" layout="list" class="cards-view">
+              <DataView v-else :value="hierarchicalCards" layout="list" class="cards-view">
                 <template #list="{ items }">
                   <div class="cards-list">
-                    <Card
-                      v-for="(c, i) in items"
-                      :key="i"
-                      class="card-item clickable"
-                      @click="openEditCard(cards.indexOf(c))"
-                    >
-                      <template #title>
-                        <div class="card-head">
-                          <div class="card-left">
-                            <span class="card-index">Card {{ cards.indexOf(c) + 1 }}</span>
-                            <Tag 
-                              :severity="getCardType(c.front) === 'cloze' ? 'warning' : 'info'" 
-                              class="pill card-type-tag"
-                            >
-                              {{ getCardType(c.front) === 'cloze' ? 'CLOZE' : 'BASIC' }}
-                            </Tag>
-                            <span class="deck-pill">
-                              <i class="pi pi-tag mr-2" /> {{ c.deck || 'General' }}
-                            </span>
+                    <template v-for="(item, i) in items" :key="i">
+                      <Card
+                        class="card-item clickable"
+                        @click="openEditCard(item.actualIdx)"
+                      >
+                        <template #title>
+                          <div class="card-head">
+                            <div class="card-left">
+                              <Button
+                                v-if="item.children.length > 0"
+                                :icon="expandedCards.has(i) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'"
+                                text
+                                rounded
+                                size="small"
+                                class="expand-btn"
+                                @click.stop="toggleCardExpand(i)"
+                              />
+                              <span class="card-index">Card {{ item.actualIdx + 1 }}</span>
+                              <Tag 
+                                :severity="getCardType(item.card.front) === 'cloze' ? 'warning' : 'info'" 
+                                class="pill card-type-tag"
+                              >
+                                {{ getCardType(item.card.front) === 'cloze' ? 'CLOZE' : 'BASIC' }}
+                              </Tag>
+                              <span class="deck-pill">
+                                <i class="pi pi-tag mr-2" /> {{ item.card.deck || 'General' }}
+                              </span>
+                              <Tag v-if="item.children.length > 0" severity="secondary" class="pill">
+                                <i class="pi pi-sitemap mr-2" /> {{ item.children.length }}
+                              </Tag>
+                            </div>
+
+                            <Button
+                              icon="pi pi-trash"
+                              severity="danger"
+                              text
+                              class="icon-only"
+                              title="Excluir Cartão"
+                              @click.stop="deleteCard(item.actualIdx)"
+                            />
+                          </div>
+                        </template>
+
+                        <template #content>
+                          <div class="preview-grid">
+                            <div class="preview-block">
+                              <div class="preview-label">Front</div>
+                              <div class="preview-text" v-html="renderMarkdownSafe(previewText(item.card.front, 300))"></div>
+                            </div>
+
+                            <div class="preview-block">
+                              <div class="preview-label">Back</div>
+                              <div class="preview-text" v-html="renderMarkdownSafe(previewText(item.card.back, 300))"></div>
+                            </div>
                           </div>
 
-                          <Button
-                            icon="pi pi-trash"
-                            severity="danger"
-                            text
-                            class="icon-only"
-                            title="Excluir Cartão"
-                            @click.stop="deleteCard(cards.indexOf(c))"
-                          />
-                        </div>
-                      </template>
-
-                      <template #content>
-                        <div class="preview-grid">
-                          <div class="preview-block">
-                            <div class="preview-label">Front</div>
-                            <div class="preview-text" v-html="renderMarkdownSafe(previewText(c.front, 300))"></div>
+                          <div v-if="item.card.src" class="text-xs opacity-70 mt-2">
+                            <strong>Fonte:</strong> {{ previewText(item.card.src, 160) }}
                           </div>
 
-                          <div class="preview-block">
-                            <div class="preview-label">Back</div>
-                            <div class="preview-text" v-html="renderMarkdownSafe(previewText(c.back, 300))"></div>
+                          <div class="preview-hint">
+                            <i class="pi pi-pen-to-square mr-2" />
+                            Clique no card para editar
                           </div>
-                        </div>
+                        </template>
+                      </Card>
 
-                        <div v-if="c.src" class="text-xs opacity-70 mt-2">
-                          <strong>Fonte:</strong> {{ previewText(c.src, 160) }}
-                        </div>
+                      <!-- Children cards -->
+                      <Transition name="children">
+                        <div v-if="expandedCards.has(i) && item.children.length > 0" class="children-container">
+                          <Card
+                            v-for="(child, ci) in item.children"
+                            :key="ci"
+                            class="card-item card-child clickable"
+                            @click="openEditCard(child.actualIdx)"
+                          >
+                            <template #title>
+                              <div class="card-head">
+                                <div class="card-left">
+                                  <span class="card-index">Card {{ child.actualIdx + 1 }}</span>
+                                  <Tag 
+                                    :severity="getCardType(child.card.front) === 'cloze' ? 'warning' : 'info'" 
+                                    class="pill card-type-tag"
+                                  >
+                                    {{ getCardType(child.card.front) === 'cloze' ? 'CLOZE' : 'BASIC' }}
+                                  </Tag>
+                                  <span class="deck-pill">
+                                    <i class="pi pi-tag mr-2" /> {{ child.card.deck || 'General' }}
+                                  </span>
+                                </div>
 
-                        <div class="preview-hint">
-                          <i class="pi pi-pen-to-square mr-2" />
-                          Clique no card para editar
+                                <Button
+                                  icon="pi pi-trash"
+                                  severity="danger"
+                                  text
+                                  class="icon-only"
+                                  title="Excluir Cartão"
+                                  @click.stop="deleteCard(child.actualIdx)"
+                                />
+                              </div>
+                            </template>
+
+                            <template #content>
+                              <div class="preview-grid">
+                                <div class="preview-block">
+                                  <div class="preview-label">Front</div>
+                                  <div class="preview-text" v-html="renderMarkdownSafe(previewText(child.card.front, 300))"></div>
+                                </div>
+
+                                <div class="preview-block">
+                                  <div class="preview-label">Back</div>
+                                  <div class="preview-text" v-html="renderMarkdownSafe(previewText(child.card.back, 300))"></div>
+                                </div>
+                              </div>
+
+                              <div v-if="child.card.src" class="text-xs opacity-70 mt-2">
+                                <strong>Fonte:</strong> {{ previewText(child.card.src, 160) }}
+                              </div>
+
+                              <div class="preview-hint">
+                                <i class="pi pi-pen-to-square mr-2" />
+                                Clique no card para editar
+                              </div>
+                            </template>
+                          </Card>
                         </div>
-                      </template>
-                    </Card>
+                      </Transition>
+                    </template>
                   </div>
                 </template>
               </DataView>
@@ -2853,6 +2958,41 @@ onBeforeUnmount(() => {
 }
 .card-item :deep(.p-card-body) {
   padding: 14px;
+}
+.expand-btn {
+  width: 32px;
+  height: 32px;
+  margin-right: 4px;
+}
+.children-container {
+  margin-left: 48px;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 16px;
+  border-left: 3px solid rgba(99, 102, 241, 0.3);
+}
+.card-item.card-child :deep(.p-card) {
+  background: rgba(99, 102, 241, 0.04);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+.children-enter-active,
+.children-leave-active {
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+.children-enter-from,
+.children-leave-to {
+  opacity: 0;
+  max-height: 0;
+  transform: translateY(-10px);
+}
+.children-enter-to,
+.children-leave-from {
+  opacity: 1;
+  max-height: 2000px;
+  transform: translateY(0);
 }
 .clickable {
   cursor: pointer;
