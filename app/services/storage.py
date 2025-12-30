@@ -1,12 +1,14 @@
 import os
 import json
 import duckdb
+import sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
 
 DATA_DIR = Path("data/generator")
 DB_PATH = Path("data/storage.duckdb")
+SQLITE_PATH = Path("data/storage.sqlite3")
 
 def _ensure_data_dir():
     DATA_DIR.mkdir(exist_ok=True)
@@ -47,6 +49,43 @@ def _get_connection():
     """)
     return conn
 
+def _get_sqlite_connection():
+    _ensure_data_dir()
+    conn = sqlite3.connect(str(SQLITE_PATH))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analyses (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT,
+            text TEXT,
+            summary TEXT,
+            metadata TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cards (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT,
+            analysis_id TEXT,
+            source_text TEXT,
+            cards_count INTEGER,
+            cards TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_responses (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT,
+            provider TEXT,
+            model TEXT,
+            prompt TEXT,
+            response TEXT,
+            cards_id TEXT,
+            analysis_id TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
 def _to_toon(data: Dict) -> str:
     """Converte dict para formato TOON"""
     lines = []
@@ -79,6 +118,14 @@ def save_analysis(text: str, summary: str, metadata: Optional[Dict] = None) -> s
     """, [analysis_id, timestamp, text, summary, json.dumps(metadata or {})])
     conn.close()
     
+    sqlite_conn = _get_sqlite_connection()
+    sqlite_conn.execute("""
+        INSERT INTO analyses (id, timestamp, text, summary, metadata)
+        VALUES (?, ?, ?, ?, ?)
+    """, [analysis_id, timestamp.isoformat(), text, summary, json.dumps(metadata or {})])
+    sqlite_conn.commit()
+    sqlite_conn.close()
+    
     # Salvar arquivo TOON para compatibilidade
     record = {"id": analysis_id, "timestamp": timestamp.isoformat(), "text": text, "summary": summary, "metadata": metadata or {}}
     filepath = DATA_DIR / f"analysis_{analysis_id}.toon"
@@ -97,6 +144,14 @@ def save_cards(cards: List[Dict], analysis_id: Optional[str] = None, source_text
         VALUES (?, ?, ?, ?, ?, ?)
     """, [cards_id, timestamp, analysis_id or "", source_text or "", len(cards), json.dumps(cards)])
     conn.close()
+    
+    sqlite_conn = _get_sqlite_connection()
+    sqlite_conn.execute("""
+        INSERT INTO cards (id, timestamp, analysis_id, source_text, cards_count, cards)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, [cards_id, timestamp.isoformat(), analysis_id or "", source_text or "", len(cards), json.dumps(cards)])
+    sqlite_conn.commit()
+    sqlite_conn.close()
     
     # Salvar arquivo TOON para compatibilidade
     record = {"id": cards_id, "timestamp": timestamp.isoformat(), "analysis_id": analysis_id or "", "source_text": source_text or "", "cards_count": str(len(cards)), "cards": cards}
@@ -152,5 +207,13 @@ def save_llm_response(provider: str, model: str, prompt: str, response: str, car
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, [response_id, timestamp, provider, model, prompt, response, cards_id or "", analysis_id or ""])
     conn.close()
+    
+    sqlite_conn = _get_sqlite_connection()
+    sqlite_conn.execute("""
+        INSERT INTO llm_responses (id, timestamp, provider, model, prompt, response, cards_id, analysis_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, [response_id, timestamp.isoformat(), provider, model, prompt, response, cards_id or "", analysis_id or ""])
+    sqlite_conn.commit()
+    sqlite_conn.close()
     
     return response_id
