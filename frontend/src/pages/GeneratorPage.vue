@@ -1005,6 +1005,11 @@ function clearAllCards() {
 const editVisible = ref(false)
 const editIndex = ref(-1)
 const editDraft = ref({ front: '', back: '', deck: 'General' })
+const editContextMenuRef = ref(null)
+const editSelectedText = ref('')
+const editCustomInstructionVisible = ref(false)
+const editCustomInstruction = ref('')
+const editPendingCardType = ref('')
 
 const availableDeckNames = computed(() => {
   const names = Object.keys(decks.value || {})
@@ -1051,6 +1056,78 @@ function deleteEditCard() {
   editVisible.value = false
   notify('Card removido', 'info', 2000)
 }
+
+function onEditTextSelect(event) {
+  const selection = window.getSelection()
+  const text = selection?.toString().trim() || ''
+  editSelectedText.value = text
+  if (text && event.button === 2) {
+    event.preventDefault()
+    editContextMenuRef.value?.show(event)
+  }
+}
+
+function editGenerateCard(type) {
+  if (!editSelectedText.value) return
+  editPendingCardType.value = type
+  editCustomInstructionVisible.value = true
+}
+
+async function editGenerateCardConfirm() {
+  const text = editSelectedText.value
+  const instruction = editCustomInstruction.value.trim()
+  const type = editPendingCardType.value
+  
+  editCustomInstructionVisible.value = false
+  editCustomInstruction.value = ''
+  
+  if (!text) return
+  
+  try {
+    generating.value = true
+    startTimer('Gerando...')
+    showProgress('Gerando card...')
+    setProgress(10)
+    
+    const context = instruction || documentContext.value
+    const newCards = await generateCardsWithStream(
+      text,
+      editDraft.value.deck,
+      context,
+      type,
+      selectedModel.value,
+      ({ stage }) => {
+        if (progressValue.value < 92) setProgress(progressValue.value + 4)
+      },
+      currentAnalysisId.value
+    )
+    
+    cards.value = [...cards.value, ...newCards]
+    notify(`${newCards.length} card(s) criado(s)`, 'success')
+    completeProgress()
+  } catch (error) {
+    notify('Erro ao gerar: ' + (error?.message || String(error)), 'error', 8000)
+  } finally {
+    stopTimer()
+    generating.value = false
+    progressVisible.value = false
+  }
+}
+
+const editContextMenuModel = computed(() => [
+  {
+    label: 'Gerar card Basic',
+    icon: 'pi pi-plus',
+    disabled: !editSelectedText.value,
+    command: () => editGenerateCard('basic')
+  },
+  {
+    label: 'Gerar card Cloze',
+    icon: 'pi pi-plus',
+    disabled: !editSelectedText.value,
+    command: () => editGenerateCard('cloze')
+  }
+])
 
 // Markdown “safe”
 function escapeHtml(s) {
@@ -1383,7 +1460,8 @@ const contextMenuModel = computed(() => [
   { label: 'Analisar texto novamente', command: contextAnalyze },
   { separator: true },
   { label: 'Gerar cartão básico', disabled: !contextHasSelection.value, command: () => contextGenerate('basic') },
-  { label: 'Gerar cartão cloze', disabled: !contextHasSelection.value, command: () => contextGenerate('cloze') }
+  { label: 'Gerar cartão cloze', disabled: !contextHasSelection.value, command: () => contextGenerate('cloze') },
+  { label: 'Gerar ambos', disabled: !contextHasSelection.value, command: () => contextGenerate('both') }
 ])
 
 // ============================================================
@@ -1998,6 +2076,8 @@ onBeforeUnmount(() => {
       class="modern-dialog"
       style="width: min(980px, 96vw);"
     >
+      <ContextMenu ref="editContextMenuRef" :model="editContextMenuModel" appendTo="body" />
+
       <div class="edit-meta">
         <Tag severity="info" class="pill">
           <i class="pi pi-hashtag mr-2" /> {{ editIndex + 1 }}
@@ -2030,11 +2110,21 @@ onBeforeUnmount(() => {
       <div class="grid mt-2">
         <div class="col-12 md:col-6">
           <div class="field-title">Front</div>
-          <Textarea v-model="editDraft.front" autoResize class="w-full field-area" />
+          <Textarea 
+            v-model="editDraft.front" 
+            autoResize 
+            class="w-full field-area" 
+            @contextmenu="onEditTextSelect"
+          />
         </div>
         <div class="col-12 md:col-6">
           <div class="field-title">Back</div>
-          <Textarea v-model="editDraft.back" autoResize class="w-full field-area" />
+          <Textarea 
+            v-model="editDraft.back" 
+            autoResize 
+            class="w-full field-area"
+            @contextmenu="onEditTextSelect"
+          />
         </div>
       </div>
 
@@ -2056,6 +2146,35 @@ onBeforeUnmount(() => {
         <Button label="Excluir" icon="pi pi-trash" severity="danger" outlined @click="deleteEditCard" />
         <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="editVisible = false" />
         <Button label="Salvar" icon="pi pi-check" @click="saveEditCard" />
+      </template>
+    </Dialog>
+
+    <!-- CUSTOM INSTRUCTION DIALOG -->
+    <Dialog
+      v-model:visible="editCustomInstructionVisible"
+      header="Instrução Customizada"
+      modal
+      appendTo="body"
+      class="modern-dialog"
+      style="width: min(640px, 96vw);"
+    >
+      <div class="mb-3">
+        <label class="font-semibold">Instrução para o LLM (opcional)</label>
+        <Textarea 
+          v-model="editCustomInstruction" 
+          autoResize 
+          class="w-full mt-2" 
+          rows="4"
+          placeholder="Ex: Foque em conceitos técnicos, use linguagem formal..."
+        />
+        <small class="text-color-secondary mt-2 block">
+          Deixe em branco para usar o contexto padrão do documento.
+        </small>
+      </div>
+
+      <template #footer>
+        <Button label="Cancelar" severity="secondary" outlined @click="editCustomInstructionVisible = false" />
+        <Button label="Gerar" icon="pi pi-bolt" @click="editGenerateCardConfirm" />
       </template>
     </Dialog>
 
