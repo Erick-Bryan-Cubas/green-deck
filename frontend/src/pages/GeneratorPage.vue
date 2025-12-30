@@ -1077,6 +1077,7 @@ async function editGenerateCardConfirm() {
   const text = editSelectedText.value
   const instruction = editCustomInstruction.value.trim()
   const type = editPendingCardType.value
+  const sourceCardId = editIndex.value
   
   editCustomInstructionVisible.value = false
   editCustomInstruction.value = ''
@@ -1101,6 +1102,10 @@ async function editGenerateCardConfirm() {
       },
       currentAnalysisId.value
     )
+    
+    newCards.forEach(card => {
+      card.src = `Card #${sourceCardId + 1}`
+    })
     
     cards.value = [...cards.value, ...newCards]
     notify(`${newCards.length} card(s) criado(s)`, 'success')
