@@ -1938,11 +1938,7 @@ onBeforeUnmount(() => {
             </template>
           </div>
 
-          <div v-if="processingTimerVisible && !immersiveReader" class="timer-chip">
-            <span class="timer-ico">⏱️</span>
-            <span class="timer-text">{{ timerText }}</span>
-            <span class="timer-val">{{ timerSeconds }}s</span>
-          </div>
+
         </div>
       </template>
     </Toolbar>
