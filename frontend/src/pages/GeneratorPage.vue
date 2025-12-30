@@ -1570,10 +1570,12 @@ onBeforeUnmount(() => {
   <!-- Sidebar -->
   <aside v-if="sidebarOpen" class="sidebar" :class="{ 'expanded': sidebarExpanded }">
     <div class="sidebar-header">
+      <img src="/green.svg" alt="Logo" class="sidebar-logo" />
       <Button 
-        :icon="sidebarExpanded ? 'pi pi-angle-left' : 'pi pi-angle-right'" 
+        :icon="sidebarExpanded ? 'pi pi-chevron-left' : 'pi pi-chevron-right'" 
         text 
         rounded 
+        severity="secondary"
         @click="toggleSidebarExpand" 
         class="sidebar-toggle"
         :title="sidebarExpanded ? 'Recolher' : 'Expandir'"
@@ -1648,10 +1650,6 @@ onBeforeUnmount(() => {
           <Button icon="pi pi-bars" text rounded @click="toggleSidebar" class="menu-toggle" title="Menu" v-if="!sidebarOpen" />
           
           <div class="brand">
-            <div class="brand-icon">
-              <img class="brand-icon-img" src="/green.svg" alt="Green Deck" />
-            </div>
-
             <div class="brand-text">
               <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
               <div v-if="!immersiveReader" class="brand-subtitle">Flashcard generator powered by AI 🎈</div>
@@ -2223,7 +2221,7 @@ onBeforeUnmount(() => {
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -2236,20 +2234,44 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid rgba(148, 163, 184, 0.18);
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   background: rgba(255, 255, 255, 0.03);
   min-height: 70px;
+  overflow: visible;
+  gap: 12px;
+}
+
+.sidebar-logo {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
 
 .sidebar-toggle {
-  width: 38px;
-  height: 38px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+  background: rgba(16, 185, 129, 0.12) !important;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  margin-left: auto;
+  border-radius: 8px !important;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(16, 185, 129, 0.22) !important;
+  transform: scale(1.08);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.sidebar-toggle :deep(.p-button-icon) {
+  font-size: 12px;
 }
 
 .sidebar-nav {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: visible;
   padding: 12px 8px;
 }
 
@@ -2494,21 +2516,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.brand-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(16, 185, 129, 0.15));
-  border: 1px solid rgba(148, 163, 184, 0.2);
-}
-
-.brand-icon-img {
-  width: 24px;
-  height: 24px;
 }
 
 .brand-text {
