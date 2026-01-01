@@ -46,6 +46,7 @@ SYSTEM_CLOZE = (
 class TextRequest(BaseModel):
     text: str
     analysisModel: Optional[str] = None  # Modelo para embeddings/análise
+    analysisMode: Optional[str] = "auto"  # "embedding", "llm", ou "auto"
 
 
 class CardsRequest(BaseModel):
@@ -928,30 +929,54 @@ def _cards_lang_from_cards(cards) -> str:
     return detect_language_pt_en_es(blob)
 
 
+# Padrões conhecidos de modelos de embedding
+EMBEDDING_MODEL_PATTERNS = [
+    r"embed", r"nomic", r"mxbai", r"bge-", r"gte-", r"e5-",
+    r"multilingual-e5", r"sentence-", r"all-minilm", r"instructor",
+    r"jina-embeddings", r"snowflake-arctic-embed",
+]
+
+def _is_embedding_model(model_name: str) -> bool:
+    """Detecta se um modelo é de embedding baseado no nome."""
+    import re
+    name_lower = model_name.lower()
+    for pattern in EMBEDDING_MODEL_PATTERNS:
+        if re.search(pattern, name_lower):
+            return True
+    return False
+
+
 @router.post("/analyze-text-stream")
 async def analyze_text_stream(request: TextRequest):
     async def generate():
         try:
             # Usa modelo do request ou fallback para config
             analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
-            logger.info("Ollama analysis model (embeddings): %s", analysis_model)
+            analysis_mode = request.analysisMode or "auto"
+            
+            # Detecta automaticamente o modo baseado no modelo
+            if analysis_mode == "auto":
+                analysis_mode = "embedding" if _is_embedding_model(analysis_model) else "llm"
+            
+            logger.info("Analysis model: %s, mode: %s", analysis_model, analysis_mode)
 
             from app.services.ollama import (
                 ollama_embed,
+                ollama_generate_stream,
                 chunk_text_semantic,
                 chunk_text,
                 cosine_similarity
             )
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing'})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing', 'mode': analysis_mode})}\n\n"
 
             src = truncate_source(request.text or "")
             
-            # Usa chunking semântico com overlap para melhor contexto
             # Detecta idioma para escolher tokenizer correto
             detected_lang = detect_language_pt_en_es(src[:500])
             language = "portuguese" if detected_lang == "pt-br" else "english"
             
+            # Chunking semântico com overlap para melhor contexto
             chunks = chunk_text_semantic(
                 src,
                 max_words=400,
@@ -963,54 +988,119 @@ async def analyze_text_stream(request: TextRequest):
             if not chunks:
                 chunks = chunk_text(src, chunk_size=400)
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'chunking', 'chunks': len(chunks), 'method': 'semantic' if len(chunks) > 0 else 'simple'})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'chunking', 'chunks': len(chunks)})}\n\n"
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'embedding', 'model': analysis_model})}\n\n"
+            # ===== MODO EMBEDDING =====
+            if analysis_mode == "embedding":
+                yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'embedding', 'model': analysis_model})}\n\n"
 
-            chunk_embeddings = []
-            for i, chunk in enumerate(chunks):
-                emb = await ollama_embed(analysis_model, chunk)
-                chunk_embeddings.append((chunk, emb))
-                # Progresso incremental durante embedding
-                if len(chunks) > 3:
-                    progress = 30 + int((i + 1) / len(chunks) * 25)
-                    yield f"event: progress\ndata: {json.dumps({'percent': progress, 'stage': 'embedding', 'chunk': i + 1, 'total': len(chunks)})}\n\n"
+                chunk_embeddings = []
+                for i, chunk in enumerate(chunks):
+                    try:
+                        emb = await ollama_embed(analysis_model, chunk)
+                        chunk_embeddings.append((chunk, emb))
+                    except Exception as embed_error:
+                        # Se embedding falhar, fallback para LLM
+                        logger.warning("Embedding failed: %s. Falling back to LLM mode.", embed_error)
+                        analysis_mode = "llm"
+                        yield f"event: progress\ndata: {json.dumps({'percent': 35, 'stage': 'fallback_to_llm', 'reason': str(embed_error)})}\n\n"
+                        break
+                    
+                    if len(chunks) > 3:
+                        progress = 30 + int((i + 1) / len(chunks) * 25)
+                        yield f"event: progress\ndata: {json.dumps({'percent': progress, 'stage': 'embedding', 'chunk': i + 1, 'total': len(chunks)})}\n\n"
 
-            # Query semântica adaptada ao idioma detectado
-            if detected_lang == "pt-br":
-                query = "conceitos importantes, definições técnicas, contrastes e distinções"
-            else:
-                query = "important concepts, technical definitions, contrasts and distinctions"
-            
-            query_emb = await ollama_embed(analysis_model, query)
+                # Continua com embedding se não houve fallback
+                if analysis_mode == "embedding" and chunk_embeddings:
+                    # Query semântica adaptada ao idioma detectado
+                    if detected_lang == "pt-br":
+                        query = "conceitos importantes, definições técnicas, contrastes e distinções"
+                    else:
+                        query = "important concepts, technical definitions, contrasts and distinctions"
+                    
+                    query_emb = await ollama_embed(analysis_model, query)
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'ranking'})}\n\n"
+                    yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'ranking'})}\n\n"
 
-            scored = [(chunk, cosine_similarity(emb, query_emb)) for chunk, emb in chunk_embeddings]
-            scored.sort(key=lambda x: x[1], reverse=True)
+                    scored = [(chunk, cosine_similarity(emb, query_emb)) for chunk, emb in chunk_embeddings]
+                    scored.sort(key=lambda x: x[1], reverse=True)
 
-            # Seleciona top chunks com score mínimo
-            min_similarity = 0.3
-            top_chunks = [
-                chunk for chunk, score in scored[:5]
-                if score >= min_similarity
-            ][:3]  # Máximo 3 chunks
-            
-            if not top_chunks and scored:
-                # Fallback: pega os 3 melhores mesmo com score baixo
-                top_chunks = [chunk for chunk, _ in scored[:3]]
-            
-            summary = "\n\n".join(top_chunks)
+                    # Seleciona top chunks com score mínimo
+                    min_similarity = 0.3
+                    top_chunks = [
+                        chunk for chunk, score in scored[:5]
+                        if score >= min_similarity
+                    ][:3]
+                    
+                    if not top_chunks and scored:
+                        top_chunks = [chunk for chunk, _ in scored[:3]]
+                    
+                    summary = "\n\n".join(top_chunks)
+                    method_used = "embedding"
 
-            result = {"content": [{"type": "text", "text": summary}]}
+            # ===== MODO LLM =====
+            if analysis_mode == "llm":
+                yield f"event: progress\ndata: {json.dumps({'percent': 40, 'stage': 'llm_analysis', 'model': analysis_model})}\n\n"
 
-            analysis_id = save_analysis(src, summary, {"chunks": len(chunks), "top_chunks": len(top_chunks)})
+                # Combina todos os chunks para o prompt
+                full_text = "\n\n".join(chunks[:5])  # Limita a 5 chunks para não exceder contexto
+                
+                if detected_lang == "pt-br":
+                    prompt = f"""Analise o texto abaixo e extraia os 3-5 conceitos mais importantes para criar flashcards.
+
+TEXTO:
+{full_text[:4000]}
+
+TAREFA:
+1. Identifique os conceitos-chave, definições e fatos importantes
+2. Retorne um resumo estruturado com os pontos principais
+3. Foque em informações que seriam úteis para memorização
+
+RESPONDA COM O RESUMO DOS CONCEITOS-CHAVE:"""
+                else:
+                    prompt = f"""Analyze the text below and extract the 3-5 most important concepts for creating flashcards.
+
+TEXT:
+{full_text[:4000]}
+
+TASK:
+1. Identify key concepts, definitions and important facts
+2. Return a structured summary with the main points
+3. Focus on information useful for memorization
+
+RESPOND WITH THE SUMMARY OF KEY CONCEPTS:"""
+
+                system = "Você é um assistente especializado em análise de texto educacional."
+                options = {"num_predict": 1024, "temperature": 0.3}
+                
+                raw = ""
+                try:
+                    async for piece in ollama_generate_stream(analysis_model, prompt, system=system, options=options):
+                        raw += piece
+                except Exception as llm_error:
+                    logger.warning("LLM analysis failed: %s", llm_error)
+                    # Fallback: retorna os primeiros chunks
+                    raw = "\n\n".join(chunks[:3])
+                
+                yield f"event: progress\ndata: {json.dumps({'percent': 80, 'stage': 'llm_complete'})}\n\n"
+                
+                summary = raw.strip() if raw.strip() else "\n\n".join(chunks[:3])
+                method_used = "llm"
+
+            result = {"content": [{"type": "text", "text": summary}], "method": method_used}
+
+            analysis_id = save_analysis(src, summary, {
+                "chunks": len(chunks), 
+                "method": method_used,
+                "model": analysis_model
+            })
             result["analysis_id"] = analysis_id
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done', 'analysis_id': analysis_id})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done', 'analysis_id': analysis_id, 'method': method_used})}\n\n"
             yield f"event: result\ndata: {json.dumps(result)}\n\n"
 
         except Exception as e:
+            logger.exception("Error in analyze_text_stream")
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
