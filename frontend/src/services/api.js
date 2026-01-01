@@ -208,9 +208,11 @@ function parseClaudeResponse(responseData) {
  * Returns a concise summary of the document's main points and author
  *
  * @param {string} text - The full text to analyze
+ * @param {string} analysisModel - Model to use for embeddings/analysis
+ * @param {(percent: number)=>void} onProgress - Progress callback
  * @returns {Promise<string>} - Context summary
  */
-async function analyzeText(text, onProgress = null) {
+async function analyzeText(text, analysisModel = null, onProgress = null) {
   try {
     const { anthropicApiKey } = getStoredApiKeys();
 
@@ -219,6 +221,7 @@ async function analyzeText(text, onProgress = null) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: truncateText(text, 10000),
+        analysisModel: analysisModel,
         userApiKey: anthropicApiKey || null,
       }),
     });
@@ -377,7 +380,9 @@ async function generateCardsWithStream(
   cardType = "basic",
   model = "qwen-flashcard",
   onProgress = null,
-  analysisId = null
+  analysisId = null,
+  validationModel = null,
+  analysisModel = null
 ) {
   const keys = getStoredApiKeys();
 
@@ -392,6 +397,8 @@ async function generateCardsWithStream(
         deckOptions,
         cardType,
         model,
+        validationModel: validationModel || model,  // Usa modelo de geração como fallback
+        analysisModel: analysisModel || model,       // Usa modelo de geração como fallback
         analysisId,
         anthropicApiKey: keys.anthropicApiKey || null,
         openaiApiKey: keys.openaiApiKey || null,

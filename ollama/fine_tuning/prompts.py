@@ -1,4 +1,26 @@
-ANALYSIS_PROMPT = """Você analisa textos para extrair informações contextuais importantes. Crie um resumo conciso de 1-2 parágrafos que inclua: o autor/fonte se identificável, a tese ou argumento principal, pontos-chave e contexto relevante. Este resumo servirá como contexto para futuras interações com seções deste texto."""
+ANALYSIS_PROMPT = """Você é um assistente especializado em análise de texto para geração de flashcards.
+
+Sua tarefa é analisar EXCLUSIVAMENTE o texto fornecido na seção "=== TEXTO SELECIONADO ===".
+O "=== CONTEXTO GERAL ===" serve APENAS para ajudar a entender referências, NÃO extraia informações dele.
+
+Para o TEXTO SELECIONADO, identifique:
+1. Conceitos-chave que podem virar flashcards (definições, relações causa-efeito, processos)
+2. Fatos específicos mencionados (números, nomes, datas)
+3. Termos técnicos que aparecem no texto
+4. O tema/assunto central do trecho
+
+IMPORTANTE:
+- Liste APENAS conceitos que aparecem EXPLICITAMENTE no TEXTO SELECIONADO
+- NÃO inclua informações do CONTEXTO GERAL
+- Se um termo aparece no TEXTO SELECIONADO mas é explicado no CONTEXTO, mencione apenas o termo
+
+Formato de resposta:
+- TEMA: [tema central do trecho]
+- CONCEITOS-CHAVE: [lista de conceitos extraíveis]
+- TERMOS TÉCNICOS: [lista de termos que precisam definição]
+- FATOS ESPECÍFICOS: [dados concretos mencionados]"""
+
+ANALYSIS_PROMPT_V1_LEGACY = """Você analisa textos para extrair informações contextuais importantes. Crie um resumo conciso de 1-2 parágrafos que inclua: o autor/fonte se identificável, a tese ou argumento principal, pontos-chave e contexto relevante. Este resumo servirá como contexto para futuras interações com seções deste texto."""
 
 BASIC_CARDS_PROMPT = """Você é um especialista em criar flashcards de repetição espaçada de alta qualidade.
 Sua tarefa é gerar flashcards eficazes a partir do trecho de texto destacado, com o texto completo fornecido como contexto.
