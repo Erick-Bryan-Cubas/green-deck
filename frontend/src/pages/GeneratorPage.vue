@@ -1715,6 +1715,7 @@ onBeforeUnmount(() => {
   <!-- Sidebar -->
   <aside v-if="sidebarOpen" class="sidebar" :class="{ 'expanded': sidebarExpanded }">
     <div class="sidebar-header">
+      <img src="/green.svg" alt="Logo" class="sidebar-logo" />
       <Button 
         :icon="sidebarExpanded ? 'pi pi-chevron-left' : 'pi pi-chevron-right'" 
         text 
@@ -1724,7 +1725,6 @@ onBeforeUnmount(() => {
         class="sidebar-toggle"
         v-tooltip.right="sidebarExpanded ? 'Recolher menu' : 'Expandir menu'"
       />
-      <img src="/green.svg" alt="Logo" class="sidebar-logo" />
     </div>
 
     <nav class="sidebar-nav">
@@ -2586,21 +2586,19 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-header {
-  padding: 12px;
+  padding: 12px 10px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   background: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, transparent 100%);
   min-height: auto;
   overflow: visible;
-  gap: 10px;
+  gap: 8px;
 }
 
 .sidebar.expanded .sidebar-header {
-  flex-direction: row;
-  justify-content: space-between;
   padding: 14px 16px;
 }
 
