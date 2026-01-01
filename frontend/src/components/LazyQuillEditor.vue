@@ -60,12 +60,22 @@ function focus() {
   return editorRef.value?.focus?.()
 }
 
+function getDelta() {
+  return editorRef.value?.getDelta?.()
+}
+
+function setDelta(delta) {
+  return editorRef.value?.setDelta?.(delta)
+}
+
 defineExpose({
   getHtml,
   getText,
   clearContent,
   setContent,
-  focus
+  focus,
+  getDelta,
+  setDelta
 })
 </script>
 
