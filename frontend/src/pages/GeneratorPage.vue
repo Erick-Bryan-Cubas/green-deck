@@ -653,9 +653,16 @@ function buildActiveSessionSnapshot() {
 }
 
 let persistSessionTimer = null
+let saveStatusTimer = null
+
 function schedulePersistActiveSession() {
   if (isRestoringSession.value) return
   if (persistSessionTimer) clearTimeout(persistSessionTimer)
+  if (saveStatusTimer) clearTimeout(saveStatusTimer)
+  
+  // Mostra "Salvando..." imediatamente
+  saveStatus.value = 'saving'
+  
   persistSessionTimer = setTimeout(() => {
     const snap = buildActiveSessionSnapshot()
 
@@ -664,8 +671,17 @@ function schedulePersistActiveSession() {
       (Array.isArray(snap.cards) && snap.cards.length > 0) ||
       normalizePlainText(snap.documentContext).length > 0
 
-    if (!hasAny) return
+    if (!hasAny) {
+      saveStatus.value = 'idle'
+      return
+    }
     upsertSession(snap)
+    
+    // Mostra "Salvo ✓" por 2 segundos, depois esconde
+    saveStatus.value = 'saved'
+    saveStatusTimer = setTimeout(() => {
+      saveStatus.value = 'idle'
+    }, 2500)
   }, 350)
 }
 
@@ -784,6 +800,266 @@ const lastEditorHtml = ref('')
 const lastTextForAnalysis = ref('')
 const lastNormalizedTextOnChange = ref('')
 const hasDocumentContext = computed(() => !!documentContext.value)
+
+// ============================================================
+// Indicador de salvamento
+// ============================================================
+const saveStatus = ref('saved') // 'saving' | 'saved' | 'idle'
+const saveStatusText = computed(() => {
+  if (saveStatus.value === 'saving') return 'Salvando...'
+  if (saveStatus.value === 'saved') return 'Salvo ✓'
+  return ''
+})
+const saveStatusIcon = computed(() => {
+  if (saveStatus.value === 'saving') return 'pi pi-spin pi-spinner'
+  if (saveStatus.value === 'saved') return 'pi pi-check-circle'
+  return ''
+})
+const saveStatusSeverity = computed(() => {
+  if (saveStatus.value === 'saving') return 'warning'
+  return 'success'
+})
+
+// ============================================================
+// Estatísticas de texto
+// ============================================================
+const textStats = computed(() => {
+  const text = lastFullText.value || ''
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0
+  const chars = text.length
+  const charsNoSpaces = text.replace(/\s/g, '').length
+  // Tempo de leitura médio: 200 palavras por minuto
+  const readingTimeMin = Math.ceil(words / 200)
+  return {
+    words,
+    chars,
+    charsNoSpaces,
+    readingTimeMin,
+    readingTimeLabel: readingTimeMin <= 1 ? '< 1 min' : `${readingTimeMin} min`
+  }
+})
+
+// ============================================================
+// Navegação entre highlights
+// ============================================================
+const highlightPositions = ref([]) // [{index, length, color}]
+const currentHighlightIndex = ref(-1)
+
+function scanHighlights() {
+  if (!editorRef.value) {
+    highlightPositions.value = []
+    return
+  }
+  
+  const delta = editorRef.value.getDelta?.()
+  if (!delta || !delta.ops) {
+    highlightPositions.value = []
+    return
+  }
+  
+  const positions = []
+  let idx = 0
+  
+  delta.ops.forEach((op) => {
+    const ins = op.insert
+    const len = typeof ins === 'string' ? ins.length : 1
+    const bg = op.attributes?.background
+    
+    if (bg && typeof bg === 'string' && bg.startsWith('#')) {
+      positions.push({ index: idx, length: len, color: bg })
+    }
+    idx += len
+  })
+  
+  highlightPositions.value = positions
+}
+
+const hasHighlights = computed(() => highlightPositions.value.length > 0)
+const highlightCount = computed(() => highlightPositions.value.length)
+const currentHighlightLabel = computed(() => {
+  if (!hasHighlights.value) return '0/0'
+  const current = currentHighlightIndex.value + 1
+  return `${current > 0 ? current : '-'}/${highlightCount.value}`
+})
+
+function goToHighlight(index) {
+  if (!editorRef.value || highlightPositions.value.length === 0) return
+  
+  const pos = highlightPositions.value[index]
+  if (!pos) return
+  
+  currentHighlightIndex.value = index
+  
+  // Acessa o Quill interno via exposed method ou diretamente
+  const quill = editorRef.value.$el?.querySelector('.ql-editor')?.parentElement?.__quill
+  if (quill) {
+    quill.setSelection(pos.index, pos.length)
+    // Scroll para o highlight
+    const bounds = quill.getBounds(pos.index, pos.length)
+    if (bounds) {
+      const container = editorRef.value.$el?.querySelector('.ql-container')
+      if (container) {
+        container.scrollTop = bounds.top - container.clientHeight / 3
+      }
+    }
+  }
+}
+
+function goToPrevHighlight() {
+  if (!hasHighlights.value) return
+  let newIndex = currentHighlightIndex.value - 1
+  if (newIndex < 0) newIndex = highlightPositions.value.length - 1
+  goToHighlight(newIndex)
+}
+
+function goToNextHighlight() {
+  if (!hasHighlights.value) return
+  let newIndex = currentHighlightIndex.value + 1
+  if (newIndex >= highlightPositions.value.length) newIndex = 0
+  goToHighlight(newIndex)
+}
+
+// ============================================================
+// Busca no texto do editor (Find in Text)
+// ============================================================
+const editorSearchVisible = ref(false)
+const editorSearchQuery = ref('')
+const editorSearchResults = ref([]) // [{index, length}]
+const editorSearchCurrentIndex = ref(-1)
+const editorSearchInputRef = ref(null)
+
+const hasEditorSearchResults = computed(() => editorSearchResults.value.length > 0)
+const editorSearchLabel = computed(() => {
+  if (!editorSearchQuery.value.trim()) return ''
+  if (!hasEditorSearchResults.value) return '0 resultados'
+  const current = editorSearchCurrentIndex.value + 1
+  return `${current}/${editorSearchResults.value.length}`
+})
+
+function toggleEditorSearch() {
+  editorSearchVisible.value = !editorSearchVisible.value
+  if (editorSearchVisible.value) {
+    nextTick(() => {
+      editorSearchInputRef.value?.focus()
+    })
+  } else {
+    clearEditorSearch()
+  }
+}
+
+function clearEditorSearch() {
+  editorSearchQuery.value = ''
+  editorSearchResults.value = []
+  editorSearchCurrentIndex.value = -1
+  removeEditorSearchHighlights()
+}
+
+function closeEditorSearch() {
+  editorSearchVisible.value = false
+  clearEditorSearch()
+}
+
+function performEditorSearch() {
+  const query = editorSearchQuery.value.trim().toLowerCase()
+  if (!query) {
+    editorSearchResults.value = []
+    editorSearchCurrentIndex.value = -1
+    removeEditorSearchHighlights()
+    return
+  }
+  
+  const text = (lastFullText.value || '').toLowerCase()
+  const results = []
+  let pos = 0
+  
+  while (pos < text.length) {
+    const idx = text.indexOf(query, pos)
+    if (idx === -1) break
+    results.push({ index: idx, length: query.length })
+    pos = idx + 1
+  }
+  
+  editorSearchResults.value = results
+  editorSearchCurrentIndex.value = results.length > 0 ? 0 : -1
+  
+  if (results.length > 0) {
+    goToEditorSearchResult(0)
+  }
+}
+
+function goToEditorSearchResult(index) {
+  if (!editorRef.value || editorSearchResults.value.length === 0) return
+  
+  const result = editorSearchResults.value[index]
+  if (!result) return
+  
+  editorSearchCurrentIndex.value = index
+  
+  const quill = editorRef.value.$el?.querySelector('.ql-editor')?.parentElement?.__quill
+  if (quill) {
+    quill.setSelection(result.index, result.length)
+    const bounds = quill.getBounds(result.index, result.length)
+    if (bounds) {
+      const container = editorRef.value.$el?.querySelector('.ql-container')
+      if (container) {
+        container.scrollTop = bounds.top - container.clientHeight / 3
+      }
+    }
+  }
+}
+
+function goToPrevEditorSearchResult() {
+  if (!hasEditorSearchResults.value) return
+  let newIndex = editorSearchCurrentIndex.value - 1
+  if (newIndex < 0) newIndex = editorSearchResults.value.length - 1
+  goToEditorSearchResult(newIndex)
+}
+
+function goToNextEditorSearchResult() {
+  if (!hasEditorSearchResults.value) return
+  let newIndex = editorSearchCurrentIndex.value + 1
+  if (newIndex >= editorSearchResults.value.length) newIndex = 0
+  goToEditorSearchResult(newIndex)
+}
+
+function removeEditorSearchHighlights() {
+  // Remove visual highlights (se implementado via CSS/overlay)
+}
+
+function onEditorSearchKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    if (e.shiftKey) {
+      goToPrevEditorSearchResult()
+    } else {
+      goToNextEditorSearchResult()
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    closeEditorSearch()
+  }
+}
+
+watch(editorSearchQuery, () => {
+  performEditorSearch()
+})
+
+// ============================================================
+// Undo/Redo do Editor (Quill)
+// ============================================================
+function editorUndo() {
+  const quill = editorRef.value?.$el?.querySelector('.ql-editor')?.parentElement?.__quill
+  if (quill?.history) {
+    quill.history.undo()
+  }
+}
+
+function editorRedo() {
+  const quill = editorRef.value?.$el?.querySelector('.ql-editor')?.parentElement?.__quill
+  if (quill?.history) {
+    quill.history.redo()
+  }
+}
 
 // Chaves
 const storedKeys = ref(getStoredApiKeys())
@@ -1532,6 +1808,94 @@ function exportAsMarkdown() {
 }
 
 // ============================================================
+// Export Texto do Editor
+// ============================================================
+function exportTextAs(format = 'txt') {
+  const text = lastFullText.value?.trim()
+  if (!text) {
+    notify('Nenhum texto para exportar', 'info')
+    return
+  }
+  
+  const now = new Date().toISOString().slice(0, 10)
+  let content = ''
+  let filename = ''
+  let mimeType = 'text/plain'
+  
+  if (format === 'md') {
+    // Exporta como Markdown (tenta preservar formatação básica)
+    content = `# Documento\n\n${text}`
+    filename = `documento-${now}.md`
+    mimeType = 'text/markdown'
+  } else if (format === 'html') {
+    // Exporta como HTML
+    const html = lastEditorHtml.value || escapeHtml(text).replace(/\n/g, '<br>')
+    content = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documento - ${now}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
+    .cloze { background: #fef08a; padding: 2px 4px; border-radius: 3px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+${html}
+</body>
+</html>`
+    filename = `documento-${now}.html`
+    mimeType = 'text/html'
+  } else {
+    // Texto puro
+    content = text
+    filename = `documento-${now}.txt`
+    mimeType = 'text/plain'
+  }
+  
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  setTimeout(() => {
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }, 100)
+  
+  notify(`Texto exportado como ${format.toUpperCase()}`, 'success')
+}
+
+// Menu de exportação do texto
+const exportTextMenuRef = ref(null)
+const exportTextMenuItems = computed(() => [
+  { 
+    label: 'Exportar como TXT', 
+    icon: 'pi pi-file', 
+    command: () => exportTextAs('txt') 
+  },
+  { 
+    label: 'Exportar como Markdown', 
+    icon: 'pi pi-hashtag', 
+    command: () => exportTextAs('md') 
+  },
+  { 
+    label: 'Exportar como HTML', 
+    icon: 'pi pi-code', 
+    command: () => exportTextAs('html') 
+  }
+])
+
+function showExportTextMenu(event) {
+  exportTextMenuRef.value?.toggle(event)
+}
+
+// ============================================================
 // Anki
 // ============================================================
 const ankiVisible = ref(false)
@@ -1804,6 +2168,9 @@ function onContentChanged(payload) {
   if (delta) lastEditorDelta.value = delta
 
   schedulePersistActiveSession()
+  
+  // Atualiza posições dos highlights
+  scanHighlights()
 
   if (isTextMutationFromEditor === false) return
 
@@ -1939,6 +2306,13 @@ onMounted(async () => {
       return
     }
 
+    // Ctrl+F abre busca no editor
+    if (isCtrl && e.key === 'f') {
+      e.preventDefault()
+      toggleEditorSearch()
+      return
+    }
+
     // Undo: Ctrl+Z
     if (isCtrl && e.key === 'z' && !e.shiftKey) {
       // Only trigger if not in an input/textarea
@@ -2003,6 +2377,7 @@ onBeforeUnmount(() => {
 <template>
   <Toast />
   <ContextMenu ref="contextMenuRef" :model="contextMenuModel" appendTo="body" />
+  <Menu ref="exportTextMenuRef" :model="exportTextMenuItems" popup appendTo="body" />
 
   <!-- Sidebar -->
   <SidebarMenu 
@@ -2261,10 +2636,102 @@ onBeforeUnmount(() => {
               <div class="panel-title">
                 <i class="pi pi-pencil mr-2" />
                 Editor
+                
+                <!-- Indicador de salvamento -->
+                <Transition name="fade">
+                  <Tag 
+                    v-if="saveStatus !== 'idle'" 
+                    :severity="saveStatusSeverity" 
+                    class="pill save-status ml-2"
+                  >
+                    <i :class="saveStatusIcon" class="mr-1" /> {{ saveStatusText }}
+                  </Tag>
+                </Transition>
               </div>
 
               <div class="panel-actions">
-                <Tag severity="secondary" class="pill subtle">
+                <!-- Undo/Redo do Editor -->
+                <div class="editor-undo-redo">
+                  <Button
+                    icon="pi pi-undo"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    @click="editorUndo"
+                    title="Desfazer edição (Ctrl+Z)"
+                  />
+                  <Button
+                    icon="pi pi-redo"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    @click="editorRedo"
+                    title="Refazer edição (Ctrl+Y)"
+                  />
+                </div>
+                
+                <!-- Busca no texto -->
+                <Button
+                  icon="pi pi-search"
+                  severity="secondary"
+                  :outlined="editorSearchVisible"
+                  text
+                  rounded
+                  size="small"
+                  @click="toggleEditorSearch"
+                  title="Buscar no texto (Ctrl+F)"
+                />
+                
+                <!-- Navegação de Highlights -->
+                <div v-if="hasHighlights" class="highlight-nav">
+                  <Button
+                    icon="pi pi-chevron-left"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    @click="goToPrevHighlight"
+                    title="Highlight anterior"
+                  />
+                  <Tag severity="warning" class="pill highlight-counter">
+                    <i class="pi pi-palette mr-1" /> {{ currentHighlightLabel }}
+                  </Tag>
+                  <Button
+                    icon="pi pi-chevron-right"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    @click="goToNextHighlight"
+                    title="Próximo highlight"
+                  />
+                </div>
+                
+                <!-- Estatísticas de texto -->
+                <div class="text-stats">
+                  <Tag severity="secondary" class="pill stats-pill">
+                    <i class="pi pi-align-left mr-1" /> {{ textStats.words }} palavras
+                  </Tag>
+                  <Tag severity="secondary" class="pill stats-pill">
+                    <i class="pi pi-clock mr-1" /> {{ textStats.readingTimeLabel }}
+                  </Tag>
+                </div>
+                
+                <!-- Exportar texto -->
+                <Button
+                  icon="pi pi-download"
+                  severity="secondary"
+                  text
+                  rounded
+                  size="small"
+                  :disabled="!textStats.words"
+                  @click="showExportTextMenu"
+                  title="Exportar texto"
+                />
+
+                <Tag v-if="!immersiveReader" severity="secondary" class="pill subtle">
                   <i class="pi pi-mouse mr-2" /> Clique direito para opções
                 </Tag>
               </div>
@@ -2281,6 +2748,54 @@ onBeforeUnmount(() => {
                     ></div>
                   </div>
                   <span class="reader-progress-label">{{ readerProgress }}%</span>
+                </div>
+              </Transition>
+
+              <!-- Barra de busca no texto -->
+              <Transition name="slide-down">
+                <div v-if="editorSearchVisible" class="editor-search-bar">
+                  <div class="search-input-wrap">
+                    <i class="pi pi-search search-icon" />
+                    <InputText
+                      ref="editorSearchInputRef"
+                      v-model="editorSearchQuery"
+                      class="search-input"
+                      placeholder="Buscar no texto..."
+                      @keydown="onEditorSearchKeydown"
+                    />
+                    <span v-if="editorSearchQuery" class="search-results-label">{{ editorSearchLabel }}</span>
+                  </div>
+                  <div class="search-nav-btns">
+                    <Button
+                      icon="pi pi-chevron-up"
+                      severity="secondary"
+                      text
+                      rounded
+                      size="small"
+                      :disabled="!hasEditorSearchResults"
+                      @click="goToPrevEditorSearchResult"
+                      title="Resultado anterior (Shift+Enter)"
+                    />
+                    <Button
+                      icon="pi pi-chevron-down"
+                      severity="secondary"
+                      text
+                      rounded
+                      size="small"
+                      :disabled="!hasEditorSearchResults"
+                      @click="goToNextEditorSearchResult"
+                      title="Próximo resultado (Enter)"
+                    />
+                    <Button
+                      icon="pi pi-times"
+                      severity="secondary"
+                      text
+                      rounded
+                      size="small"
+                      @click="closeEditorSearch"
+                      title="Fechar (Esc)"
+                    />
+                  </div>
                 </div>
               </Transition>
 
@@ -3167,7 +3682,81 @@ onBeforeUnmount(() => {
   border-radius: 999px;
 }
 
-/* Search */
+/* =========================
+   Editor Search Bar
+========================= */
+.editor-search-bar {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(17, 24, 39, 0.95);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.search-input-wrap .search-icon {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+}
+
+.editor-search-bar .search-input {
+  width: 200px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 13px;
+  color: inherit;
+}
+
+.editor-search-bar .search-input:focus {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.search-results-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.search-nav-btns {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Slide down animation */
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.slide-down-enter-from,
+.slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+
+/* Search (cards) */
 .search-wrap {
   position: relative;
   display: flex;
@@ -3268,7 +3857,56 @@ onBeforeUnmount(() => {
 }
 
 /* =========================
-   Seleção múltipla e Undo/Redo
+   Editor Actions (Undo/Redo, Stats, Highlights)
+========================= */
+.editor-undo-redo {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.highlight-nav {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.highlight-counter {
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+  justify-content: center;
+}
+
+.text-stats {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.stats-pill {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.save-status {
+  font-size: 11px;
+  animation: fadeInStatus 0.3s ease;
+}
+
+@keyframes fadeInStatus {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* =========================
+   Seleção múltipla e Undo/Redo (Cards)
 ========================= */
 .undo-redo-group {
   display: flex;
