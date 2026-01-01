@@ -7,7 +7,7 @@ que podem então ser usados para gerar flashcards.
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 
 from app.services.pdf_extractor import pdf_extractor, ExtractionQuality
@@ -21,6 +21,13 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf"}
 
 
+class PageContent(BaseModel):
+    """Conteúdo de uma página extraída."""
+    page_number: int
+    text: str
+    word_count: int
+
+
 class ExtractionResponse(BaseModel):
     """Resposta da extração de documento."""
     success: bool
@@ -30,6 +37,8 @@ class ExtractionResponse(BaseModel):
     quality: str = "raw"
     chunks: List[str] = []
     filename: str = ""
+    pages_content: List[PageContent] = []  # Conteúdo por página
+    metadata: Dict[str, Any] = {}  # Metadados extras (inclui page_break_marker)
     error: Optional[str] = None
 
 
@@ -391,6 +400,16 @@ async def extract_selected_pages(
             filename=filename,
         )
     
+    # Converte pages_content para o modelo Pydantic
+    pages_content_list = [
+        PageContent(
+            page_number=p["page_number"],
+            text=p["text"],
+            word_count=p["word_count"]
+        )
+        for p in result.pages_content
+    ] if result.pages_content else []
+    
     return ExtractionResponse(
         success=True,
         text=result.text,
@@ -399,4 +418,6 @@ async def extract_selected_pages(
         quality=result.quality.value,
         chunks=result.chunks,
         filename=filename,
+        pages_content=pages_content_list,
+        metadata=result.metadata,
     )

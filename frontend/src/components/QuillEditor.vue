@@ -18,7 +18,6 @@ const emit = defineEmits([
   'context-menu'       // { originalEvent, hasSelection, hasHighlight, selectedText, range }
 ])
 
-const toolbarRef = ref(null)
 const editorRef = ref(null)
 
 let quill = null
@@ -379,26 +378,54 @@ function preventWheelLeak(e) {
 // ------------------------------------------------------------
 // Lifecycle
 // ------------------------------------------------------------
+// Configuração da toolbar com todos os botões
+const toolbarOptions = [
+  // Grupo: Cabeçalhos
+  [{ 'header': [1, 2, 3, false] }],
+  
+  // Grupo: Formatação de texto
+  ['bold', 'italic', 'underline', 'strike'],
+  
+  // Grupo: Cores
+  [{ 'color': [] }, { 'background': [] }],
+  
+  // Grupo: Listas e indentação
+  [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+  [{ 'indent': '-1' }, { 'indent': '+1' }],
+  
+  // Grupo: Alinhamento
+  [{ 'align': [] }],
+  
+  // Grupo: Blocos especiais
+  ['blockquote', 'code-block', 'link'],
+  
+  // Grupo: Subscrito/Sobrescrito
+  [{ 'script': 'sub' }, { 'script': 'super' }],
+  
+  // Grupo: Limpar formatação
+  ['clean']
+]
+
 onMounted(() => {
   quill = new Quill(editorRef.value, {
     theme: 'snow',
     placeholder: props.placeholder,
-    modules: { toolbar: toolbarRef.value },
-    formats: ['header', 'bold', 'italic', 'list', 'background', 'color']
+    modules: { 
+      toolbar: toolbarOptions
+    },
+    formats: [
+      'header', 'bold', 'italic', 'underline', 'strike',
+      'list', 'indent', 'align',
+      'background', 'color',
+      'blockquote', 'code-block', 'code',
+      'link', 'script'
+    ]
   })
 
-  const bgBtn = toolbarRef.value?.querySelector('.ql-background')
-  if (bgBtn) {
-    bgBtn.innerHTML = '<span style="font-size:16px;">🖍️</span>'
-    bgBtn.addEventListener('mousedown', () => {
-      savedRange = quill.getSelection() || savedRange
-    })
-    bgBtn.addEventListener('click', (ev) => {
-      ev.preventDefault()
-      ev.stopPropagation()
-      showBackgroundPicker(bgBtn)
-    })
-  }
+  // Customiza o botão de background com emoji depois que o Quill renderizar
+  const toolbar = quill.getModule('toolbar')
+  const bgBtn = toolbar?.container?.querySelector('.ql-background .ql-picker-label')
+  // Não precisamos mais customizar o botão de background pois o Quill já tem um picker próprio
 
   quill.on('selection-change', (range) => {
     savedRange = range
@@ -498,21 +525,7 @@ defineExpose({
 
 <template>
   <div class="qe-wrap">
-    <div ref="toolbarRef" class="qe-toolbar">
-      <select class="ql-header">
-        <option value="1"></option>
-        <option value="2"></option>
-        <option value="3"></option>
-        <option selected></option>
-      </select>
-
-      <button class="ql-bold" type="button"></button>
-      <button class="ql-italic" type="button"></button>
-      <button class="ql-list" value="ordered" type="button"></button>
-      <button class="ql-list" value="bullet" type="button"></button>
-      <button class="ql-background" type="button"></button>
-    </div>
-
+    <!-- O Quill cria a toolbar automaticamente baseado em toolbarOptions -->
     <div ref="editorRef" class="qe-editor"></div>
   </div>
 </template>
@@ -525,33 +538,224 @@ defineExpose({
   min-height: 0;
 }
 
-.qe-toolbar {
-  border-radius: 14px 14px 0 0;
-  overflow: hidden;
-}
-
 .qe-editor {
   flex: 1;
   min-height: 0;
-  border-radius: 0 0 14px 14px;
   overflow: hidden;
 }
 
-/* bordas mais “clean” */
+/* Toolbar gerada automaticamente pelo Quill */
 :deep(.ql-toolbar.ql-snow) {
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(255, 255, 255, 0.03);
+  border-radius: 14px 14px 0 0;
+  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
+
+/* Grupos de botões com separador visual */
+:deep(.ql-toolbar.ql-snow .ql-formats) {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+  padding-right: 8px;
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+:deep(.ql-toolbar.ql-snow .ql-formats:last-child) {
+  border-right: none;
+  margin-right: 0;
+  padding-right: 0;
+}
+
+/* Estilo dos botões na toolbar */
+:deep(.ql-toolbar.ql-snow button) {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border-radius: 6px;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+:deep(.ql-toolbar.ql-snow button:hover) {
+  background-color: rgba(148, 163, 184, 0.15);
+  transform: scale(1.05);
+}
+
+:deep(.ql-toolbar.ql-snow button.ql-active) {
+  background-color: rgba(59, 130, 246, 0.25);
+}
+
+/* Estilo dos selects na toolbar */
+:deep(.ql-toolbar.ql-snow .ql-picker) {
+  height: 28px;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker-label) {
+  border-radius: 6px;
+  padding: 2px 8px;
+  transition: background-color 0.15s;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker-label:hover) {
+  background-color: rgba(148, 163, 184, 0.15);
+}
+
+/* Dropdown de cores */
+:deep(.ql-toolbar.ql-snow .ql-picker.ql-color .ql-picker-options),
+:deep(.ql-toolbar.ql-snow .ql-picker.ql-background .ql-picker-options) {
+  background: #1f2937;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker.ql-color .ql-picker-item),
+:deep(.ql-toolbar.ql-snow .ql-picker.ql-background .ql-picker-item) {
+  border-radius: 4px;
+  transition: transform 0.1s;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker.ql-color .ql-picker-item:hover),
+:deep(.ql-toolbar.ql-snow .ql-picker.ql-background .ql-picker-item:hover) {
+  transform: scale(1.15);
+}
+
+/* Dropdown de alinhamento e header */
+:deep(.ql-toolbar.ql-snow .ql-picker-options) {
+  background: #1f2937;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker-item) {
+  color: #e5e7eb;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker-item:hover) {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+/* Ícones SVG no tema escuro */
+:deep(.ql-toolbar.ql-snow .ql-stroke) {
+  stroke: #9ca3af;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-fill) {
+  fill: #9ca3af;
+}
+
+:deep(.ql-toolbar.ql-snow button:hover .ql-stroke),
+:deep(.ql-toolbar.ql-snow button.ql-active .ql-stroke) {
+  stroke: #3b82f6;
+}
+
+:deep(.ql-toolbar.ql-snow button:hover .ql-fill),
+:deep(.ql-toolbar.ql-snow button.ql-active .ql-fill) {
+  fill: #3b82f6;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-picker-label .ql-stroke) {
+  stroke: #9ca3af;
+}
+
+/* Container do editor com borda arredondada */
 :deep(.ql-container.ql-snow) {
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-top: none;
+  border-radius: 0 0 14px 14px;
 }
 
 /* melhora o look do editor em dark UI */
 :deep(.ql-editor) {
   color: var(--text-color, #e5e7eb);
 }
+/* Estilos para blockquote (citação) */
+:deep(.ql-editor blockquote) {
+  border-left: 4px solid #3b82f6;
+  background-color: rgba(59, 130, 246, 0.1);
+  margin: 12px 0;
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  color: #cbd5e1;
+  font-style: italic;
+}
 
+/* Estilos para code-block */
+:deep(.ql-editor pre.ql-syntax) {
+  background-color: #0d1117;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+  font-size: 0.9em;
+  color: #e6edf3;
+  overflow-x: auto;
+}
+
+/* Estilos para código inline */
+:deep(.ql-editor code) {
+  background-color: rgba(110, 118, 129, 0.3);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+  font-size: 0.9em;
+  color: #f0abfc;
+}
+
+/* Estilos para links */
+:deep(.ql-editor a) {
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s;
+}
+
+:deep(.ql-editor a:hover) {
+  color: #93c5fd;
+}
+
+/* Estilos para subscrito e sobrescrito */
+:deep(.ql-editor sub) {
+  font-size: 0.75em;
+  vertical-align: sub;
+}
+
+:deep(.ql-editor sup) {
+  font-size: 0.75em;
+  vertical-align: super;
+}
+
+/* Estilos para listas ordenadas e com marcadores */
+:deep(.ql-editor ol),
+:deep(.ql-editor ul) {
+  padding-left: 1.5em;
+  margin: 8px 0;
+}
+
+:deep(.ql-editor li) {
+  margin: 4px 0;
+}
+
+/* Estilos para indentação */
+:deep(.ql-editor .ql-indent-1) { padding-left: 2em; }
+:deep(.ql-editor .ql-indent-2) { padding-left: 4em; }
+:deep(.ql-editor .ql-indent-3) { padding-left: 6em; }
+:deep(.ql-editor .ql-indent-4) { padding-left: 8em; }
+:deep(.ql-editor .ql-indent-5) { padding-left: 10em; }
+
+/* Estilos para alinhamento */
+:deep(.ql-editor .ql-align-center) { text-align: center; }
+:deep(.ql-editor .ql-align-right) { text-align: right; }
+:deep(.ql-editor .ql-align-justify) { text-align: justify; }
 /* Placeholder do Quill (tema escuro) */
 :deep(.ql-editor.ql-blank::before) {
   color: var(--text-color-secondary, rgba(229, 231, 235, 0.65)) !important;

@@ -15,6 +15,7 @@ import Textarea from 'primevue/textarea'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
 import ProgressBar from 'primevue/progressbar'
+import Paginator from 'primevue/paginator'
 import Menu from 'primevue/menu'
 import ContextMenu from 'primevue/contextmenu'
 import Toast from 'primevue/toast'
@@ -159,9 +160,24 @@ const readerVars = computed(() => ({
 function toggleReader() {
   immersiveReader.value = !immersiveReader.value
   if (immersiveReader.value) {
+    // Se temos paginação do PDF, inicializa com as páginas do PDF
+    if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
+      readerTotalPages.value = pdfPagesContent.value.length
+      // Vai para a primeira página do PDF
+      readerGoToPdfPage(1)
+    }
     nextTick(() => {
       editorRef.value?.focus?.()
     })
+  } else {
+    // Ao sair do modo leitura, restaura o texto completo
+    if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
+      const PAGE_BREAK_MARKER = "\n\n<!-- PAGE_BREAK -->\n\n"
+      const fullText = pdfPagesContent.value.map(p => p.text).join(PAGE_BREAK_MARKER)
+      if (editorRef.value?.setContent) {
+        editorRef.value.setContent(fullText)
+      }
+    }
   }
 }
 
@@ -328,8 +344,9 @@ function computeReaderLayoutMetrics() {
 
   const contentW = Math.max(320, viewW - 2 * padX)
 
-  // ✅ decide spread baseado no contentW (e não no viewW bruto)
-  const allowSpread = readerTwoPage.value && contentW >= 900
+  // ✅ Quando usa paginação do PDF, sempre usa página única (sem spread)
+  // pois cada página do PDF é uma unidade que deve ser exibida inteira
+  const allowSpread = !usePdfPagination.value && readerTwoPage.value && contentW >= 900
   const pageW = allowSpread ? Math.floor((contentW - gap) / 2) : Math.floor(contentW)
 
   readerPageWidthPx.value = clamp(pageW, 320, 1400)
@@ -339,6 +356,17 @@ function computeReaderLayoutMetrics() {
 }
 
 function updateReaderPageStats() {
+  // Se temos paginação baseada no PDF, use essa
+  if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
+    readerTotalPages.value = pdfPagesContent.value.length
+    // readerPage.value já é controlado pelas funções de navegação
+    readerProgress.value = readerTotalPages.value > 1 
+      ? Math.round(((readerPage.value - 1) / (readerTotalPages.value - 1)) * 100)
+      : 100
+    return
+  }
+  
+  // Caso contrário, usa a paginação por scroll (comportamento original)
   const el = readerScrollerEl.value
   if (!el) {
     readerPage.value = 1
@@ -387,6 +415,13 @@ function getReaderProgress() {
 }
 
 function setReaderProgress(progress01) {
+  // Se temos paginação PDF, navega para a página correspondente
+  if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
+    const pageIndex = Math.round(progress01 * (pdfPagesContent.value.length - 1))
+    readerGoToPdfPage(pageIndex + 1)
+    return
+  }
+  
   const el = readerScrollerEl.value
   if (!el) return
   const maxScroll = Math.max(0, (el.scrollWidth || el.clientWidth) - el.clientWidth)
@@ -395,7 +430,37 @@ function setReaderProgress(progress01) {
   updateReaderPageStats()
 }
 
+// Navega para uma página específica do PDF
+function readerGoToPdfPage(pageNumber) {
+  if (!usePdfPagination.value || pdfPagesContent.value.length === 0) return
+  
+  const total = pdfPagesContent.value.length
+  const p = clamp(pageNumber, 1, total)
+  
+  // Atualiza o conteúdo do editor para mostrar apenas esta página
+  const pageContent = pdfPagesContent.value[p - 1]
+  if (pageContent && editorRef.value?.setContent) {
+    editorRef.value.setContent(pageContent.text)
+  }
+  
+  readerPage.value = p
+  readerTotalPages.value = total
+  readerProgress.value = total > 1 ? Math.round(((p - 1) / (total - 1)) * 100) : 100
+  
+  // Scroll para o topo da página
+  const el = readerScrollerEl.value
+  if (el) {
+    el.scrollTo({ left: 0, top: 0, behavior: 'auto' })
+  }
+}
+
 function readerScrollToPage(pageNumber, behavior = 'smooth') {
+  // Se temos paginação PDF, usa a navegação por página
+  if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
+    readerGoToPdfPage(pageNumber)
+    return
+  }
+  
   const el = readerScrollerEl.value
   if (!el) return
 
@@ -424,6 +489,13 @@ function readerFirstPage() {
 }
 function readerLastPage() {
   readerScrollToPage(readerTotalPages.value)
+}
+
+// Handler para o Paginator do PrimeVue
+function onPaginatorPageChange(event) {
+  // event.page é 0-indexed, convertemos para 1-indexed
+  const newPage = event.page + 1
+  readerScrollToPage(newPage)
 }
 
 let readerResizeObserver = null
@@ -729,6 +801,10 @@ function clearCurrentSession() {
   lastEditorDelta.value = null
   lastEditorHtml.value = ''
   lastTextForAnalysis.value = ''
+  
+  // Limpa paginação do PDF
+  pdfPagesContent.value = []
+  usePdfPagination.value = false
 
   editorRef.value?.setDelta?.(null)
 
@@ -754,6 +830,10 @@ function newSession() {
   lastEditorDelta.value = null
   lastEditorHtml.value = ''
   lastTextForAnalysis.value = ''
+  
+  // Limpa paginação do PDF
+  pdfPagesContent.value = []
+  usePdfPagination.value = false
 
   editorRef.value?.setDelta?.(null)
 
@@ -2193,7 +2273,15 @@ function onContentChanged(payload) {
 // ============================================================
 // PDF Upload Handlers
 // ============================================================
-function onPdfExtracted({ text, filename, pages, wordCount }) {
+// Dados das páginas do PDF para paginação no modo leitura
+const pdfPagesContent = ref([])  // Array com { page_number, text, word_count }
+const usePdfPagination = ref(false)  // Se deve usar paginação baseada no PDF
+
+function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metadata }) {
+  // Armazena conteúdo das páginas para paginação
+  pdfPagesContent.value = pagesContent || []
+  usePdfPagination.value = pagesContent && pagesContent.length > 0
+  
   // Insere o texto extraído do PDF no editor
   if (editorRef.value?.setContent) {
     editorRef.value.setContent(text)
@@ -2207,10 +2295,17 @@ function onPdfExtracted({ text, filename, pages, wordCount }) {
       lastModifiedAt: new Date().toISOString(),
       source: 'pdf',
       pdfFilename: filename,
-      pdfPages: pages
+      pdfPages: pages,
+      pdfPagesContent: pagesContent || []  // Armazena na sessão
     }
     activeSessionId.value = newSession.id
     sessions.value.unshift(newSession)
+    
+    // Atualiza estatísticas do modo leitura se estiver ativo
+    if (immersiveReader.value && usePdfPagination.value) {
+      readerTotalPages.value = pagesContent.length
+      readerPage.value = 1
+    }
     
     // Dispara análise automática
     nextTick(() => {
@@ -2437,6 +2532,7 @@ onBeforeUnmount(() => {
       'reader-kindle': immersiveReader && readerTheme === 'kindle',
       'reader-sepia': immersiveReader && readerTheme === 'sepia',
       'reader-dark': immersiveReader && readerTheme === 'dark',
+      'reader-pdf-pagination': immersiveReader && usePdfPagination,
       'controls-hidden': immersiveReader && !readerControlsVisible,
       'sidebar-expanded': sidebarRef?.sidebarExpanded
     }"
@@ -2472,8 +2568,10 @@ onBeforeUnmount(() => {
             <Tag class="pill subtle">
               <i class="pi pi-book mr-2" /> Leitura
             </Tag>
-            <Tag class="pill subtle">
-              <i class="pi pi-file mr-2" /> Página {{ readerPage }} / {{ readerTotalPages }}
+            <Tag class="pill subtle" :title="usePdfPagination ? 'Páginas do PDF original' : 'Páginas virtuais'">
+              <i :class="usePdfPagination ? 'pi pi-file-pdf mr-2' : 'pi pi-file mr-2'" /> 
+              Página {{ readerPage }} / {{ readerTotalPages }}
+              <span v-if="usePdfPagination" class="pdf-badge">(PDF)</span>
             </Tag>
           </div>
         </div>
@@ -2885,12 +2983,26 @@ onBeforeUnmount(() => {
                 />
               </div>
 
-              <!-- Indicador de página flutuante -->
+              <!-- Indicador de página flutuante / Paginator para PDF -->
               <Transition name="fade">
                 <div v-if="immersiveReader" class="reader-page-float">
-                  <span class="float-page">{{ readerPage }}</span>
-                  <span class="float-sep">de</span>
-                  <span class="float-total">{{ readerTotalPages }}</span>
+                  <!-- Paginator PrimeVue para PDFs (navegação precisa entre páginas) -->
+                  <Paginator 
+                    v-if="usePdfPagination"
+                    :rows="1"
+                    :totalRecords="readerTotalPages"
+                    :first="readerPage - 1"
+                    @page="onPaginatorPageChange"
+                    template="FirstPageLink PrevPageLink CurrentPageReport NextPageLink LastPageLink"
+                    :currentPageReportTemplate="`{first} de {totalRecords}`"
+                    class="reader-paginator"
+                  />
+                  <!-- Indicador simples para texto normal -->
+                  <template v-else>
+                    <span class="float-page">{{ readerPage }}</span>
+                    <span class="float-sep">de</span>
+                    <span class="float-total">{{ readerTotalPages }}</span>
+                  </template>
                 </div>
               </Transition>
             </div>
@@ -4257,6 +4369,14 @@ onBeforeUnmount(() => {
 }
 .pill.subtle { opacity: 0.9; }
 
+.pdf-badge {
+  margin-left: 4px;
+  font-size: 0.75em;
+  opacity: 0.8;
+  color: #ef4444;
+  font-weight: 600;
+}
+
 .brand-icon-img {
   width: 30px;
   height: 30px;
@@ -4489,6 +4609,32 @@ onBeforeUnmount(() => {
   column-fill: auto;
 }
 
+/* ✅ Quando usa paginação do PDF, desabilita colunas para mostrar uma página de cada vez */
+.reader-mode.reader-pdf-pagination .reader-surface :deep(.ql-editor){
+  column-width: unset !important;
+  column-gap: unset !important;
+  column-fill: unset !important;
+  width: 100% !important;
+  max-width: var(--reader-page-width);
+  margin: 0 auto !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  /* Transição suave para mudança de conteúdo */
+  animation: fadeInPage 0.25s ease-out;
+}
+
+/* Animação de entrada da página */
+@keyframes fadeInPage {
+  from {
+    opacity: 0.6;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* =========================
    Tema Kindle (claro) — SOMENTE no campo de Leitura/Edição
    (Header permanece no tema principal)
@@ -4652,6 +4798,94 @@ onBeforeUnmount(() => {
   font-size: 14px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.7);
+}
+
+/* =========================
+   Paginator do Modo Leitura (PDF)
+========================= */
+.reader-paginator {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  gap: 4px;
+}
+
+.reader-paginator :deep(.p-paginator-first),
+.reader-paginator :deep(.p-paginator-prev),
+.reader-paginator :deep(.p-paginator-next),
+.reader-paginator :deep(.p-paginator-last) {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border: none !important;
+  color: #ffffff !important;
+  min-width: 32px !important;
+  height: 32px !important;
+  border-radius: 8px !important;
+  transition: background 0.2s ease, transform 0.15s ease;
+}
+
+.reader-paginator :deep(.p-paginator-first):hover,
+.reader-paginator :deep(.p-paginator-prev):hover,
+.reader-paginator :deep(.p-paginator-next):hover,
+.reader-paginator :deep(.p-paginator-last):hover {
+  background: rgba(255, 255, 255, 0.25) !important;
+  transform: scale(1.05);
+}
+
+.reader-paginator :deep(.p-paginator-first):disabled,
+.reader-paginator :deep(.p-paginator-prev):disabled,
+.reader-paginator :deep(.p-paginator-next):disabled,
+.reader-paginator :deep(.p-paginator-last):disabled {
+  opacity: 0.3 !important;
+  transform: none !important;
+}
+
+.reader-paginator :deep(.p-paginator-current) {
+  color: #ffffff !important;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 0 12px;
+  min-width: auto;
+}
+
+/* Tema kindle para o paginator */
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-first),
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-prev),
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-next),
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-last) {
+  background: rgba(0, 0, 0, 0.08) !important;
+  color: #111827 !important;
+}
+
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-first):hover,
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-prev):hover,
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-next):hover,
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-last):hover {
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+
+.reader-mode.reader-kindle .reader-paginator :deep(.p-paginator-current) {
+  color: #111827 !important;
+}
+
+/* Tema sepia para o paginator */
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-first),
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-prev),
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-next),
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-last) {
+  background: rgba(92, 75, 55, 0.15) !important;
+  color: #5c4b37 !important;
+}
+
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-first):hover,
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-prev):hover,
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-next):hover,
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-last):hover {
+  background: rgba(92, 75, 55, 0.25) !important;
+}
+
+.reader-mode.reader-sepia .reader-paginator :deep(.p-paginator-current) {
+  color: #5c4b37 !important;
 }
 
 /* =========================

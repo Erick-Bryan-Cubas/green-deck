@@ -481,11 +481,10 @@ class PDFExtractor:
         quality: ExtractionQuality = ExtractionQuality.CLEANED,
     ) -> ExtractionResult:
         """
-        Extrai texto apenas das páginas selecionadas usando Docling.
+        Extrai texto de cada página selecionada individualmente usando Docling.
         
-        Cria um novo PDF contendo apenas as páginas selecionadas antes
-        de enviar ao Docling, garantindo que apenas o conteúdo desejado
-        seja extraído.
+        Extrai cada página separadamente para preservar a estrutura de paginação
+        original do PDF. Cada página é processada e retornada em pages_content.
         
         Args:
             pdf_bytes: Conteúdo binário do PDF
@@ -494,7 +493,7 @@ class PDFExtractor:
             quality: Nível de qualidade da extração
         
         Returns:
-            ExtractionResult com o texto extraído das páginas selecionadas
+            ExtractionResult com o texto extraído por página (pages_content)
         """
         if not self._docling_available:
             return ExtractionResult(
@@ -527,64 +526,87 @@ class PDFExtractor:
                     error=f"Páginas inválidas. O documento tem {total_pages} páginas."
                 )
             
-            # Se todas as páginas foram selecionadas, usa o PDF original
-            if len(valid_pages) == total_pages:
-                pdf_to_extract = pdf_bytes
-                logger.info("Todas as %d páginas selecionadas, usando PDF original", total_pages)
-            else:
-                # Cria um novo PDF contendo apenas as páginas selecionadas
-                logger.info("Extraindo páginas %s de %d totais", valid_pages, total_pages)
-                pdf_to_extract = self._extract_pages_from_pdf(pdf_bytes, valid_pages)
+            logger.info("Extraindo %d páginas individualmente para preservar paginação", len(valid_pages))
             
-            # Salva bytes em arquivo temporário para o Docling
-            with tempfile.NamedTemporaryFile(
-                suffix=".pdf", 
-                delete=False,
-                prefix="spaced_rep_pages_"
-            ) as tmp:
-                tmp.write(pdf_to_extract)
-                tmp_path = tmp.name
+            # Extrai cada página individualmente para preservar a paginação
+            pages_content: List[Dict[str, Any]] = []
+            all_texts: List[str] = []
+            total_words = 0
             
-            try:
-                # Usa Docling para extração com estrutura preservada
-                converter = self._get_converter()
+            converter = self._get_converter()
+            
+            for page_num in valid_pages:
+                # Cria um PDF temporário com apenas esta página
+                single_page_pdf = self._extract_pages_from_pdf(pdf_bytes, [page_num])
                 
-                logger.info("Iniciando extração com Docling (apenas páginas selecionadas)")
-                result = converter.convert(tmp_path)
+                # Salva bytes em arquivo temporário para o Docling
+                with tempfile.NamedTemporaryFile(
+                    suffix=".pdf", 
+                    delete=False,
+                    prefix=f"spaced_rep_page_{page_num}_"
+                ) as tmp:
+                    tmp.write(single_page_pdf)
+                    tmp_path = tmp.name
                 
-                # Extrai o documento em Markdown (preserva estrutura)
-                full_markdown = result.document.export_to_markdown()
-                
-                # Aplica limpeza se solicitado
-                if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
-                    text = self._clean_text(full_markdown)
-                else:
-                    text = full_markdown
-                
-                logger.info(
-                    "Extração Docling concluída: %d páginas selecionadas, %d palavras", 
-                    len(valid_pages), 
-                    len(text.split())
-                )
-                
-                return ExtractionResult(
-                    text=text,
-                    pages=len(valid_pages),
-                    word_count=len(text.split()),
-                    quality=quality,
-                    metadata={
-                        "filename": filename,
-                        "file_size": len(pdf_bytes),
-                        "selected_pages": valid_pages,
-                        "total_pages": total_pages,
-                        "extraction_method": "docling",
-                    },
-                )
-            finally:
                 try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+                    # Usa Docling para extração da página
+                    result = converter.convert(tmp_path)
+                    
+                    # Extrai o documento em Markdown (preserva estrutura)
+                    page_markdown = result.document.export_to_markdown()
+                    
+                    # Aplica limpeza se solicitado
+                    if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
+                        page_text = self._clean_text(page_markdown)
+                    else:
+                        page_text = page_markdown
+                    
+                    page_word_count = len(page_text.split())
+                    total_words += page_word_count
+                    
+                    # Adiciona conteúdo da página
+                    pages_content.append({
+                        "page_number": page_num,
+                        "text": page_text,
+                        "word_count": page_word_count,
+                    })
+                    
+                    all_texts.append(page_text)
+                    
+                    logger.debug("Página %d extraída: %d palavras", page_num, page_word_count)
+                    
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+            
+            # Junta todos os textos com marcador de quebra de página
+            # Usa um marcador especial que o frontend pode reconhecer
+            PAGE_BREAK_MARKER = "\n\n<!-- PAGE_BREAK -->\n\n"
+            combined_text = PAGE_BREAK_MARKER.join(all_texts)
+            
+            logger.info(
+                "Extração Docling concluída: %d páginas, %d palavras", 
+                len(valid_pages), 
+                total_words
+            )
+            
+            return ExtractionResult(
+                text=combined_text,
+                pages=len(valid_pages),
+                word_count=total_words,
+                quality=quality,
+                metadata={
+                    "filename": filename,
+                    "file_size": len(pdf_bytes),
+                    "selected_pages": valid_pages,
+                    "total_pages": total_pages,
+                    "extraction_method": "docling",
+                    "page_break_marker": "<!-- PAGE_BREAK -->",
+                },
+                pages_content=pages_content,
+            )
                 
         except Exception as e:
             logger.exception("Erro na extração de páginas: %s", e)
