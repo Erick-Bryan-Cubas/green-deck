@@ -1401,47 +1401,64 @@ const sidebarMenuItems = computed(() => [
     key: 'sessions',
     label: 'Sessões',
     icon: 'pi pi-history',
+    iconColor: '#8B5CF6',
     badge: sessions.value.length,
+    tooltip: 'Gerenciar sessões de estudo',
     submenu: [
-      { label: 'Nova sessão', icon: 'pi pi-plus', command: () => { newSession(); closeSidebar() } },
+      { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: '#10B981', command: () => { newSession(); closeSidebar() } },
       { separator: true },
       ...sessions.value
         .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+        .slice(0, 8)
         .map((s) => ({
           label: `${s.title}`,
           sublabel: formatSessionStamp(s.updatedAt),
-          icon: s.id === activeSessionId.value ? 'pi pi-check' : 'pi pi-file',
+          icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
+          iconColor: s.id === activeSessionId.value ? '#10B981' : '#64748B',
+          active: s.id === activeSessionId.value,
           command: () => { restoreSessionById(s.id); closeSidebar() }
         })),
+      ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: '#64748B', disabled: true }] : []),
       { separator: true },
-      { label: 'Limpar sessão atual', icon: 'pi pi-times', command: () => { clearCurrentSession(); closeSidebar() } },
-      { label: 'Limpar todas', icon: 'pi pi-ban', command: () => { clearAllSessions(); clearCurrentSession(); closeSidebar() } }
+      { label: 'Limpar sessão atual', icon: 'pi pi-refresh', iconColor: '#F59E0B', command: () => { clearCurrentSession(); closeSidebar() } },
+      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: '#EF4444', danger: true, command: () => { clearAllSessions(); clearCurrentSession(); closeSidebar() } }
     ]
   },
   {
     key: 'cards',
     label: 'Cards',
     icon: 'pi pi-clone',
+    iconColor: '#10B981',
     badge: cards.value.length,
+    tooltip: 'Gerenciar flashcards gerados',
     submenu: [
-      { label: 'Export to Anki', icon: 'pi pi-send', disabled: !cards.value.length, command: () => { exportToAnkiOpenConfig(); closeSidebar() } },
-      { label: 'Export Markdown', icon: 'pi pi-download', disabled: !cards.value.length, command: () => { exportAsMarkdown(); closeSidebar() } },
-      { label: 'Clear Cards', icon: 'pi pi-times', disabled: !cards.value.length, command: () => { clearAllCards(); closeSidebar() } }
+      { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: '#3B82F6', disabled: !cards.value.length, command: () => { exportToAnkiOpenConfig(); closeSidebar() } },
+      { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: '#8B5CF6', disabled: !cards.value.length, command: () => { exportAsMarkdown(); closeSidebar() } },
+      { separator: true },
+      { label: 'Limpar Cards', icon: 'pi pi-trash', iconColor: '#EF4444', danger: true, disabled: !cards.value.length, command: () => { clearAllCards(); closeSidebar() } }
     ]
   },
   {
     key: 'config',
     label: 'Configurações',
     icon: 'pi pi-cog',
+    iconColor: '#64748B',
+    tooltip: 'Ajustes e preferências',
     submenu: [
-      { label: 'Escolher Modelo', icon: 'pi pi-microchip', command: () => { openModelSelection(); closeSidebar() } },
-      { label: 'API Keys', icon: 'pi pi-key', command: () => { openApiKeys(); closeSidebar() } }
+      { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: '#10B981', command: () => { openModelSelection(); closeSidebar() } },
+      { label: 'Chaves de API', icon: 'pi pi-key', iconColor: '#F59E0B', command: () => { openApiKeys(); closeSidebar() } }
     ]
   },
   { separator: true },
-  { label: 'Browser', icon: 'pi pi-database', command: () => { router.push('/browser'); closeSidebar() } },
-  { label: 'Dashboard', icon: 'pi pi-chart-bar', command: () => { router.push('/dashboard'); closeSidebar() } },
-  { label: 'Logs', icon: 'pi pi-wave-pulse', command: () => { logsVisible.value = true; closeSidebar() } }
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: '#3B82F6', tooltip: 'Navegar pelos cards salvos', command: () => { router.push('/browser'); closeSidebar() } },
+  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: '#F59E0B', tooltip: 'Estatísticas de estudo', command: () => { router.push('/dashboard'); closeSidebar() } },
+  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: '#EF4444', tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true; closeSidebar() } }
+])
+
+// Footer actions para o sidebar
+const sidebarFooterActions = computed(() => [
+  { icon: 'pi pi-question-circle', tooltip: 'Ajuda', command: () => notify('Documentação em breve!', 'info') },
+  { icon: 'pi pi-moon', tooltip: 'Tema', command: () => notify('Tema alternativo em breve!', 'info') }
 ])
 
 // ============================================================
@@ -1698,7 +1715,6 @@ onBeforeUnmount(() => {
   <!-- Sidebar -->
   <aside v-if="sidebarOpen" class="sidebar" :class="{ 'expanded': sidebarExpanded }">
     <div class="sidebar-header">
-      <img src="/green.svg" alt="Logo" class="sidebar-logo" />
       <Button 
         :icon="sidebarExpanded ? 'pi pi-chevron-left' : 'pi pi-chevron-right'" 
         text 
@@ -1706,8 +1722,9 @@ onBeforeUnmount(() => {
         severity="secondary"
         @click="toggleSidebarExpand" 
         class="sidebar-toggle"
-        :title="sidebarExpanded ? 'Recolher' : 'Expandir'"
+        v-tooltip.right="sidebarExpanded ? 'Recolher menu' : 'Expandir menu'"
       />
+      <img src="/green.svg" alt="Logo" class="sidebar-logo" />
     </div>
 
     <nav class="sidebar-nav">
@@ -1719,12 +1736,20 @@ onBeforeUnmount(() => {
             class="sidebar-link" 
             :class="{ 'expanded': expandedMenus.has(item.key) }"
             @click="toggleSubmenu(item.key)"
-            :title="!sidebarExpanded ? item.label : ''"
+            v-tooltip.right="!sidebarExpanded ? { value: item.tooltip || item.label, showDelay: 300 } : null"
           >
-            <i :class="item.icon" class="sidebar-icon"></i>
-            <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
-            <Tag v-if="sidebarExpanded && item.badge" severity="secondary" class="sidebar-badge">{{ item.badge }}</Tag>
-            <i v-if="sidebarExpanded" class="pi pi-chevron-down sidebar-chevron"></i>
+            <span class="sidebar-icon-wrap" :style="{ '--icon-color': item.iconColor }">
+              <i :class="item.icon" class="sidebar-icon"></i>
+            </span>
+            <Transition name="fade">
+              <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
+            </Transition>
+            <Transition name="fade">
+              <Tag v-if="sidebarExpanded && item.badge" :severity="item.badge > 0 ? 'success' : 'secondary'" class="sidebar-badge">{{ item.badge }}</Tag>
+            </Transition>
+            <Transition name="fade">
+              <i v-if="sidebarExpanded" class="pi pi-chevron-down sidebar-chevron"></i>
+            </Transition>
           </button>
           
           <Transition name="submenu">
@@ -1734,15 +1759,18 @@ onBeforeUnmount(() => {
                 <button 
                   v-else
                   class="submenu-link" 
-                  :class="{ 'disabled': sub.disabled }"
+                  :class="{ 'disabled': sub.disabled, 'active': sub.active, 'danger': sub.danger }"
                   :disabled="sub.disabled"
                   @click="sub.command?.()"
                 >
-                  <i :class="sub.icon" class="submenu-icon"></i>
+                  <span class="submenu-icon-wrap" :style="{ '--icon-color': sub.iconColor }">
+                    <i :class="sub.icon" class="submenu-icon"></i>
+                  </span>
                   <div class="submenu-text">
                     <span class="submenu-label">{{ sub.label }}</span>
                     <span v-if="sub.sublabel" class="submenu-sublabel">{{ sub.sublabel }}</span>
                   </div>
+                  <i v-if="sub.active" class="pi pi-check submenu-check"></i>
                 </button>
               </template>
             </div>
@@ -1753,13 +1781,36 @@ onBeforeUnmount(() => {
           v-else 
           class="sidebar-link" 
           @click="item.command?.()"
-          :title="!sidebarExpanded ? item.label : ''"
+          v-tooltip.right="!sidebarExpanded ? { value: item.tooltip || item.label, showDelay: 300 } : null"
         >
-          <i :class="item.icon" class="sidebar-icon"></i>
-          <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
+          <span class="sidebar-icon-wrap" :style="{ '--icon-color': item.iconColor }">
+            <i :class="item.icon" class="sidebar-icon"></i>
+          </span>
+          <Transition name="fade">
+            <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
+          </Transition>
         </button>
       </template>
     </nav>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-footer-actions">
+        <button
+          v-for="(action, idx) in sidebarFooterActions"
+          :key="idx"
+          class="sidebar-footer-btn"
+          @click="action.command?.()"
+          v-tooltip.top="action.tooltip"
+        >
+          <i :class="action.icon"></i>
+        </button>
+      </div>
+      <Transition name="fade">
+        <div v-if="sidebarExpanded" class="sidebar-version">
+          <span>v1.0.0</span>
+        </div>
+      </Transition>
+    </div>
   </aside>
 
   <div
@@ -2511,79 +2562,121 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* =========================
-   Sidebar Menu
+   Sidebar Menu - Modern Design
 ========================= */
 .sidebar {
   position: fixed;
   left: 0;
   top: 0;
   bottom: 0;
-  width: 70px;
-  background: rgba(17, 24, 39, 0.98);
-  backdrop-filter: blur(20px);
-  border-right: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+  width: 72px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(17, 24, 39, 0.99) 100%);
+  backdrop-filter: blur(24px);
+  border-right: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 4px 0 32px rgba(0, 0, 0, 0.4);
   z-index: 1000;
   display: flex;
   flex-direction: column;
   overflow: visible;
-  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sidebar.expanded {
-  width: 280px;
+  width: 300px;
 }
 
 .sidebar-header {
-  padding: 16px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  background: rgba(255, 255, 255, 0.03);
-  min-height: 70px;
+  justify-content: center;
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, transparent 100%);
+  min-height: auto;
   overflow: visible;
-  gap: 12px;
+  gap: 10px;
+}
+
+.sidebar.expanded .sidebar-header {
+  flex-direction: row;
+  justify-content: space-between;
+  padding: 14px 16px;
 }
 
 .sidebar-logo {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
+  filter: drop-shadow(0 2px 8px rgba(16, 185, 129, 0.3));
+  transition: transform 0.3s ease;
+}
+
+.sidebar:hover .sidebar-logo {
+  transform: scale(1.05);
 }
 
 .sidebar-toggle {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
-  transition: all 0.2s ease;
-  background: rgba(16, 185, 129, 0.12) !important;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  margin-left: auto;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  background: rgba(16, 185, 129, 0.15) !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
   border-radius: 8px !important;
 }
 
+.sidebar.expanded .sidebar-toggle {
+  width: 32px;
+  height: 32px;
+}
+
 .sidebar-toggle:hover {
-  background: rgba(16, 185, 129, 0.22) !important;
-  transform: scale(1.08);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.28) !important;
+  transform: scale(1.1);
+  border-color: rgba(16, 185, 129, 0.5) !important;
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.25);
 }
 
 .sidebar-toggle :deep(.p-button-icon) {
-  font-size: 12px;
+  font-size: 11px;
+  color: #10B981;
+}
+
+.sidebar.expanded .sidebar-toggle :deep(.p-button-icon) {
+  font-size: 13px;
 }
 
 .sidebar-nav {
   flex: 1;
   overflow-y: auto;
-  overflow-x: visible;
-  padding: 12px 8px;
+  overflow-x: hidden;
+  padding: 16px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(16, 185, 129, 0.3) transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.3);
+  border-radius: 4px;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.5);
 }
 
 .sidebar-separator {
   height: 1px;
-  background: rgba(148, 163, 184, 0.12);
-  margin: 8px 12px;
+  background: linear-gradient(90deg, transparent 0%, rgba(148, 163, 184, 0.15) 50%, transparent 100%);
+  margin: 12px 16px;
 }
 
 .sidebar-item {
@@ -2594,14 +2687,15 @@ onBeforeUnmount(() => {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
+  justify-content: center;
+  gap: 14px;
+  padding: 10px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.9);
-  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 14px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   font-size: 14px;
   font-weight: 600;
   text-align: left;
@@ -2609,107 +2703,184 @@ onBeforeUnmount(() => {
   position: relative;
 }
 
+.sidebar.expanded .sidebar-link {
+  justify-content: flex-start;
+  padding: 12px 14px;
+}
+
+.sidebar-link::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 4px;
+  height: 24px;
+  background: linear-gradient(180deg, #10B981 0%, #34D399 100%);
+  border-radius: 0 4px 4px 0;
+  transition: transform 0.2s ease;
+}
+
 .sidebar-link:hover {
   background: rgba(99, 102, 241, 0.12);
   color: #fff;
 }
 
+.sidebar-link:hover::before {
+  transform: translateY(-50%) scaleY(1);
+}
+
 .sidebar-link.expanded {
-  background: rgba(99, 102, 241, 0.15);
+  background: rgba(99, 102, 241, 0.18);
   color: #fff;
 }
 
-.sidebar-icon {
-  font-size: 18px;
-  width: 20px;
-  text-align: center;
-  opacity: 0.9;
+.sidebar-link.expanded::before {
+  transform: translateY(-50%) scaleY(1);
+  background: linear-gradient(180deg, #6366F1 0%, #8B5CF6 100%);
+}
+
+.sidebar-icon-wrap {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
   flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.sidebar.expanded .sidebar-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+
+.sidebar-link:hover .sidebar-icon-wrap {
+  background: color-mix(in srgb, var(--icon-color, #6366F1) 18%, transparent);
+  transform: scale(1.08);
+}
+
+.sidebar-icon {
+  font-size: 17px;
+  color: var(--icon-color, rgba(255, 255, 255, 0.8));
+  transition: color 0.2s ease;
+}
+
+.sidebar-link:hover .sidebar-icon {
+  color: var(--icon-color, #fff);
 }
 
 .sidebar-label {
   flex: 1;
-  opacity: 0;
-  transition: opacity 0.2s ease 0.1s;
-}
-
-.sidebar.expanded .sidebar-label {
-  opacity: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-badge {
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 3px 10px;
   border-radius: 999px;
   font-weight: 800;
-  opacity: 0;
-  transition: opacity 0.2s ease 0.1s;
-}
-
-.sidebar.expanded .sidebar-badge {
-  opacity: 1;
-}
-
-.sidebar-chevron {
-  font-size: 12px;
-  transition: transform 0.3s ease, opacity 0.2s ease 0.1s;
-  opacity: 0;
   flex-shrink: 0;
 }
 
-.sidebar.expanded .sidebar-chevron {
-  opacity: 0.7;
+.sidebar-chevron {
+  font-size: 11px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0.6;
+  flex-shrink: 0;
 }
 
 .sidebar-link.expanded .sidebar-chevron {
   transform: rotate(180deg);
+  opacity: 1;
 }
 
 .sidebar-submenu {
-  padding-left: 12px;
+  padding: 6px 0 6px 20px;
   margin-top: 4px;
   overflow: hidden;
+  border-left: 2px solid rgba(99, 102, 241, 0.2);
+  margin-left: 28px;
 }
 
 .submenu-separator {
   height: 1px;
   background: rgba(148, 163, 184, 0.08);
-  margin: 6px 12px;
+  margin: 8px 12px;
 }
 
 .submenu-link {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 10px 14px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.8);
-  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
   cursor: pointer;
   transition: all 0.2s ease;
   font-size: 13px;
   text-align: left;
   margin-bottom: 2px;
+  position: relative;
 }
 
 .submenu-link:hover:not(.disabled) {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
+  transform: translateX(4px);
+}
+
+.submenu-link.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+}
+
+.submenu-link.danger:hover:not(.disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  color: #EF4444;
 }
 
 .submenu-link.disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
-.submenu-icon {
-  font-size: 14px;
-  width: 18px;
-  text-align: center;
-  opacity: 0.8;
+.submenu-icon-wrap {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
   flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.submenu-link:hover:not(.disabled) .submenu-icon-wrap {
+  background: color-mix(in srgb, var(--icon-color, #6366F1) 20%, transparent);
+}
+
+.submenu-icon {
+  font-size: 13px;
+  color: var(--icon-color, rgba(255, 255, 255, 0.7));
+  transition: color 0.2s ease;
+}
+
+.submenu-link:hover:not(.disabled) .submenu-icon {
+  color: var(--icon-color, #fff);
+}
+
+.submenu-link.active .submenu-icon {
+  color: #10B981;
 }
 
 .submenu-text {
@@ -2717,35 +2888,48 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .submenu-label {
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .submenu-sublabel {
   font-size: 11px;
-  opacity: 0.6;
+  opacity: 0.55;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submenu-check {
+  font-size: 12px;
+  color: #10B981;
+  flex-shrink: 0;
 }
 
 .submenu-enter-active {
-  animation: submenu-expand 0.3s ease;
+  animation: submenu-expand 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .submenu-leave-active {
-  animation: submenu-collapse 0.2s ease;
+  animation: submenu-collapse 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @keyframes submenu-expand {
   from {
     opacity: 0;
     max-height: 0;
-    transform: translateY(-8px);
+    transform: translateY(-10px);
   }
   to {
     opacity: 1;
-    max-height: 1000px;
+    max-height: 800px;
     transform: translateY(0);
   }
 }
@@ -2753,7 +2937,7 @@ onBeforeUnmount(() => {
 @keyframes submenu-collapse {
   from {
     opacity: 1;
-    max-height: 1000px;
+    max-height: 800px;
   }
   to {
     opacity: 0;
@@ -2761,9 +2945,65 @@ onBeforeUnmount(() => {
   }
 }
 
+/* Fade transition for labels */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+  padding: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-footer-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sidebar-footer-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 15px;
+}
+
+.sidebar-footer-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.sidebar-version {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  font-weight: 500;
+  padding-right: 4px;
+}
+
 .menu-toggle {
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
 }
 
 /* =========================
