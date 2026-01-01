@@ -1208,7 +1208,9 @@ const cardTypeOptions = ref([
 ])
 
 // Model selection
-const selectedModel = ref('qwen-flashcard')
+const selectedModel = ref('qwen-flashcard')           // Modelo para geração de cards
+const selectedValidationModel = ref('qwen-flashcard') // Modelo para validação de qualidade
+const selectedAnalysisModel = ref('qwen-flashcard')   // Modelo para análise de texto
 const availableModels = ref([])
 const isLoadingModels = ref(false)
 
@@ -1415,19 +1417,25 @@ function clearLogs() {
 const progressVisible = ref(false)
 const progressTitle = ref('Processing...')
 const progressValue = ref(0)
+const progressStage = ref('')
+const progressDetails = ref({})
 
 function showProgress(title = 'Processing...') {
   progressTitle.value = title
   progressValue.value = 0
+  progressStage.value = ''
+  progressDetails.value = {}
   progressVisible.value = true
 }
 
-function setProgress(v) {
+function setProgress(v, stage = null, details = null) {
   progressValue.value = Math.max(0, Math.min(100, Math.floor(v)))
+  if (stage) progressStage.value = stage
+  if (details) progressDetails.value = { ...progressDetails.value, ...details }
 }
 
 function completeProgress() {
-  setProgress(100)
+  setProgress(100, 'Concluído!')
   setTimeout(() => (progressVisible.value = false), 650)
 }
 
@@ -1465,10 +1473,12 @@ function openModelSelection() {
 function saveModelSelection() {
   try {
     localStorage.setItem('spaced-rep.selected-model', selectedModel.value)
+    localStorage.setItem('spaced-rep.selected-validation-model', selectedValidationModel.value)
+    localStorage.setItem('spaced-rep.selected-analysis-model', selectedAnalysisModel.value)
     modelSelectionVisible.value = false
-    notify('Modelo selecionado: ' + selectedModel.value, 'success', 3000)
+    notify('Modelos salvos com sucesso', 'success', 3000)
   } catch (e) {
-    notify('Erro ao salvar modelo', 'error', 3000)
+    notify('Erro ao salvar modelos', 'error', 3000)
   }
 }
 
@@ -1547,11 +1557,11 @@ async function analyzeDocumentContext(text) {
   try {
     isAnalyzing.value = true
     startTimer('Analisando...')
-    addLog('Starting text analysis...', 'info')
+    addLog(`Starting text analysis with model: ${selectedAnalysisModel.value}...`, 'info')
     showProgress('Analisando texto...')
     setProgress(25)
 
-    const result = await analyzeText(text)
+    const result = await analyzeText(text, selectedAnalysisModel.value)
     setProgress(92)
 
     addLog('Text analysis completed', 'success')
@@ -1690,7 +1700,7 @@ async function generateCardsFromSelection() {
     addLog(`Starting card generation (${cardType.value}) from: ${sourceLabel}`, 'info')
     console.log('Card type being sent:', cardType.value, '| Source:', resolved.source)
     showProgress('Gerando cards...')
-    setProgress(10)
+    setProgress(10, 'Preparando prompt...')
 
     const deckNames = Object.keys(decks.value || {}).join(', ')
     const newCards = await generateCardsWithStream(
@@ -1703,27 +1713,80 @@ async function generateCardsFromSelection() {
         try {
           if (stage === 'stage' && data?.stage) {
             const s = data.stage
-            if (s === 'analysis_started') addLog('Stage: Analysis started', 'info')
-            else if (s === 'analysis_completed') addLog('Stage: Analysis completed', 'success')
-            else if (s === 'generation_started') addLog('Stage: Generation started', 'info')
-            else if (s === 'generation_completed') addLog('Stage: Generation completed', 'success')
-            else if (s === 'parsing_started') addLog('Stage: Parsing started', 'info')
-            else if (s === 'parsing_completed') addLog('Stage: Parsing completed', 'success')
+            
+            // Mapeamento de estágios para UI amigável
+            const stageMap = {
+              'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: '🚀' },
+              'generation_completed': { progress: 40, label: 'LLM concluiu geração', icon: '✅' },
+              'parsed': { 
+                progress: 50, 
+                label: `Parseados ${data.count || 0} cards (modo: ${data.mode || 'unknown'})`, 
+                icon: '📝',
+                details: { parsed: data.count, mode: data.mode, beforeFilter: data.before_type_filter }
+              },
+              'src_filtered': { 
+                progress: 65, 
+                label: `Validação SRC: ${data.kept || 0} aprovados, ${data.dropped || 0} removidos`, 
+                icon: '🔍',
+                details: { srcKept: data.kept, srcDropped: data.dropped }
+              },
+              'llm_relevance_filtered': { 
+                progress: 75, 
+                label: `Filtro relevância: ${data.kept || 0} mantidos, ${data.dropped || 0} removidos`, 
+                icon: '🎯',
+                details: { relevanceKept: data.kept, relevanceDropped: data.dropped }
+              },
+              'src_bypassed': { 
+                progress: 70, 
+                label: `SRC bypass: ${data.count || 0} cards mantidos`, 
+                icon: '⚡' 
+              },
+              'lang_check': { 
+                progress: 80, 
+                label: `Idioma detectado: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
+                icon: '🌐' 
+              },
+              'repair_parsed': { 
+                progress: 85, 
+                label: `Reparo: ${data.count || 0} cards adicionais`, 
+                icon: '🔧' 
+              },
+              'repair_src_filtered': { 
+                progress: 88, 
+                label: `Reparo SRC: ${data.kept || 0} aprovados`, 
+                icon: '🔍' 
+              },
+              'done': { 
+                progress: 95, 
+                label: `Concluído: ${data.total_cards || 0} cards finais`, 
+                icon: '🎉',
+                details: { totalCards: data.total_cards }
+              }
+            }
+            
+            const stageInfo = stageMap[s]
+            if (stageInfo) {
+              setProgress(stageInfo.progress, `${stageInfo.icon} ${stageInfo.label}`, stageInfo.details)
+              addLog(`Stage: ${stageInfo.label}`, s === 'done' ? 'success' : 'info')
+            } else {
+              // Estágios não mapeados
+              addLog(`Stage: ${s}`, 'info')
+            }
           }
         } catch (e) {
           addLog('Progress error: ' + (e?.message || String(e)), 'error')
         }
-
-        if (progressValue.value < 92) setProgress(progressValue.value + 4)
       },
-      currentAnalysisId.value
+      currentAnalysisId.value,
+      selectedValidationModel.value,
+      selectedAnalysisModel.value
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')
     cards.value = [...cards.value, ...newCards]
     notify(`${newCards.length} cards criados`, 'success')
 
-    setProgress(100)
+    setProgress(100, '✅ Concluído!')
     completeProgress()
     schedulePersistActiveSession()
   } catch (error) {
@@ -1902,7 +1965,9 @@ async function editGenerateCardConfirm() {
       ({ stage }) => {
         if (progressValue.value < 92) setProgress(progressValue.value + 4)
       },
-      currentAnalysisId.value
+      currentAnalysisId.value,
+      selectedValidationModel.value,
+      selectedAnalysisModel.value
     )
     
     newCards.forEach(card => {
@@ -2547,6 +2612,10 @@ onMounted(async () => {
   try {
     const savedModel = localStorage.getItem('spaced-rep.selected-model')
     if (savedModel) selectedModel.value = savedModel
+    const savedValidationModel = localStorage.getItem('spaced-rep.selected-validation-model')
+    if (savedValidationModel) selectedValidationModel.value = savedValidationModel
+    const savedAnalysisModel = localStorage.getItem('spaced-rep.selected-analysis-model')
+    if (savedAnalysisModel) selectedAnalysisModel.value = savedAnalysisModel
   } catch {}
 
   ensureActiveSession()
@@ -3653,11 +3722,44 @@ onBeforeUnmount(() => {
       v-model:visible="progressVisible"
       :header="progressTitle"
       modal
-      class="modern-dialog"
-      style="width: min(520px, 95vw);"
+      :closable="false"
+      class="modern-dialog progress-dialog"
+      style="width: min(560px, 95vw);"
     >
-      <ProgressBar :value="progressValue" />
-      <div class="mt-2 text-right">{{ progressValue }}%</div>
+      <div class="progress-content">
+        <ProgressBar :value="progressValue" :showValue="false" style="height: 8px;" />
+        
+        <div class="progress-info mt-3">
+          <div class="progress-stage" v-if="progressStage">
+            {{ progressStage }}
+          </div>
+          <div class="progress-percent">{{ progressValue }}%</div>
+        </div>
+        
+        <!-- Pipeline summary -->
+        <div class="progress-pipeline mt-3" v-if="Object.keys(progressDetails).length > 0">
+          <div class="pipeline-stats">
+            <div v-if="progressDetails.parsed" class="stat-item">
+              <span class="stat-label">Parseados:</span>
+              <span class="stat-value">{{ progressDetails.parsed }} cards</span>
+            </div>
+            <div v-if="progressDetails.srcKept !== undefined" class="stat-item">
+              <span class="stat-label">Validação SRC:</span>
+              <span class="stat-value success">{{ progressDetails.srcKept }} ✓</span>
+              <span class="stat-value danger" v-if="progressDetails.srcDropped">{{ progressDetails.srcDropped }} ✗</span>
+            </div>
+            <div v-if="progressDetails.relevanceKept !== undefined" class="stat-item">
+              <span class="stat-label">Relevância:</span>
+              <span class="stat-value success">{{ progressDetails.relevanceKept }} ✓</span>
+              <span class="stat-value danger" v-if="progressDetails.relevanceDropped">{{ progressDetails.relevanceDropped }} ✗</span>
+            </div>
+            <div v-if="progressDetails.totalCards" class="stat-item total">
+              <span class="stat-label">Total Final:</span>
+              <span class="stat-value">{{ progressDetails.totalCards }} cards</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </Dialog>
 
     <!-- API KEYS -->
@@ -3700,21 +3802,22 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- MODEL SELECTION -->
-    <Dialog v-model:visible="modelSelectionVisible" header="Escolher Modelo" modal class="modern-dialog" style="width: min(760px, 96vw);">
+    <Dialog v-model:visible="modelSelectionVisible" header="Configurar Modelos" modal class="modern-dialog" style="width: min(860px, 96vw);">
       <div class="model-info">
         <i class="pi pi-info-circle mr-2" />
-        Escolha o modelo para geração de cartões. Modelos Ollama são locais (privacidade total). Modelos de API requerem chaves configuradas.
+        Configure os modelos para cada etapa do pipeline. Modelos Ollama são locais (privacidade total). Modelos de API requerem chaves configuradas.
       </div>
 
       <div class="grid mt-3">
-        <div class="col-12">
-          <label class="font-semibold">Modelo Selecionado</label>
+        <!-- Modelo de Geração -->
+        <div class="col-12 md:col-6">
+          <label class="font-semibold"><i class="pi pi-sparkles mr-2" />Modelo de Geração</label>
           <Select 
             v-model="selectedModel" 
             :options="availableModels" 
             optionLabel="name" 
             optionValue="name" 
-            class="w-full" 
+            class="w-full mt-2" 
             filter
             :loading="isLoadingModels"
             placeholder="Selecione um modelo"
@@ -3743,10 +3846,100 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </Select>
-          <small class="text-color-secondary mt-2 block">
-            Modelo atual: <strong>{{ selectedModel }}</strong>
+          <small class="text-color-secondary mt-1 block">
+            Cria os flashcards a partir do texto
           </small>
         </div>
+
+        <!-- Modelo de Análise -->
+        <div class="col-12 md:col-6">
+          <label class="font-semibold"><i class="pi pi-search mr-2" />Modelo de Análise</label>
+          <Select 
+            v-model="selectedAnalysisModel" 
+            :options="availableModels" 
+            optionLabel="name" 
+            optionValue="name" 
+            class="w-full mt-2" 
+            filter
+            :loading="isLoadingModels"
+            placeholder="Selecione um modelo"
+          >
+            <template #option="{ option }">
+              <div class="model-option">
+                <span class="model-name">{{ option.name }}</span>
+                <Tag 
+                  :severity="option.provider === 'ollama' ? 'success' : option.provider === 'openai' ? 'info' : 'warning'" 
+                  class="pill model-tag"
+                >
+                  {{ option.provider === 'ollama' ? 'Ollama' : option.provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
+                </Tag>
+              </div>
+            </template>
+            <template #value="{ value }">
+              <div v-if="value" class="model-selected">
+                <span class="model-name">{{ value }}</span>
+                <Tag 
+                  v-if="availableModels.find(m => m.name === value)"
+                  :severity="availableModels.find(m => m.name === value).provider === 'ollama' ? 'success' : availableModels.find(m => m.name === value).provider === 'openai' ? 'info' : 'warning'" 
+                  class="pill model-tag"
+                >
+                  {{ availableModels.find(m => m.name === value).provider === 'ollama' ? 'Ollama' : availableModels.find(m => m.name === value).provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
+                </Tag>
+              </div>
+            </template>
+          </Select>
+          <small class="text-color-secondary mt-1 block">
+            Extrai conceitos-chave do texto selecionado
+          </small>
+        </div>
+
+        <!-- Modelo de Validação -->
+        <div class="col-12 mt-3">
+          <label class="font-semibold"><i class="pi pi-check-circle mr-2" />Modelo de Validação</label>
+          <Select 
+            v-model="selectedValidationModel" 
+            :options="availableModels" 
+            optionLabel="name" 
+            optionValue="name" 
+            class="w-full mt-2" 
+            filter
+            :loading="isLoadingModels"
+            placeholder="Selecione um modelo"
+          >
+            <template #option="{ option }">
+              <div class="model-option">
+                <span class="model-name">{{ option.name }}</span>
+                <Tag 
+                  :severity="option.provider === 'ollama' ? 'success' : option.provider === 'openai' ? 'info' : 'warning'" 
+                  class="pill model-tag"
+                >
+                  {{ option.provider === 'ollama' ? 'Ollama' : option.provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
+                </Tag>
+              </div>
+            </template>
+            <template #value="{ value }">
+              <div v-if="value" class="model-selected">
+                <span class="model-name">{{ value }}</span>
+                <Tag 
+                  v-if="availableModels.find(m => m.name === value)"
+                  :severity="availableModels.find(m => m.name === value).provider === 'ollama' ? 'success' : availableModels.find(m => m.name === value).provider === 'openai' ? 'info' : 'warning'" 
+                  class="pill model-tag"
+                >
+                  {{ availableModels.find(m => m.name === value).provider === 'ollama' ? 'Ollama' : availableModels.find(m => m.name === value).provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
+                </Tag>
+              </div>
+            </template>
+          </Select>
+          <small class="text-color-secondary mt-1 block">
+            Verifica se os cards gerados estão ancorados no texto selecionado usando LLM
+          </small>
+        </div>
+      </div>
+
+      <Divider />
+      
+      <div class="model-tips">
+        <p><strong>💡 Dica:</strong> Use modelos menores/mais rápidos para validação (ex: llama3.2:3b, gemma2:2b) para economizar tokens.</p>
       </div>
 
       <template #footer>
@@ -4687,6 +4880,93 @@ onBeforeUnmount(() => {
 :deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
   border-color: rgba(99, 102, 241, 0.55);
+}
+
+/* =========================
+   Progress Dialog Styles
+========================= */
+.progress-dialog .progress-content {
+  padding: 0.5rem 0;
+}
+
+.progress-dialog .progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.progress-dialog .progress-stage {
+  font-size: 0.95rem;
+  color: var(--p-text-color);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-dialog .progress-percent {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--p-primary-color);
+  min-width: 40px;
+  text-align: right;
+}
+
+.progress-dialog .progress-pipeline {
+  background: var(--p-surface-100);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--p-surface-200);
+}
+
+.progress-dialog .pipeline-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.progress-dialog .stat-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.progress-dialog .stat-item.total {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--p-surface-300);
+  font-weight: 600;
+}
+
+.progress-dialog .stat-label {
+  color: var(--p-text-muted-color);
+  min-width: 100px;
+}
+
+.progress-dialog .stat-value {
+  color: var(--p-text-color);
+}
+
+.progress-dialog .stat-value.success {
+  color: var(--p-green-500);
+  font-weight: 500;
+}
+
+.progress-dialog .stat-value.danger {
+  color: var(--p-red-400);
+  font-weight: 500;
+}
+
+/* Dark mode adjustments */
+:root[data-theme="dark"] .progress-dialog .progress-pipeline {
+  background: var(--p-surface-800);
+  border-color: var(--p-surface-700);
+}
+
+:root[data-theme="dark"] .progress-dialog .stat-item.total {
+  border-color: var(--p-surface-600);
 }
 
 /* =========================

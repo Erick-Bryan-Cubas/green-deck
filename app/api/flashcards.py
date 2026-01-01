@@ -7,7 +7,7 @@ import re
 import logging
 from pathlib import Path
 
-from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL
+from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, OLLAMA_VALIDATION_MODEL
 from app.services.ollama import ollama_generate_stream
 from app.services.api_providers import openai_generate_stream, perplexity_generate_stream
 from app.services.parser import (
@@ -21,13 +21,6 @@ from app.utils.text import (
     detect_language_pt_en_es,
 )
 from app.services.storage import save_analysis, save_cards, save_llm_response, save_filter_result, save_generation_request, save_pipeline_stage, _get_connection
-
-# Fuzzy matching para validação de SRC
-try:
-    from rapidfuzz import fuzz
-    RAPIDFUZZ_AVAILABLE = True
-except ImportError:
-    RAPIDFUZZ_AVAILABLE = False
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
@@ -52,6 +45,7 @@ SYSTEM_CLOZE = (
 
 class TextRequest(BaseModel):
     text: str
+    analysisModel: Optional[str] = None  # Modelo para embeddings/análise
 
 
 class CardsRequest(BaseModel):
@@ -61,7 +55,9 @@ class CardsRequest(BaseModel):
     useRAG: Optional[bool] = False
     topK: Optional[int] = 0
     cardType: Optional[str] = "both"
-    model: Optional[str] = None
+    model: Optional[str] = None                    # Modelo de geração
+    validationModel: Optional[str] = None          # Modelo de validação de qualidade
+    analysisModel: Optional[str] = None            # Modelo de análise de texto
     analysisId: Optional[str] = None
     anthropicApiKey: Optional[str] = None
     openaiApiKey: Optional[str] = None
@@ -127,120 +123,212 @@ DIRETRIZES DE QUALIDADE (SM20 Checklist) — NÃO é conteúdo do usuário.
 
 
 # =============================================================================
-# Card SRC validation with Fuzzy Matching
+# Text Normalization Utils
 # =============================================================================
 
-def _normalize_text_for_matching(s: str) -> str:
+def _normalize_text_for_matching(text: str) -> str:
     """
-    Normaliza texto para comparação fuzzy:
-    - Remove espaços extras
-    - Converte para minúsculas
-    - Normaliza aspas e hífens
-    - Remove pontuação redundante
+    Normaliza texto para comparações: minúsculas, remove pontuação extra,
+    normaliza espaços.
     """
-    s = (s or "").strip()
-    # Normaliza aspas tipográficas para retas
-    s = s.replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
-    # Normaliza hífens e traços
-    s = s.replace('–', '-').replace('—', '-').replace('−', '-')
-    # Remove espaços não-quebráveis
-    s = s.replace('\u00a0', ' ').replace('\u200b', '')
-    # Normaliza espaços
-    s = re.sub(r'\s+', ' ', s).strip().lower()
-    return s
+    import unicodedata
+    text = unicodedata.normalize("NFKC", text.lower())
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
-def _is_src_valid_fuzzy(ref: str, src_text: str, threshold: int = 80) -> Tuple[bool, float]:
+# =============================================================================
+# Card SRC validation with LLM
+# =============================================================================
+
+async def _validate_src_with_llm(
+    cards,
+    src_text: str,
+    *,
+    provider: str = "ollama",
+    model: str = None,
+    openai_key: Optional[str] = None,
+    perplexity_key: Optional[str] = None,
+    analysis_id: Optional[str] = None,
+) -> list:
     """
-    Validação de SRC com fuzzy matching usando rapidfuzz.
+    Valida rigorosamente se o campo SRC de cada card está presente no texto selecionado.
+    
+    Critérios de validação:
+    1. O SRC deve ser uma citação LITERAL do texto selecionado
+    2. Variações mínimas são permitidas (pontuação, espaços)
+    3. O conteúdo do card (front/back) deve ser derivável do SRC
+    4. Cards sem SRC são automaticamente rejeitados
     
     Args:
-        ref: Referência SRC do card
-        src_text: Texto fonte original
-        threshold: Similaridade mínima (0-100)
+        cards: Lista de cards a serem validados
+        src_text: Texto fonte original (trecho selecionado pelo usuário)
+        provider: Provider do LLM ('ollama', 'openai', 'perplexity')
+        model: Nome do modelo de validação
+        openai_key: API key para OpenAI
+        perplexity_key: API key para Perplexity
+        analysis_id: ID da análise para persistência
     
     Returns:
-        Tuple[is_valid, similarity_score]
+        Lista filtrada de cards com SRC válido
     """
-    ref = (ref or "").strip().strip('"').strip()
-    if not ref:
-        return False, 0.0
-    
-    wc = len(ref.split())
-    if wc < 4 or wc > 30:  # Limites mais flexíveis
-        return False, 0.0
-    
-    ref_norm = _normalize_text_for_matching(ref)
-    src_norm = _normalize_text_for_matching(src_text)
-    
-    # Primeiro tenta match exato (mais rápido)
-    if ref_norm in src_norm:
-        return True, 100.0
-    
-    # Se rapidfuzz disponível, usa fuzzy matching
-    if RAPIDFUZZ_AVAILABLE:
-        # partial_ratio encontra a melhor substring match
-        similarity = fuzz.partial_ratio(ref_norm, src_norm)
-        return similarity >= threshold, float(similarity)
-    
-    # Fallback: busca por palavras-chave
-    ref_words = set(ref_norm.split())
-    src_words = set(src_norm.split())
-    if not ref_words:
-        return False, 0.0
-    
-    overlap = len(ref_words & src_words) / len(ref_words)
-    return overlap >= 0.7, overlap * 100
-
-
-def _is_src_valid(ref: str, src_text: str) -> bool:
-    """
-    Heurísticas simples (legacy, para compatibilidade):
-    - src deve existir
-    - src (normalizado) precisa aparecer no texto-fonte (normalizado)
-    - src deve ter 5–25 palavras (para evitar SRC enorme ou trivial)
-    """
-    is_valid, _ = _is_src_valid_fuzzy(ref, src_text, threshold=80)
-    return is_valid
-
-
-def _filter_cards_with_valid_src(cards, src_text: str, analysis_id: Optional[str] = None):
-    """
-    Mantém apenas cards cujo campo `src` aparece (quase-verbatim) dentro do texto-fonte.
-    Isso ajuda a garantir que o modelo está ancorando no trecho selecionado.
-    
-    Usa fuzzy matching para tolerar pequenas variações tipográficas.
-    Salva resultados do filtro no DuckDB para análise posterior.
-    """
-    kept = []
     cards_input = list(cards or [])
     
-    for c in cards_input:
-        ref = (c.get("src") or "").strip().strip('"').strip()
-        is_valid, score = _is_src_valid_fuzzy(ref, src_text)
-        if not is_valid:
-            logger.debug("SRC rejected (score=%.1f): %s", score, ref[:50])
-            continue
-        c["src"] = ref
-        c["_src_score"] = score  # Metadata para scoring
-        kept.append(c)
+    if not cards_input:
+        return []
     
-    # Salva resultado do filtro no DuckDB
-    if cards_input:
-        try:
-            save_filter_result(
-                filter_type="src_validation",
-                cards_before=cards_input,
-                cards_after=kept,
-                analysis_id=analysis_id,
-                metadata={
-                    "threshold": 80,
-                    "method": "fuzzy_matching",
-                    "rapidfuzz_available": RAPIDFUZZ_AVAILABLE
-                }
-            )
-        except Exception as e:
-            logger.warning("Failed to save src filter result: %s", e)
+    # Usa modelo de validação se não especificado
+    if not model:
+        model = OLLAMA_VALIDATION_MODEL
+    
+    # Formata os cards para o prompt com front, back e src
+    cards_text = ""
+    for i, c in enumerate(cards_input):
+        src = (c.get("src") or "").strip()
+        front = (c.get("front") or "").strip()[:200]
+        back = (c.get("back") or "").strip()[:200]
+        cards_text += f"""[CARD {i+1}]
+  FRONT: "{front}"
+  BACK: "{back}"
+  SRC: "{src}"
+"""
+    
+    prompt = f"""# TAREFA: VALIDAÇÃO RIGOROSA DE FLASHCARDS
+
+Você é um validador técnico de flashcards para sistemas de repetição espaçada.
+
+## TEXTO SELECIONADO PELO USUÁRIO (FONTE ÚNICA VÁLIDA):
+---BEGIN_SELECTED_TEXT---
+{src_text[:4000]}
+---END_SELECTED_TEXT---
+
+## FLASHCARDS A VALIDAR:
+{cards_text}
+
+## REGRAS DE VALIDAÇÃO (APLIQUE RIGOROSAMENTE):
+
+### REGRA 1: SRC OBRIGATÓRIO
+- O campo SRC é OBRIGATÓRIO em cada card
+- Cards sem SRC ou com SRC vazio = NÃO
+
+### REGRA 2: SRC DEVE SER CITAÇÃO LITERAL
+- O SRC deve aparecer LITERALMENTE no TEXTO SELECIONADO
+- Permitido: variações mínimas de pontuação, espaços, capitalização
+- PROIBIDO: SRC que é paráfrase, resumo ou texto de outra seção
+
+### REGRA 3: CONTEÚDO DERIVÁVEL DO SRC
+- O conteúdo do FRONT e BACK deve ser derivável do SRC
+- Se o card fala sobre conceitos NÃO mencionados no TEXTO SELECIONADO = NÃO
+
+### REGRA 4: CONTEXTO EXTERNO É INVÁLIDO
+- Se o SRC parece vir de outra parte do documento (contexto geral) = NÃO
+- Apenas o TEXTO SELECIONADO é válido como fonte
+
+## FORMATO DE RESPOSTA:
+Para cada card, responda EXATAMENTE neste formato (uma linha por card):
+CARD_N: VEREDICTO | MOTIVO
+
+Onde:
+- N = número do card (1, 2, 3...)
+- VEREDICTO = SIM ou NÃO
+- MOTIVO = breve explicação (máx 10 palavras)
+
+## EXEMPLOS:
+CARD_1: SIM | SRC encontrado literalmente no texto
+CARD_2: NÃO | SRC não aparece no texto selecionado
+CARD_3: NÃO | card sobre conceito ausente no texto selecionado
+CARD_4: NÃO | SRC vazio
+
+## INICIE A VALIDAÇÃO:"""
+
+    system = """Você é um validador técnico rigoroso. 
+Analise cada card criteriosamente.
+Responda APENAS no formato especificado.
+Seja conservador: na dúvida, rejeite o card."""
+
+    options = {"num_predict": 512, "temperature": 0.0}
+    
+    logger.info("SRC validation using LLM model: %s (provider: %s)", model, provider)
+    
+    raw = ""
+    try:
+        if provider == "openai" and openai_key:
+            async for piece in openai_generate_stream(openai_key, model, prompt, system=system, options=options):
+                raw += piece
+        elif provider == "perplexity" and perplexity_key:
+            async for piece in perplexity_generate_stream(perplexity_key, model, prompt, system=system, options=options):
+                raw += piece
+        else:
+            async for piece in ollama_generate_stream(model, prompt, system=system, options=options):
+                raw += piece
+    except Exception as e:
+        logger.warning("LLM SRC validation failed: %s. Returning all cards without SRC filter.", e)
+        return cards_input
+    
+    logger.debug("LLM SRC validation raw response: %s", raw[:500])
+    
+    # Parse da resposta - formato: CARD_N: SIM|NÃO | motivo
+    kept = []
+    approved_indices = set()
+    rejection_reasons = {}
+    
+    for line in raw.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Formato novo: CARD_N: SIM|NÃO | motivo
+        match_new = re.match(r"CARD[_\s]*(\d+)\s*:\s*(SIM|NÃO|NAO|YES|NO)", line, re.IGNORECASE)
+        # Formato antigo fallback: N: SIM|NÃO
+        match_old = re.match(r"(\d+)\s*:\s*(SIM|NÃO|NAO|YES|NO)", line, re.IGNORECASE)
+        
+        match = match_new or match_old
+        if match:
+            idx = int(match.group(1)) - 1
+            verdict = match.group(2).upper()
+            if verdict in ("SIM", "YES"):
+                approved_indices.add(idx)
+            else:
+                # Extrai motivo se disponível
+                reason_match = re.search(r"\|\s*(.+)$", line)
+                if reason_match:
+                    rejection_reasons[idx] = reason_match.group(1).strip()
+    
+    # Se LLM não conseguiu parsear, retorna todos os cards
+    if not approved_indices and cards_input:
+        logger.warning("LLM SRC validation returned no parseable results. Returning all cards without SRC filter.")
+        return cards_input
+    
+    # Filtra cards aprovados
+    for i, c in enumerate(cards_input):
+        if i in approved_indices:
+            c["_src_validated_by"] = "llm"
+            kept.append(c)
+        else:
+            reason = rejection_reasons.get(i, "não passou na validação")
+            logger.info("SRC rejected by LLM [card %d]: %s | Motivo: %s", i+1, (c.get("src") or "")[:50], reason)
+    
+    logger.info("SRC validation complete: %d/%d cards approved", len(kept), len(cards_input))
+    
+    # Salva resultado do filtro
+    try:
+        save_filter_result(
+            filter_type="src_validation_llm",
+            cards_before=cards_input,
+            cards_after=kept,
+            analysis_id=analysis_id,
+            metadata={
+                "provider": provider,
+                "model": model,
+                "llm_raw_response": raw[:1000],
+                "approved_indices": list(approved_indices),
+                "rejection_reasons": rejection_reasons,
+                "method": "llm_validation"
+            }
+        )
+    except Exception as e:
+        logger.warning("Failed to save LLM SRC filter result: %s", e)
     
     return kept
 
@@ -674,30 +762,48 @@ def _parse_and_normalize_cards(raw: str, card_type: str, analysis_id: Optional[s
     return cards_raw, parse_mode
 
 
-def _apply_src_and_quality_filters(
+
+async def _apply_src_and_quality_filters_llm(
     cards_raw: list,
     src_text: str,
     target_min: int,
     target_max: int,
+    *,
+    provider: str = "ollama",
+    validation_model: str = None,
+    openai_key: Optional[str] = None,
+    perplexity_key: Optional[str] = None,
     apply_quality_filter: bool = True,
     analysis_id: Optional[str] = None
 ) -> list:
     """
-    Aplica filtros de SRC e qualidade aos cards.
+    Aplica filtros de SRC (via LLM) e qualidade aos cards.
     
     Args:
         cards_raw: Cards parseados
         src_text: Texto fonte para validação
         target_min: Quantidade mínima desejada
         target_max: Quantidade máxima desejada
+        provider: Provider do LLM
+        validation_model: Modelo para validação
+        openai_key: API key OpenAI
+        perplexity_key: API key Perplexity
         apply_quality_filter: Se deve aplicar filtro de qualidade
         analysis_id: ID da análise para persistência
     
     Returns:
         Lista de cards filtrados
     """
-    # Filtro de SRC com fuzzy matching
-    cards = _filter_cards_with_valid_src(cards_raw, src_text, analysis_id=analysis_id)
+    # Filtro de SRC com LLM
+    cards = await _validate_src_with_llm(
+        cards_raw, 
+        src_text, 
+        provider=provider,
+        model=validation_model,
+        openai_key=openai_key,
+        perplexity_key=perplexity_key,
+        analysis_id=analysis_id
+    )
     
     # Fallback: se filtro derrubar 100% mas há cards parseados
     if not cards and cards_raw:
@@ -712,7 +818,7 @@ def _apply_src_and_quality_filters(
     if apply_quality_filter and cards:
         cards = filter_and_rank_by_quality(
             cards,
-            min_score=0.35,  # Threshold mais tolerante
+            min_score=0.35,
             max_cards=target_max,
             analysis_id=analysis_id
         )
@@ -826,7 +932,9 @@ def _cards_lang_from_cards(cards) -> str:
 async def analyze_text_stream(request: TextRequest):
     async def generate():
         try:
-            logger.info("Ollama analysis model (embeddings): %s", OLLAMA_ANALYSIS_MODEL)
+            # Usa modelo do request ou fallback para config
+            analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
+            logger.info("Ollama analysis model (embeddings): %s", analysis_model)
 
             from app.services.ollama import (
                 ollama_embed,
@@ -857,11 +965,11 @@ async def analyze_text_stream(request: TextRequest):
 
             yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'chunking', 'chunks': len(chunks), 'method': 'semantic' if len(chunks) > 0 else 'simple'})}\n\n"
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'embedding'})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'embedding', 'model': analysis_model})}\n\n"
 
             chunk_embeddings = []
             for i, chunk in enumerate(chunks):
-                emb = await ollama_embed(OLLAMA_ANALYSIS_MODEL, chunk)
+                emb = await ollama_embed(analysis_model, chunk)
                 chunk_embeddings.append((chunk, emb))
                 # Progresso incremental durante embedding
                 if len(chunks) > 3:
@@ -874,7 +982,7 @@ async def analyze_text_stream(request: TextRequest):
             else:
                 query = "important concepts, technical definitions, contrasts and distinctions"
             
-            query_emb = await ollama_embed(OLLAMA_ANALYSIS_MODEL, query)
+            query_emb = await ollama_embed(analysis_model, query)
 
             yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'ranking'})}\n\n"
 
@@ -1143,20 +1251,33 @@ COMECE:
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw), 'before_type_filter': cards_before_type_filter})}\n\n"
 
-            # SRC filter
+            # Determina modelo de validação
+            validation_model = request.validationModel or model
+            logger.info("Validation model: %s", validation_model)
+
+            # SRC filter usando LLM
             cards_before_src = len(cards_raw)
-            cards = _filter_cards_with_valid_src(cards_raw, src, analysis_id=request.analysisId)
+            cards = await _validate_src_with_llm(
+                cards_raw, 
+                src, 
+                provider=provider,
+                model=validation_model,
+                openai_key=request.openaiApiKey,
+                perplexity_key=request.perplexityApiKey,
+                analysis_id=request.analysisId
+            )
             
             # Registra etapa de filtro SRC no pipeline
             save_pipeline_stage(
                 request_id=request_id,
-                stage="src_filter",
+                stage="src_filter_llm",
                 cards_in=cards_before_src,
                 cards_out=len(cards),
+                details={"method": "llm_validation", "validation_model": validation_model},
                 analysis_id=request.analysisId
             )
             
-            yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards))})}\n\n"
+            yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards)), 'method': 'llm'})}\n\n"
 
             # Content relevance filter usando LLM - garante que cards são sobre o trecho selecionado
             cards_before_relevance = len(cards)
@@ -1164,7 +1285,7 @@ COMECE:
                 cards, 
                 src,
                 provider=provider,
-                model=model,  # Usa o mesmo modelo de geração (NÃO embedding!)
+                model=validation_model,  # Usa modelo de validação
                 openai_key=request.openaiApiKey,
                 perplexity_key=request.perplexityApiKey,
                 analysis_id=request.analysisId,
@@ -1293,8 +1414,17 @@ COMECE DIRETO (sem explicar nada):
 
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'mode': repair_mode, 'count': len(cards2_raw)})}\n\n"
 
-                cards2 = _filter_cards_with_valid_src(cards2_raw, src, analysis_id=request.analysisId)
-                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2))})}\n\n"
+                # SRC filter usando LLM no repair também
+                cards2 = await _validate_src_with_llm(
+                    cards2_raw, 
+                    src, 
+                    provider=provider,
+                    model=validation_model,
+                    openai_key=request.openaiApiKey,
+                    perplexity_key=request.perplexityApiKey,
+                    analysis_id=request.analysisId
+                )
+                yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2)), 'method': 'llm'})}\n\n"
 
                 # Content relevance filter usando LLM no repair também
                 cards2_before_relevance = len(cards2)
@@ -1302,7 +1432,7 @@ COMECE DIRETO (sem explicar nada):
                     cards2, 
                     src,
                     provider=provider,
-                    model=model,  # Usa o mesmo modelo de geração (NÃO embedding!)
+                    model=validation_model,  # Usa modelo de validação
                     openai_key=request.openaiApiKey,
                     perplexity_key=request.perplexityApiKey,
                     analysis_id=request.analysisId,

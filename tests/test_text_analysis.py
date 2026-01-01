@@ -68,69 +68,6 @@ class TestSemanticChunking:
         assert chunks[0].strip() == text.strip()
 
 
-class TestFuzzyMatching:
-    """Testes para validação de SRC com fuzzy matching."""
-    
-    def test_is_src_valid_fuzzy_exact_match(self):
-        """Testa match exato."""
-        from app.api.flashcards import _is_src_valid_fuzzy
-        
-        src_text = "Python é uma linguagem de programação de alto nível"
-        ref = "Python é uma linguagem de programação"
-        
-        is_valid, score = _is_src_valid_fuzzy(ref, src_text)
-        
-        assert is_valid is True
-        assert score >= 80
-    
-    def test_is_src_valid_fuzzy_typographic_variations(self):
-        """Testa variações tipográficas (aspas, hífens)."""
-        from app.api.flashcards import _is_src_valid_fuzzy
-        
-        src_text = 'A linguagem "Python" é de alto-nível'
-        
-        # Aspas tipográficas diferentes
-        ref = 'A linguagem "Python" é de alto-nível'
-        is_valid, _ = _is_src_valid_fuzzy(ref, src_text)
-        assert is_valid is True
-        
-        # Hífen diferente
-        ref2 = 'A linguagem "Python" é de alto–nível'  # en-dash
-        is_valid2, _ = _is_src_valid_fuzzy(ref2, src_text)
-        assert is_valid2 is True
-    
-    def test_is_src_valid_fuzzy_empty(self):
-        """Testa com referência vazia."""
-        from app.api.flashcards import _is_src_valid_fuzzy
-        
-        is_valid, score = _is_src_valid_fuzzy("", "algum texto")
-        assert is_valid is False
-        assert score == 0.0
-    
-    def test_is_src_valid_fuzzy_too_short(self):
-        """Testa com referência muito curta."""
-        from app.api.flashcards import _is_src_valid_fuzzy
-        
-        is_valid, _ = _is_src_valid_fuzzy("abc", "algum texto longo aqui")
-        assert is_valid is False
-    
-    def test_is_src_valid_fuzzy_word_limits(self):
-        """Testa limites de palavras."""
-        from app.api.flashcards import _is_src_valid_fuzzy
-        
-        src_text = "a b c d e f g h i j k l m n o p q r s t"
-        
-        # 4 palavras (mínimo é 4)
-        ref_short = "a b c d"
-        is_valid, _ = _is_src_valid_fuzzy(ref_short, src_text)
-        assert is_valid is True
-        
-        # 3 palavras (abaixo do mínimo)
-        ref_too_short = "a b c"
-        is_valid2, _ = _is_src_valid_fuzzy(ref_too_short, src_text)
-        assert is_valid2 is False
-
-
 class TestCardQualityScoring:
     """Testes para o sistema de scoring de qualidade."""
     
