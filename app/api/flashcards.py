@@ -214,6 +214,193 @@ def _filter_cards_with_valid_src(cards, src_text: str):
     return kept
 
 
+async def _filter_cards_by_content_relevance_llm(
+    cards,
+    src_text: str,
+    *,
+    provider: str = "ollama",
+    model: str = None,
+    openai_key: Optional[str] = None,
+    perplexity_key: Optional[str] = None,
+) -> list:
+    """
+    Usa o LLM para filtrar cards cujo conteúdo não está diretamente relacionado ao texto fonte.
+    Isso evita que o modelo gere cards baseados no contexto geral em vez do trecho selecionado.
+    
+    Args:
+        cards: Lista de cards a serem avaliados
+        src_text: Texto fonte original (trecho selecionado/destacado)
+        provider: Provider do LLM ('ollama', 'openai', 'perplexity')
+        model: Nome do modelo a usar (deve ser o mesmo usado para geração, NÃO embedding)
+        openai_key: API key para OpenAI
+        perplexity_key: API key para Perplexity
+    
+    Returns:
+        Lista filtrada de cards que são relevantes ao texto fonte
+    """
+    if not cards:
+        return []
+    
+    if len(cards) == 0:
+        return cards
+    
+    # O modelo DEVE ser passado explicitamente pelo chamador
+    # Se não for passado, usa o modelo de geração padrão (NÃO o de embedding!)
+    if not model:
+        logger.warning("No model specified for LLM relevance filter, using default OLLAMA_MODEL")
+        model = OLLAMA_MODEL
+    
+    # Formata os cards para o prompt
+    cards_text = ""
+    for i, c in enumerate(cards):
+        front = (c.get("front") or "").strip()
+        back = (c.get("back") or "").strip()
+        cards_text += f"[CARD {i+1}]\nQ: {front}\nA: {back}\n\n"
+    
+    prompt = f"""Analise se cada flashcard abaixo foi criado com base EXCLUSIVAMENTE no TEXTO-FONTE fornecido.
+
+TEXTO-FONTE:
+{src_text[:2000]}
+
+FLASHCARDS PARA AVALIAR:
+{cards_text}
+
+TAREFA:
+Para cada card, responda APENAS com o número do card e "SIM" ou "NÃO":
+- SIM = O card trata de informação que está EXPLICITAMENTE presente no TEXTO-FONTE
+- NÃO = O card trata de informação que NÃO está no TEXTO-FONTE (pode ser conhecimento geral, contexto externo, ou inferência não justificada)
+
+IMPORTANTE:
+- Se o card menciona um conceito que aparece no texto-fonte, responda SIM
+- Se o card traz informação adicional que NÃO está no texto-fonte, responda NÃO
+- Seja RIGOROSO: apenas cards ancorados no texto-fonte devem passar
+
+FORMATO DA RESPOSTA (uma linha por card):
+1: SIM
+2: NÃO
+3: SIM
+...
+
+RESPONDA AGORA:"""
+
+    system = "Você é um avaliador rigoroso de flashcards. Responda apenas no formato solicitado."
+    options = {"num_predict": 512, "temperature": 0.0}
+    
+    logger.info("LLM relevance filter using model: %s (provider: %s)", model, provider)
+    
+    raw = ""
+    try:
+        if provider == "openai" and openai_key:
+            async for piece in openai_generate_stream(openai_key, model, prompt, system=system, options=options):
+                raw += piece
+        elif provider == "perplexity" and perplexity_key:
+            async for piece in perplexity_generate_stream(perplexity_key, model, prompt, system=system, options=options):
+                raw += piece
+        else:
+            async for piece in ollama_generate_stream(model, prompt, system=system, options=options):
+                raw += piece
+    except Exception as e:
+        logger.warning("LLM relevance filter failed: %s. Keeping all cards.", e)
+        return cards  # Em caso de erro, mantém todos os cards
+    
+    # Parse da resposta
+    kept = []
+    approved_indices = set()
+    
+    for line in raw.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Tenta extrair "N: SIM" ou "N: NÃO"
+        match = re.match(r"(\d+)\s*:\s*(SIM|NÃO|NAO|YES|NO)", line, re.IGNORECASE)
+        if match:
+            idx = int(match.group(1)) - 1  # Converte para 0-based
+            verdict = match.group(2).upper()
+            if verdict in ("SIM", "YES"):
+                approved_indices.add(idx)
+    
+    # Se o LLM não conseguiu parsear nada, mantém todos
+    if not approved_indices and cards:
+        logger.warning("LLM relevance filter returned no parseable results. Keeping all cards.")
+        return cards
+    
+    # Filtra cards aprovados
+    for i, c in enumerate(cards):
+        if i in approved_indices:
+            c["_llm_relevance"] = True
+            kept.append(c)
+        else:
+            logger.debug("Card rejected by LLM relevance: %s", (c.get("front") or "")[:50])
+    
+    # Se filtrou demais (>80% dos cards), mantém todos como fallback
+    if len(kept) < len(cards) * 0.2 and len(cards) >= 3:
+        logger.warning("LLM relevance filter too aggressive (kept %d/%d). Keeping all.", len(kept), len(cards))
+        return cards
+    
+    return kept
+
+
+def _filter_cards_by_content_relevance(cards, src_text: str, min_keyword_overlap: float = 0.3):
+    """
+    Filtra cards cujo conteúdo (front/back) não tem relação com o texto fonte.
+    Versão síncrona usando heurísticas de palavras-chave (fallback).
+    
+    Para filtragem mais precisa, use _filter_cards_by_content_relevance_llm (async).
+    
+    Args:
+        cards: Lista de cards
+        src_text: Texto fonte original (trecho selecionado/destacado)
+        min_keyword_overlap: Proporção mínima de palavras-chave do card que devem aparecer no src
+    
+    Returns:
+        Lista filtrada de cards
+    """
+    if not cards:
+        return []
+    
+    # Extrai palavras significativas do texto fonte (ignora stopwords comuns)
+    stopwords_pt = {
+        'o', 'e', 'de', 'da', 'em', 'um', 'uma', 'para', 'com', 'não', 'que',
+        'os', 'dos', 'das', 'no', 'na', 'por', 'mais', 'se', 'ou', 'seu', 'sua',
+        'como', 'mas', 'ao', 'ele', 'ela', 'entre', 'quando', 'muito', 'nos', 'já',
+        'também', 'só', 'pelo', 'pela', 'até', 'isso', 'esse', 'essa', 'este', 'esta',
+        'são', 'tem', 'ser', 'ter', 'foi', 'eram', 'está', 'pode', 'podem',
+        'the', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
+        'has', 'had', 'does', 'did', 'will', 'would', 'could', 'should', 'may',
+        'of', 'to', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'into', 'and', 'or'
+    }
+    
+    src_norm = _normalize_text_for_matching(src_text)
+    src_words = set(src_norm.split()) - stopwords_pt
+    
+    kept = []
+    for c in cards:
+        front = _normalize_text_for_matching(c.get("front") or "")
+        back = _normalize_text_for_matching(c.get("back") or "")
+        
+        # Extrai palavras do card (exceto stopwords)
+        card_words = (set(front.split()) | set(back.split())) - stopwords_pt
+        
+        # Remove palavras muito curtas (< 3 chars)
+        card_words = {w for w in card_words if len(w) >= 3}
+        
+        if not card_words:
+            kept.append(c)  # Se não há palavras significativas, mantém o card
+            continue
+        
+        # Calcula overlap
+        overlap = len(card_words & src_words) / len(card_words)
+        
+        if overlap >= min_keyword_overlap:
+            c["_content_relevance"] = overlap
+            kept.append(c)
+        else:
+            logger.debug("Card rejected (content relevance=%.2f): %s", overlap, front[:50])
+    
+    return kept
+
+
 # =============================================================================
 # Sistema de Scoring de Qualidade de Cards
 # =============================================================================
@@ -701,18 +888,19 @@ SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
             checklist_block = _format_checklist_block()
 
             prompt = f"""
-CONTEÚDO-FONTE (use SOMENTE isso como base):
+CONTEÚDO-FONTE (crie cards EXCLUSIVAMENTE sobre este trecho):
 {src}
 
-{("CONTEXTO (opcional):\n" + ctx) if ctx else ""}
+{("CONTEXTO GERAL (apenas para entender o assunto - NÃO crie cards sobre informações que estão APENAS aqui):\n" + ctx) if ctx else ""}
 
 {checklist_block if checklist_block else ""}
 
 TAREFA:
-- Crie flashcards em PT-BR BASEADOS APENAS no CONTEÚDO-FONTE.
-- Se algo não estiver no texto, NÃO invente.
+- Crie flashcards em PT-BR BASEADOS EXCLUSIVAMENTE no CONTEÚDO-FONTE acima.
+- PROIBIDO criar cards sobre informações que aparecem apenas no CONTEXTO GERAL.
+- Se um conceito não estiver no CONTEÚDO-FONTE, NÃO crie card sobre ele.
 - Se o texto estiver em inglês, traduza os conceitos para PT-BR (sem adicionar fatos).
-- IMPORTANTE: O campo SRC é uma CITAÇÃO LITERAL do texto-fonte; se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido).
+- IMPORTANTE: O campo SRC é uma CITAÇÃO LITERAL do CONTEÚDO-FONTE; se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido).
 - Fora do campo SRC, NUNCA use inglês.
 
 QUANTIDADE:
@@ -771,6 +959,19 @@ COMECE:
             cards = _filter_cards_with_valid_src(cards_raw, src)
             yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards))})}\n\n"
 
+            # Content relevance filter usando LLM - garante que cards são sobre o trecho selecionado
+            cards_before_relevance = len(cards)
+            cards = await _filter_cards_by_content_relevance_llm(
+                cards, 
+                src,
+                provider=provider,
+                model=model,  # Usa o mesmo modelo de geração (NÃO embedding!)
+                openai_key=request.openaiApiKey,
+                perplexity_key=request.perplexityApiKey,
+            )
+            if len(cards) < cards_before_relevance:
+                yield f"event: stage\ndata: {json.dumps({'stage': 'llm_relevance_filtered', 'kept': len(cards), 'dropped': cards_before_relevance - len(cards)})}\n\n"
+
             # Fallback: se o filtro derrubar 100% mas há cards parseados, não zera tudo
             if not cards and cards_raw:
                 for c in cards_raw:
@@ -818,14 +1019,16 @@ COMECE:
                 # IMPORTANTE: NÃO incluir "SAÍDA RUIM: {raw}" aqui,
                 # isso estava puxando o modelo pro inglês.
                 repair_prompt = f"""
-CONTEÚDO-FONTE (use SOMENTE isso como base):
+CONTEÚDO-FONTE (crie cards EXCLUSIVAMENTE sobre este trecho):
 {src}
 
-{("CONTEXTO (opcional):\n" + ctx) if ctx else ""}
+{("CONTEXTO GERAL (apenas para entender o assunto - NÃO crie cards sobre informações que estão APENAS aqui):\n" + ctx) if ctx else ""}
 
 {checklist_block if checklist_block else ""}
 
-Reescreva em PT-BR seguindo RIGOROSAMENTE o formato e garantindo que CADA card tenha SRC literal (5–25 palavras) do texto-fonte.
+Reescreva em PT-BR seguindo RIGOROSAMENTE o formato e garantindo que CADA card:
+1. Seja sobre um conceito presente no CONTEÚDO-FONTE (não no contexto geral)
+2. Tenha SRC literal (5–25 palavras) copiado do CONTEÚDO-FONTE
 Se o texto-fonte estiver em inglês, o SRC ficará em inglês (isso é permitido). Fora do campo SRC, escreva em PT-BR.
 Gere entre {target_min} e {target_max} cards.
 
@@ -892,6 +1095,19 @@ COMECE DIRETO (sem explicar nada):
 
                 cards2 = _filter_cards_with_valid_src(cards2_raw, src)
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2))})}\n\n"
+
+                # Content relevance filter usando LLM no repair também
+                cards2_before_relevance = len(cards2)
+                cards2 = await _filter_cards_by_content_relevance_llm(
+                    cards2, 
+                    src,
+                    provider=provider,
+                    model=model,  # Usa o mesmo modelo de geração (NÃO embedding!)
+                    openai_key=request.openaiApiKey,
+                    perplexity_key=request.perplexityApiKey,
+                )
+                if len(cards2) < cards2_before_relevance:
+                    yield f"event: stage\ndata: {json.dumps({'stage': 'repair_llm_relevance_filtered', 'kept': len(cards2), 'dropped': cards2_before_relevance - len(cards2)})}\n\n"
 
                 # Fallback no repair também
                 if not cards2 and cards2_raw:

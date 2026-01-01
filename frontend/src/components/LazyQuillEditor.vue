@@ -89,6 +89,15 @@ function clearSelection() {
   return editorRef.value?.clearSelection?.()
 }
 
+// Métodos para obter conteúdo marcado (highlights)
+function getHighlightedContent() {
+  return editorRef.value?.getHighlightedContent?.() || { texts: [], combined: '', count: 0 }
+}
+
+function hasHighlightedContent() {
+  return editorRef.value?.hasHighlightedContent?.() || false
+}
+
 defineExpose({
   getHtml,
   getText,
@@ -101,7 +110,9 @@ defineExpose({
   setDelta,
   formatBackground,
   clearHighlight,
-  clearSelection
+  clearSelection,
+  getHighlightedContent,
+  hasHighlightedContent
 })
 </script>
 
