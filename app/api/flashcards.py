@@ -20,7 +20,7 @@ from app.utils.text import (
     truncate_source,
     detect_language_pt_en_es,
 )
-from app.services.storage import save_analysis, save_cards, save_llm_response, _get_connection
+from app.services.storage import save_analysis, save_cards, save_llm_response, save_filter_result, _get_connection
 
 # Fuzzy matching para validação de SRC
 try:
@@ -37,6 +37,16 @@ SYSTEM_PTBR = (
     "Fora do campo SRC, escreva SEMPRE em Português do Brasil (pt-BR).\n"
     "No campo SRC, COPIE literalmente do texto-fonte (pode estar em inglês).\n"
     "NUNCA responda em espanhol.\n"
+)
+
+# System prompt dedicado para cloze - mais assertivo sobre a sintaxe obrigatória
+SYSTEM_CLOZE = (
+    "Você é um especialista em criar flashcards cloze para Anki.\n"
+    "REGRA OBRIGATÓRIA: Todo card cloze DEVE conter exatamente {{c1::termo}} na frase.\n"
+    "A sintaxe {{c1::termo}} é INEGOCIÁVEL - cards sem ela serão REJEITADOS.\n"
+    "Fora do campo SRC, escreva SEMPRE em Português do Brasil (pt-BR).\n"
+    "No campo SRC, COPIE literalmente do texto-fonte.\n"
+    "NUNCA use Q: ou A: para cloze. Use apenas CLOZE: e EXTRA:.\n"
 )
 
 
@@ -194,15 +204,18 @@ def _is_src_valid(ref: str, src_text: str) -> bool:
     return is_valid
 
 
-def _filter_cards_with_valid_src(cards, src_text: str):
+def _filter_cards_with_valid_src(cards, src_text: str, analysis_id: Optional[str] = None):
     """
     Mantém apenas cards cujo campo `src` aparece (quase-verbatim) dentro do texto-fonte.
     Isso ajuda a garantir que o modelo está ancorando no trecho selecionado.
     
     Usa fuzzy matching para tolerar pequenas variações tipográficas.
+    Salva resultados do filtro no DuckDB para análise posterior.
     """
     kept = []
-    for c in cards or []:
+    cards_input = list(cards or [])
+    
+    for c in cards_input:
         ref = (c.get("src") or "").strip().strip('"').strip()
         is_valid, score = _is_src_valid_fuzzy(ref, src_text)
         if not is_valid:
@@ -211,6 +224,24 @@ def _filter_cards_with_valid_src(cards, src_text: str):
         c["src"] = ref
         c["_src_score"] = score  # Metadata para scoring
         kept.append(c)
+    
+    # Salva resultado do filtro no DuckDB
+    if cards_input:
+        try:
+            save_filter_result(
+                filter_type="src_validation",
+                cards_before=cards_input,
+                cards_after=kept,
+                analysis_id=analysis_id,
+                metadata={
+                    "threshold": 80,
+                    "method": "fuzzy_matching",
+                    "rapidfuzz_available": RAPIDFUZZ_AVAILABLE
+                }
+            )
+        except Exception as e:
+            logger.warning("Failed to save src filter result: %s", e)
+    
     return kept
 
 
@@ -222,10 +253,12 @@ async def _filter_cards_by_content_relevance_llm(
     model: str = None,
     openai_key: Optional[str] = None,
     perplexity_key: Optional[str] = None,
+    analysis_id: Optional[str] = None,
 ) -> list:
     """
     Usa o LLM para filtrar cards cujo conteúdo não está diretamente relacionado ao texto fonte.
     Isso evita que o modelo gere cards baseados no contexto geral em vez do trecho selecionado.
+    Salva resultados do filtro no DuckDB para análise posterior.
     
     Args:
         cards: Lista de cards a serem avaliados
@@ -234,15 +267,18 @@ async def _filter_cards_by_content_relevance_llm(
         model: Nome do modelo a usar (deve ser o mesmo usado para geração, NÃO embedding)
         openai_key: API key para OpenAI
         perplexity_key: API key para Perplexity
+        analysis_id: ID da análise para persistência
     
     Returns:
         Lista filtrada de cards que são relevantes ao texto fonte
     """
-    if not cards:
+    cards_input = list(cards or [])
+    
+    if not cards_input:
         return []
     
-    if len(cards) == 0:
-        return cards
+    if len(cards_input) == 0:
+        return cards_input
     
     # O modelo DEVE ser passado explicitamente pelo chamador
     # Se não for passado, usa o modelo de geração padrão (NÃO o de embedding!)
@@ -321,12 +357,12 @@ RESPONDA AGORA:"""
                 approved_indices.add(idx)
     
     # Se o LLM não conseguiu parsear nada, mantém todos
-    if not approved_indices and cards:
+    if not approved_indices and cards_input:
         logger.warning("LLM relevance filter returned no parseable results. Keeping all cards.")
-        return cards
+        return cards_input
     
     # Filtra cards aprovados
-    for i, c in enumerate(cards):
+    for i, c in enumerate(cards_input):
         if i in approved_indices:
             c["_llm_relevance"] = True
             kept.append(c)
@@ -334,9 +370,26 @@ RESPONDA AGORA:"""
             logger.debug("Card rejected by LLM relevance: %s", (c.get("front") or "")[:50])
     
     # Se filtrou demais (>80% dos cards), mantém todos como fallback
-    if len(kept) < len(cards) * 0.2 and len(cards) >= 3:
-        logger.warning("LLM relevance filter too aggressive (kept %d/%d). Keeping all.", len(kept), len(cards))
-        return cards
+    if len(kept) < len(cards_input) * 0.2 and len(cards_input) >= 3:
+        logger.warning("LLM relevance filter too aggressive (kept %d/%d). Keeping all.", len(kept), len(cards_input))
+        return cards_input
+    
+    # Salva resultado do filtro no DuckDB
+    try:
+        save_filter_result(
+            filter_type="llm_relevance",
+            cards_before=cards_input,
+            cards_after=kept,
+            analysis_id=analysis_id,
+            metadata={
+                "provider": provider,
+                "model": model,
+                "llm_raw_response": raw[:1000],  # Trunca para não estourar
+                "approved_indices": list(approved_indices)
+            }
+        )
+    except Exception as e:
+        logger.warning("Failed to save llm relevance filter result: %s", e)
     
     return kept
 
@@ -492,21 +545,26 @@ def score_card_quality(card: dict) -> float:
 def filter_and_rank_by_quality(
     cards: list,
     min_score: float = 0.4,
-    max_cards: Optional[int] = None
+    max_cards: Optional[int] = None,
+    analysis_id: Optional[str] = None
 ) -> list:
     """
     Filtra cards por score mínimo e retorna ordenados por qualidade.
+    Salva resultados do filtro no DuckDB para análise posterior.
     
     Args:
         cards: Lista de cards
         min_score: Score mínimo para manter o card
         max_cards: Máximo de cards a retornar (None = todos)
+        analysis_id: ID da análise para persistência
     
     Returns:
         Lista de cards ordenados por qualidade (melhor primeiro)
     """
+    cards_input = list(cards or [])
     scored_cards = []
-    for card in cards or []:
+    
+    for card in cards_input:
         quality = score_card_quality(card)
         card["_quality_score"] = quality
         if quality >= min_score:
@@ -523,6 +581,26 @@ def filter_and_rank_by_quality(
     
     if max_cards and len(scored_cards) > max_cards:
         scored_cards = scored_cards[:max_cards]
+    
+    # Salva resultado do filtro no DuckDB
+    if cards_input:
+        try:
+            save_filter_result(
+                filter_type="quality_score",
+                cards_before=cards_input,
+                cards_after=scored_cards,
+                analysis_id=analysis_id,
+                metadata={
+                    "min_score": min_score,
+                    "max_cards": max_cards,
+                    "scores": {
+                        (c.get("front") or "")[:50]: c.get("_quality_score", 0) 
+                        for c in cards_input
+                    }
+                }
+            )
+        except Exception as e:
+            logger.warning("Failed to save quality filter result: %s", e)
     
     return scored_cards
 
@@ -571,13 +649,14 @@ async def _generate_with_provider(
     return raw
 
 
-def _parse_and_normalize_cards(raw: str, card_type: str) -> Tuple[list, str]:
+def _parse_and_normalize_cards(raw: str, card_type: str, analysis_id: Optional[str] = None) -> Tuple[list, str]:
     """
     Parseia resposta do LLM e normaliza os cards.
     
     Args:
         raw: Resposta bruta do LLM
         card_type: Tipo de card ('basic', 'cloze', 'both')
+        analysis_id: ID da análise para persistência
     
     Returns:
         Tuple[cards_normalizados, modo_parse ('qa' ou 'json')]
@@ -590,7 +669,7 @@ def _parse_and_normalize_cards(raw: str, card_type: str) -> Tuple[list, str]:
         parse_mode = "json"
     
     # Aplica filtro por tipo de card
-    cards_raw = _filter_by_card_type(cards_raw, card_type)
+    cards_raw = _filter_by_card_type(cards_raw, card_type, analysis_id=analysis_id)
     
     return cards_raw, parse_mode
 
@@ -600,7 +679,8 @@ def _apply_src_and_quality_filters(
     src_text: str,
     target_min: int,
     target_max: int,
-    apply_quality_filter: bool = True
+    apply_quality_filter: bool = True,
+    analysis_id: Optional[str] = None
 ) -> list:
     """
     Aplica filtros de SRC e qualidade aos cards.
@@ -611,12 +691,13 @@ def _apply_src_and_quality_filters(
         target_min: Quantidade mínima desejada
         target_max: Quantidade máxima desejada
         apply_quality_filter: Se deve aplicar filtro de qualidade
+        analysis_id: ID da análise para persistência
     
     Returns:
         Lista de cards filtrados
     """
     # Filtro de SRC com fuzzy matching
-    cards = _filter_cards_with_valid_src(cards_raw, src_text)
+    cards = _filter_cards_with_valid_src(cards_raw, src_text, analysis_id=analysis_id)
     
     # Fallback: se filtro derrubar 100% mas há cards parseados
     if not cards and cards_raw:
@@ -632,7 +713,8 @@ def _apply_src_and_quality_filters(
         cards = filter_and_rank_by_quality(
             cards,
             min_score=0.35,  # Threshold mais tolerante
-            max_cards=target_max
+            max_cards=target_max,
+            analysis_id=analysis_id
         )
     
     return cards
@@ -686,19 +768,40 @@ def _relax_src_if_needed(cards_with_src, cards_raw, *, target_min: int, target_m
 # Filtro por tipo de card (basic / cloze)
 # =============================================================================
 
-def _filter_by_card_type(cards, card_type: str):
+def _filter_by_card_type(cards, card_type: str, analysis_id: Optional[str] = None):
     """
     Garante que só passem cards do tipo solicitado:
     - cloze  -> front contém "{{c1::"
     - basic  -> front NÃO contém "{{c1::"
     - both   -> não filtra
+    
+    Salva resultados do filtro no DuckDB para análise posterior.
     """
-    cards = cards or []
+    cards_input = list(cards or [])
+    
     if card_type == "cloze":
-        return [c for c in cards if "{{c1::" in (c.get("front") or "")]
-    if card_type == "basic":
-        return [c for c in cards if "{{c1::" not in (c.get("front") or "")]
-    return cards
+        result = [c for c in cards_input if "{{c1::" in (c.get("front") or "")]
+    elif card_type == "basic":
+        result = [c for c in cards_input if "{{c1::" not in (c.get("front") or "")]
+    else:
+        result = cards_input
+    
+    # Salva resultado do filtro no DuckDB (apenas se houve filtragem)
+    if card_type != "both" and cards_input:
+        try:
+            save_filter_result(
+                filter_type="card_type",
+                cards_before=cards_input,
+                cards_after=result,
+                analysis_id=analysis_id,
+                metadata={
+                    "card_type_requested": card_type
+                }
+            )
+        except Exception as e:
+            logger.warning("Failed to save card type filter result: %s", e)
+    
+    return result
 
 
 def _cards_lang_from_cards(cards) -> str:
@@ -861,17 +964,36 @@ RESTRIÇÕES:
 """.strip()
             elif card_type == "cloze":
                 format_block = """
-FORMATO OBRIGATÓRIO (use exatamente estas chaves):
+=== EXEMPLOS DE CLOZE CORRETO (SIGA ESTE FORMATO EXATO) ===
 
-CLOZE: <frase AFIRMATIVA em PT-BR com UMA lacuna {{c1::termo}}>
-EXTRA: <1 frase de contexto adicional em PT-BR>
-SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
+CLOZE: Um banco de dados é uma {{c1::coleção organizada}} de dados relacionados.
+EXTRA: Permite armazenamento e recuperação eficiente de informações.
+SRC: "banco de dados é uma coleção organizada de dados"
 
-RESTRIÇÕES:
-- NUNCA use Q: ou A: para cloze. Use CLOZE: e EXTRA:.
-- NUNCA escreva uma pergunta. Escreva uma frase afirmativa com lacuna.
-- Cada card DEVE ter exatamente uma ocorrência de "{{c1::".
-- Se não conseguir escrever uma frase com lacuna para um conceito, simplesmente ignore o conceito.
+CLOZE: O {{c1::SGBD}} é o software responsável por gerenciar o banco de dados.
+EXTRA: Exemplos incluem MySQL, PostgreSQL e Oracle.
+SRC: "Sistema Gerenciador de Banco de Dados (SGBD) é o software"
+
+CLOZE: No modelo hierárquico, os dados são organizados em estrutura de {{c1::árvore}}.
+EXTRA: Cada nó pode ter múltiplos filhos, mas apenas um pai.
+SRC: "modelo hierárquico, os dados são organizados em uma estrutura de árvore"
+
+CLOZE: A {{c1::informação}} surge quando dados são organizados e interpretados em contexto.
+EXTRA: Diferente do dado bruto, possui significado e utilidade.
+SRC: "Informação surge quando dados são organizados e interpretados"
+
+=== FIM DOS EXEMPLOS ===
+
+FORMATO OBRIGATÓRIO:
+CLOZE: <frase AFIRMATIVA com UMA lacuna {{c1::termo}}>  ← OBRIGATÓRIO ter {{c1::}}
+EXTRA: <1 frase de contexto adicional>
+SRC: "<citação literal do texto-fonte>"
+
+REGRAS CRÍTICAS:
+- A sintaxe {{c1::termo}} é OBRIGATÓRIA em TODA linha CLOZE:
+- NUNCA escreva "CLOZE: Texto sem lacuna" - isso será REJEITADO
+- NUNCA use Q: ou A: - use apenas CLOZE: e EXTRA:
+- Cada card DEVE ter exatamente UMA ocorrência de {{c1::}}
 """.strip()
             else:  # both
                 format_block = """
@@ -934,14 +1056,27 @@ COMECE:
             # temperature 0.0 tende a reduzir “desobediência” de idioma
             options = {"num_predict": 4096, "temperature": 0.0}
             
+            # Seleciona system prompt: dedicado para cloze, genérico para outros
+            system_prompt = SYSTEM_CLOZE if card_type == "cloze" else SYSTEM_PTBR
+            
+            # ============= LOGGING DO PROMPT COMPLETO =============
+            logger.info("=== PROMPT ENVIADO AO LLM ===")
+            logger.info("Card type: %s", card_type)
+            logger.info("System prompt: %s", system_prompt.replace('\n', ' | '))
+            logger.info("Prompt (primeiros 1500 chars):\n%s", prompt[:1500])
+            logger.info("Prompt (ultimos 800 chars):\n%s", prompt[-800:])
+            logger.info("Tamanho total do prompt: %d chars", len(prompt))
+            logger.info("=" * 50)
+            # ======================================================
+            
             if use_openai:
-                async for piece in openai_generate_stream(request.openaiApiKey, model, prompt, system=SYSTEM_PTBR, options=options):
+                async for piece in openai_generate_stream(request.openaiApiKey, model, prompt, system=system_prompt, options=options):
                     raw += piece
             elif use_perplexity:
-                async for piece in perplexity_generate_stream(request.perplexityApiKey, model, prompt, system=SYSTEM_PTBR, options=options):
+                async for piece in perplexity_generate_stream(request.perplexityApiKey, model, prompt, system=system_prompt, options=options):
                     raw += piece
             else:
-                async for piece in ollama_generate_stream(model, prompt, system=SYSTEM_PTBR, options=options):
+                async for piece in ollama_generate_stream(model, prompt, system=system_prompt, options=options):
                     raw += piece
 
             save_llm_response(provider, model, prompt, raw, analysis_id=request.analysisId)
@@ -972,7 +1107,7 @@ COMECE:
             # =====================================================================
 
             # Aplica filtro por tipo de card (basic / cloze / both)
-            cards_raw = _filter_by_card_type(cards_raw, card_type)
+            cards_raw = _filter_by_card_type(cards_raw, card_type, analysis_id=request.analysisId)
             
             # Log APÓS o filtro
             logger.info("Cards APÓS filtro de tipo (%s): %d (removidos: %d)", 
@@ -981,7 +1116,7 @@ COMECE:
             yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw), 'before_type_filter': cards_before_type_filter})}\n\n"
 
             # SRC filter
-            cards = _filter_cards_with_valid_src(cards_raw, src)
+            cards = _filter_cards_with_valid_src(cards_raw, src, analysis_id=request.analysisId)
             yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards))})}\n\n"
 
             # Content relevance filter usando LLM - garante que cards são sobre o trecho selecionado
@@ -993,6 +1128,7 @@ COMECE:
                 model=model,  # Usa o mesmo modelo de geração (NÃO embedding!)
                 openai_key=request.openaiApiKey,
                 perplexity_key=request.perplexityApiKey,
+                analysis_id=request.analysisId,
             )
             if len(cards) < cards_before_relevance:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'llm_relevance_filtered', 'kept': len(cards), 'dropped': cards_before_relevance - len(cards)})}\n\n"
@@ -1114,11 +1250,11 @@ COMECE DIRETO (sem explicar nada):
                     repair_mode = "json"
 
                 # Aplica filtro por tipo também no repair
-                cards2_raw = _filter_by_card_type(cards2_raw, card_type)
+                cards2_raw = _filter_by_card_type(cards2_raw, card_type, analysis_id=request.analysisId)
 
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'mode': repair_mode, 'count': len(cards2_raw)})}\n\n"
 
-                cards2 = _filter_cards_with_valid_src(cards2_raw, src)
+                cards2 = _filter_cards_with_valid_src(cards2_raw, src, analysis_id=request.analysisId)
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2))})}\n\n"
 
                 # Content relevance filter usando LLM no repair também
@@ -1130,6 +1266,7 @@ COMECE DIRETO (sem explicar nada):
                     model=model,  # Usa o mesmo modelo de geração (NÃO embedding!)
                     openai_key=request.openaiApiKey,
                     perplexity_key=request.perplexityApiKey,
+                    analysis_id=request.analysisId,
                 )
                 if len(cards2) < cards2_before_relevance:
                     yield f"event: stage\ndata: {json.dumps({'stage': 'repair_llm_relevance_filtered', 'kept': len(cards2), 'dropped': cards2_before_relevance - len(cards2)})}\n\n"
