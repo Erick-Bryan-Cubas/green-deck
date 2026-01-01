@@ -518,7 +518,51 @@ defineExpose({
   },
   getHtml: () => (quill ? quill.root.innerHTML : ''),
   getText: () => (quill ? quill.getText().trim() : ''),
-  focus: () => quill?.focus()
+  focus: () => quill?.focus(),
+  /**
+   * Get all highlighted (background-colored) content from the editor
+   * @returns {object} { texts: string[], combined: string, count: number }
+   */
+  getHighlightedContent: () => {
+    if (!quill) return { texts: [], combined: '', count: 0 }
+    
+    const delta = quill.getContents()
+    if (!delta || !delta.ops) return { texts: [], combined: '', count: 0 }
+
+    const highlightedParts = []
+    
+    delta.ops.forEach((op) => {
+      const ins = op.insert
+      const bg = op.attributes?.background
+      
+      // Check if this segment has a background color (highlight)
+      if (bg && typeof bg === 'string' && bg.startsWith('#') && typeof ins === 'string') {
+        const text = ins.trim()
+        if (text) highlightedParts.push(text)
+      }
+    })
+
+    return {
+      texts: highlightedParts,
+      combined: highlightedParts.join('\n\n'),
+      count: highlightedParts.length
+    }
+  },
+  /**
+   * Check if the editor has any highlighted content
+   * @returns {boolean}
+   */
+  hasHighlightedContent: () => {
+    if (!quill) return false
+    
+    const delta = quill.getContents()
+    if (!delta || !delta.ops) return false
+
+    return delta.ops.some((op) => {
+      const bg = op.attributes?.background
+      return bg && typeof bg === 'string' && bg.startsWith('#')
+    })
+  }
 })
 
 </script>

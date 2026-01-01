@@ -1583,22 +1583,112 @@ async function analyzeDocumentContext(text) {
 }
 
 // ============================================================
-// Gerar cards
+// Gerar cards - com fallback: seleção → highlights → texto completo
 // ============================================================
 const generating = ref(false)
+const lastGenerationSource = ref(null) // 'selection' | 'highlight' | 'full'
+
+/**
+ * Resolve which content to use for card generation
+ * Priority: 1. Mouse selection → 2. Highlighted content → 3. Full text (with warning)
+ * @returns {object} { source, content, shouldWarn, message }
+ */
+function resolveGenerationContent() {
+  // 1. Check for mouse selection first
+  const selection = (selectedText.value || '').trim()
+  if (selection) {
+    console.log('[resolveGenerationContent] Using mouse selection:', selection.substring(0, 50) + '...')
+    return {
+      source: 'selection',
+      content: selection,
+      shouldWarn: false,
+      message: null
+    }
+  }
+
+  // 2. Check for highlighted content
+  const highlightData = editorRef.value?.getHighlightedContent?.()
+  console.log('[resolveGenerationContent] Highlight data:', highlightData)
+  
+  if (highlightData && highlightData.count > 0 && highlightData.combined) {
+    const count = highlightData.count
+    console.log('[resolveGenerationContent] Using highlights:', count, 'parts')
+    return {
+      source: 'highlight',
+      content: highlightData.combined,
+      shouldWarn: false,
+      message: `Gerando a partir de ${count} trecho${count > 1 ? 's' : ''} marcado${count > 1 ? 's' : ''}`
+    }
+  }
+
+  // 3. Fall back to full text with warning
+  const fullText = (editorRef.value?.getFullText?.() || lastFullText.value || '').trim()
+  console.log('[resolveGenerationContent] Falling back to full text, length:', fullText.length)
+  
+  if (!fullText) {
+    return {
+      source: 'empty',
+      content: '',
+      shouldWarn: true,
+      message: 'Nenhum texto disponível para gerar cards'
+    }
+  }
+
+  return {
+    source: 'full',
+    content: fullText,
+    shouldWarn: true,
+    message: 'Nenhum texto selecionado ou marcado. Usando todo o texto para geração.'
+  }
+}
+
+/**
+ * Get a human-readable label for the content source
+ */
+function getSourceLabel() {
+  switch (lastGenerationSource.value) {
+    case 'selection':
+      return 'Texto selecionado'
+    case 'highlight':
+      const hl = editorRef.value?.getHighlightedContent?.()
+      const count = hl?.count || highlightPositions.value.length
+      return `${count} marcação${count > 1 ? 'ões' : ''}`
+    case 'full':
+      return 'Texto completo'
+    default:
+      return ''
+  }
+}
 
 async function generateCardsFromSelection() {
-  const text = (selectedText.value || '').trim()
-  if (!text) {
-    notify('Selecione um trecho para gerar cards.', 'warn', 4500)
+  // Resolve which content to use (fallback hierarchy)
+  const resolved = resolveGenerationContent()
+
+  // Handle empty content
+  if (resolved.source === 'empty') {
+    notify(resolved.message || 'Nenhum texto disponível', 'warn', 4500)
     return
   }
+
+  // Show warning if using full text (nothing selected/highlighted)
+  if (resolved.shouldWarn && resolved.message) {
+    notify(resolved.message, 'warn', 5000)
+  }
+
+  // Show info about source if using highlights
+  if (resolved.source === 'highlight' && resolved.message) {
+    notify(resolved.message, 'info', 3000)
+  }
+
+  lastGenerationSource.value = resolved.source
+  const text = resolved.content
 
   try {
     generating.value = true
     startTimer('Gerando...')
-    addLog(`Starting card generation (${cardType.value})...`, 'info')
-    console.log('Card type being sent:', cardType.value)
+    const sourceLabel = getSourceLabel()
+    addLog(`Starting card generation (${cardType.value}) from: ${sourceLabel}`, 'info')
+    console.log('Card type being sent:', cardType.value, '| Source:', resolved.source)
     showProgress('Gerando cards...')
     setProgress(10)
 
@@ -1635,6 +1725,7 @@ async function generateCardsFromSelection() {
 
     setProgress(100)
     completeProgress()
+    schedulePersistActiveSession()
   } catch (error) {
     console.error('Error generating cards:', error)
     addLog('Generation error: ' + (error?.message || String(error)), 'error')
@@ -2391,6 +2482,28 @@ function onPdfError(error) {
 const hasSelection = computed(() => (selectedText.value || '').trim().length > 0)
 const hasCards = computed(() => cards.value.length > 0)
 
+// Verifica se há conteúdo disponível para geração (seleção, highlights ou texto)
+const canGenerate = computed(() => {
+  // Has mouse selection
+  if (hasSelection.value) return true
+  
+  // Has highlighted content
+  if (hasHighlights.value) return true
+  
+  // Has any text in editor
+  const fullText = (lastFullText.value || '').trim()
+  return fullText.length > 0
+})
+
+// Label descritivo da fonte de geração para tooltip/feedback
+const generationSourceLabel = computed(() => {
+  if (hasSelection.value) return 'Gerar a partir da seleção'
+  if (hasHighlights.value) return `Gerar a partir de ${highlightCount.value} marcação${highlightCount.value > 1 ? 'ões' : ''}`
+  const fullText = (lastFullText.value || '').trim()
+  if (fullText.length > 0) return 'Gerar a partir de todo o texto'
+  return 'Sem texto disponível'
+})
+
 // ============================================================
 // Autosave (cards/contexto)
 // ============================================================
@@ -2496,10 +2609,10 @@ onMounted(async () => {
       }
     }
 
-    // Ctrl+Enter gera cards (modo normal)
+    // Ctrl+Enter gera cards (modo normal) - agora usa canGenerate para incluir highlights e texto completo
     const isCtrl = e.ctrlKey || e.metaKey
     const isCtrlEnter = isCtrl && e.key === 'Enter'
-    if (isCtrlEnter && hasSelection.value && !generating.value && !isAnalyzing.value) {
+    if (isCtrlEnter && canGenerate.value && !generating.value && !isAnalyzing.value) {
       e.preventDefault()
       generateCardsFromSelection()
       return
@@ -2821,9 +2934,9 @@ onBeforeUnmount(() => {
                 icon="pi pi-bolt"
                 label="Create Cards"
                 class="cta"
-                :disabled="!hasSelection || generating || isAnalyzing"
+                :disabled="!canGenerate || generating || isAnalyzing"
                 :loading="generating"
-                :title="hasSelection ? 'Ctrl+Enter também funciona' : 'Selecione um trecho no editor'"
+                :title="generationSourceLabel + ' (Ctrl+Enter)'"
                 @click="generateCardsFromSelection"
               />
 
@@ -3084,6 +3197,18 @@ onBeforeUnmount(() => {
                 <Tag v-if="hasSelectedCards" severity="warning" class="pill ml-2">
                   {{ selectedCount }} selecionados
                 </Tag>
+                <!-- Indicador da fonte da última geração -->
+                <Transition name="fade">
+                  <Tag 
+                    v-if="lastGenerationSource && hasCards" 
+                    :severity="lastGenerationSource === 'selection' ? 'info' : lastGenerationSource === 'highlight' ? 'warning' : 'secondary'" 
+                    class="pill ml-2 generation-source-tag"
+                    :title="'Última geração: ' + getSourceLabel()"
+                  >
+                    <i :class="lastGenerationSource === 'selection' ? 'pi pi-mouse' : lastGenerationSource === 'highlight' ? 'pi pi-palette' : 'pi pi-file'" class="mr-1" style="font-size: 0.75rem" />
+                    {{ lastGenerationSource === 'selection' ? 'Seleção' : lastGenerationSource === 'highlight' ? 'Marcações' : 'Texto completo' }}
+                  </Tag>
+                </Transition>
               </div>
 
               <div class="panel-actions">
@@ -5130,6 +5255,13 @@ onBeforeUnmount(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* Indicador de fonte de geração */
+.generation-source-tag {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  cursor: help;
 }
 
 /* Auto-hide controles */
