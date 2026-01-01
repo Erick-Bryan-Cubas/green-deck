@@ -1214,6 +1214,35 @@ const selectedAnalysisModel = ref('qwen-flashcard')   // Modelo para análise de
 const availableModels = ref([])
 const isLoadingModels = ref(false)
 
+// Listas filtradas por tipo de modelo
+const llmModels = computed(() => availableModels.value.filter(m => m.type !== 'embedding'))
+const embeddingModels = computed(() => availableModels.value.filter(m => m.type === 'embedding'))
+
+// Helper functions para tags de modelo
+function getProviderSeverity(provider) {
+  if (provider === 'ollama') return 'success'
+  if (provider === 'openai') return 'info'
+  return 'warning'
+}
+
+function getProviderLabel(provider) {
+  if (provider === 'ollama') return 'Ollama'
+  if (provider === 'openai') return 'OpenAI'
+  return 'Perplexity'
+}
+
+function getTypeSeverity(type) {
+  return type === 'embedding' ? 'secondary' : 'contrast'
+}
+
+function getTypeLabel(type) {
+  return type === 'embedding' ? 'Embedding' : 'LLM'
+}
+
+function getModelInfo(modelName) {
+  return availableModels.value.find(m => m.name === modelName)
+}
+
 // Busca
 const cardSearch = ref('')
 const searchExpanded = ref(false)
@@ -1717,47 +1746,72 @@ async function generateCardsFromSelection() {
             // Mapeamento de estágios para UI amigável
             const stageMap = {
               'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: '🚀' },
-              'generation_completed': { progress: 40, label: 'LLM concluiu geração', icon: '✅' },
               'parsed': { 
-                progress: 50, 
+                progress: 45, 
                 label: `Parseados ${data.count || 0} cards (modo: ${data.mode || 'unknown'})`, 
                 icon: '📝',
                 details: { parsed: data.count, mode: data.mode, beforeFilter: data.before_type_filter }
               },
               'src_filtered': { 
-                progress: 65, 
+                progress: 55, 
                 label: `Validação SRC: ${data.kept || 0} aprovados, ${data.dropped || 0} removidos`, 
                 icon: '🔍',
                 details: { srcKept: data.kept, srcDropped: data.dropped }
               },
               'llm_relevance_filtered': { 
-                progress: 75, 
+                progress: 62, 
                 label: `Filtro relevância: ${data.kept || 0} mantidos, ${data.dropped || 0} removidos`, 
                 icon: '🎯',
                 details: { relevanceKept: data.kept, relevanceDropped: data.dropped }
               },
               'src_bypassed': { 
-                progress: 70, 
+                progress: 58, 
                 label: `SRC bypass: ${data.count || 0} cards mantidos`, 
                 icon: '⚡' 
               },
+              'src_relaxed': { 
+                progress: 65, 
+                label: `SRC relaxado: ${data.total_after_relax || 0} cards (min: ${data.target_min || 0})`, 
+                icon: '♻️' 
+              },
               'lang_check': { 
-                progress: 80, 
-                label: `Idioma detectado: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
+                progress: 70, 
+                label: `Idioma: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
                 icon: '🌐' 
               },
+              'repair_pass': { 
+                progress: 72, 
+                label: `Iniciando reparo... (${data.reason || ''})`, 
+                icon: '🔧' 
+              },
               'repair_parsed': { 
-                progress: 85, 
+                progress: 80, 
                 label: `Reparo: ${data.count || 0} cards adicionais`, 
                 icon: '🔧' 
               },
               'repair_src_filtered': { 
-                progress: 88, 
+                progress: 85, 
                 label: `Reparo SRC: ${data.kept || 0} aprovados`, 
-                icon: '🔍' 
+                icon: '🔍',
+                details: { srcKept: data.kept, srcDropped: data.dropped }
+              },
+              'repair_llm_relevance_filtered': { 
+                progress: 88, 
+                label: `Reparo relevância: ${data.kept || 0} mantidos`, 
+                icon: '🎯' 
+              },
+              'repair_src_bypassed': { 
+                progress: 86, 
+                label: `Reparo SRC bypass: ${data.count || 0} cards`, 
+                icon: '⚡' 
+              },
+              'lang_check_after_repair': { 
+                progress: 92, 
+                label: `Idioma pós-reparo: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
+                icon: '🌐' 
               },
               'done': { 
-                progress: 95, 
+                progress: 98, 
                 label: `Concluído: ${data.total_cards || 0} cards finais`, 
                 icon: '🎉',
                 details: { totalCards: data.total_cards }
@@ -3814,7 +3868,7 @@ onBeforeUnmount(() => {
           <label class="font-semibold"><i class="pi pi-sparkles mr-2" />Modelo de Geração</label>
           <Select 
             v-model="selectedModel" 
-            :options="availableModels" 
+            :options="llmModels" 
             optionLabel="name" 
             optionValue="name" 
             class="w-full mt-2" 
@@ -3825,24 +3879,24 @@ onBeforeUnmount(() => {
             <template #option="{ option }">
               <div class="model-option">
                 <span class="model-name">{{ option.name }}</span>
-                <Tag 
-                  :severity="option.provider === 'ollama' ? 'success' : option.provider === 'openai' ? 'info' : 'warning'" 
-                  class="pill model-tag"
-                >
-                  {{ option.provider === 'ollama' ? 'Ollama' : option.provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
-                </Tag>
+                <div class="model-tags">
+                  <Tag :severity="getProviderSeverity(option.provider)" class="pill model-tag">
+                    {{ getProviderLabel(option.provider) }}
+                  </Tag>
+                  <Tag :severity="getTypeSeverity(option.type)" class="pill model-tag">
+                    {{ getTypeLabel(option.type) }}
+                  </Tag>
+                </div>
               </div>
             </template>
             <template #value="{ value }">
               <div v-if="value" class="model-selected">
                 <span class="model-name">{{ value }}</span>
-                <Tag 
-                  v-if="availableModels.find(m => m.name === value)"
-                  :severity="availableModels.find(m => m.name === value).provider === 'ollama' ? 'success' : availableModels.find(m => m.name === value).provider === 'openai' ? 'info' : 'warning'" 
-                  class="pill model-tag"
-                >
-                  {{ availableModels.find(m => m.name === value).provider === 'ollama' ? 'Ollama' : availableModels.find(m => m.name === value).provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
-                </Tag>
+                <div v-if="getModelInfo(value)" class="model-tags">
+                  <Tag :severity="getProviderSeverity(getModelInfo(value).provider)" class="pill model-tag">
+                    {{ getProviderLabel(getModelInfo(value).provider) }}
+                  </Tag>
+                </div>
               </div>
             </template>
           </Select>
@@ -3867,29 +3921,32 @@ onBeforeUnmount(() => {
             <template #option="{ option }">
               <div class="model-option">
                 <span class="model-name">{{ option.name }}</span>
-                <Tag 
-                  :severity="option.provider === 'ollama' ? 'success' : option.provider === 'openai' ? 'info' : 'warning'" 
-                  class="pill model-tag"
-                >
-                  {{ option.provider === 'ollama' ? 'Ollama' : option.provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
-                </Tag>
+                <div class="model-tags">
+                  <Tag :severity="getProviderSeverity(option.provider)" class="pill model-tag">
+                    {{ getProviderLabel(option.provider) }}
+                  </Tag>
+                  <Tag :severity="getTypeSeverity(option.type)" class="pill model-tag">
+                    {{ getTypeLabel(option.type) }}
+                  </Tag>
+                </div>
               </div>
             </template>
             <template #value="{ value }">
               <div v-if="value" class="model-selected">
                 <span class="model-name">{{ value }}</span>
-                <Tag 
-                  v-if="availableModels.find(m => m.name === value)"
-                  :severity="availableModels.find(m => m.name === value).provider === 'ollama' ? 'success' : availableModels.find(m => m.name === value).provider === 'openai' ? 'info' : 'warning'" 
-                  class="pill model-tag"
-                >
-                  {{ availableModels.find(m => m.name === value).provider === 'ollama' ? 'Ollama' : availableModels.find(m => m.name === value).provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
-                </Tag>
+                <div v-if="getModelInfo(value)" class="model-tags">
+                  <Tag :severity="getProviderSeverity(getModelInfo(value).provider)" class="pill model-tag">
+                    {{ getProviderLabel(getModelInfo(value).provider) }}
+                  </Tag>
+                  <Tag :severity="getTypeSeverity(getModelInfo(value).type)" class="pill model-tag">
+                    {{ getTypeLabel(getModelInfo(value).type) }}
+                  </Tag>
+                </div>
               </div>
             </template>
           </Select>
           <small class="text-color-secondary mt-1 block">
-            Extrai conceitos-chave do texto selecionado
+            Extrai conceitos-chave do texto (Embedding: rápido | LLM: preciso)
           </small>
         </div>
 
@@ -3898,7 +3955,7 @@ onBeforeUnmount(() => {
           <label class="font-semibold"><i class="pi pi-check-circle mr-2" />Modelo de Validação</label>
           <Select 
             v-model="selectedValidationModel" 
-            :options="availableModels" 
+            :options="llmModels" 
             optionLabel="name" 
             optionValue="name" 
             class="w-full mt-2" 
@@ -3909,24 +3966,24 @@ onBeforeUnmount(() => {
             <template #option="{ option }">
               <div class="model-option">
                 <span class="model-name">{{ option.name }}</span>
-                <Tag 
-                  :severity="option.provider === 'ollama' ? 'success' : option.provider === 'openai' ? 'info' : 'warning'" 
-                  class="pill model-tag"
-                >
-                  {{ option.provider === 'ollama' ? 'Ollama' : option.provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
-                </Tag>
+                <div class="model-tags">
+                  <Tag :severity="getProviderSeverity(option.provider)" class="pill model-tag">
+                    {{ getProviderLabel(option.provider) }}
+                  </Tag>
+                  <Tag :severity="getTypeSeverity(option.type)" class="pill model-tag">
+                    {{ getTypeLabel(option.type) }}
+                  </Tag>
+                </div>
               </div>
             </template>
             <template #value="{ value }">
               <div v-if="value" class="model-selected">
                 <span class="model-name">{{ value }}</span>
-                <Tag 
-                  v-if="availableModels.find(m => m.name === value)"
-                  :severity="availableModels.find(m => m.name === value).provider === 'ollama' ? 'success' : availableModels.find(m => m.name === value).provider === 'openai' ? 'info' : 'warning'" 
-                  class="pill model-tag"
-                >
-                  {{ availableModels.find(m => m.name === value).provider === 'ollama' ? 'Ollama' : availableModels.find(m => m.name === value).provider === 'openai' ? 'OpenAI' : 'Perplexity' }}
-                </Tag>
+                <div v-if="getModelInfo(value)" class="model-tags">
+                  <Tag :severity="getProviderSeverity(getModelInfo(value).provider)" class="pill model-tag">
+                    {{ getProviderLabel(getModelInfo(value).provider) }}
+                  </Tag>
+                </div>
               </div>
             </template>
           </Select>
@@ -5718,11 +5775,22 @@ onBeforeUnmount(() => {
 .model-name {
   flex: 1;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .model-tag {
-  font-size: 11px;
-  padding: 2px 8px;
+  font-size: 10px;
+  padding: 2px 6px;
+  font-weight: 500;
 }
 
 /* Confirmation dialog */

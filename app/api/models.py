@@ -8,6 +8,30 @@ from app.config import OLLAMA_HOST
 
 router = APIRouter()
 
+# Padrões conhecidos de modelos de embedding
+EMBEDDING_MODEL_PATTERNS = [
+    r"embed",
+    r"nomic",
+    r"mxbai",
+    r"bge-",
+    r"gte-",
+    r"e5-",
+    r"multilingual-e5",
+    r"sentence-",
+    r"all-minilm",
+    r"instructor",
+    r"jina-embeddings",
+    r"snowflake-arctic-embed",
+]
+
+def is_embedding_model(model_name: str) -> bool:
+    """Detecta se um modelo é de embedding baseado no nome."""
+    name_lower = model_name.lower()
+    for pattern in EMBEDDING_MODEL_PATTERNS:
+        if re.search(pattern, name_lower):
+            return True
+    return False
+
 PERPLEXITY_MODEL_DOC_PAGES = [
     "https://docs.perplexity.ai/getting-started/models/models/sonar",
     "https://docs.perplexity.ai/getting-started/models/models/sonar-pro",
@@ -52,10 +76,14 @@ async def get_all_models(
             r = await client.get(f"{OLLAMA_HOST}/api/tags")
             if r.status_code == 200:
                 data = r.json()
-                models.extend(
-                    {"name": m["name"], "provider": "ollama"}
-                    for m in data.get("models", [])
-                )
+                for m in data.get("models", []):
+                    name = m["name"]
+                    model_type = "embedding" if is_embedding_model(name) else "llm"
+                    models.append({
+                        "name": name,
+                        "provider": "ollama",
+                        "type": model_type
+                    })
     except:
         pass
 
@@ -69,11 +97,21 @@ async def get_all_models(
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    models.extend(
-                        {"name": m["id"], "provider": "openai"}
-                        for m in data.get("data", [])
-                        if "gpt" in m["id"].lower()
-                    )
+                    for m in data.get("data", []):
+                        model_id = m["id"]
+                        # OpenAI: text-embedding-* são modelos de embedding
+                        if "embedding" in model_id.lower():
+                            models.append({
+                                "name": model_id,
+                                "provider": "openai",
+                                "type": "embedding"
+                            })
+                        elif "gpt" in model_id.lower():
+                            models.append({
+                                "name": model_id,
+                                "provider": "openai",
+                                "type": "llm"
+                            })
         except:
             pass
 
@@ -86,6 +124,11 @@ async def get_all_models(
         except:
             p_models = PERPLEXITY_FALLBACK_MODELS
 
-        models.extend({"name": name, "provider": "perplexity"} for name in p_models)
+        # Perplexity models são todos LLMs (não têm modelos de embedding)
+        models.extend({
+            "name": name,
+            "provider": "perplexity",
+            "type": "llm"
+        } for name in p_models)
 
     return {"models": models}
