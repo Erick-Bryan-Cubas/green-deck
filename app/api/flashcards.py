@@ -1,13 +1,13 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Tuple
 import json
 import re
 import logging
 from pathlib import Path
 
-from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, MAX_CTX_CHARS
+from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL
 from app.services.ollama import ollama_generate_stream
 from app.services.api_providers import openai_generate_stream, perplexity_generate_stream
 from app.services.parser import (
@@ -18,10 +18,16 @@ from app.services.parser import (
 )
 from app.utils.text import (
     truncate_source,
-    strip_src_lines,
     detect_language_pt_en_es,
 )
 from app.services.storage import save_analysis, save_cards, save_llm_response, _get_connection
+
+# Fuzzy matching para validação de SRC
+try:
+    from rapidfuzz import fuzz
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    RAPIDFUZZ_AVAILABLE = False
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
@@ -111,40 +117,338 @@ DIRETRIZES DE QUALIDADE (SM20 Checklist) — NÃO é conteúdo do usuário.
 
 
 # =============================================================================
-# Card SRC validation
+# Card SRC validation with Fuzzy Matching
 # =============================================================================
+
+def _normalize_text_for_matching(s: str) -> str:
+    """
+    Normaliza texto para comparação fuzzy:
+    - Remove espaços extras
+    - Converte para minúsculas
+    - Normaliza aspas e hífens
+    - Remove pontuação redundante
+    """
+    s = (s or "").strip()
+    # Normaliza aspas tipográficas para retas
+    s = s.replace('"', '"').replace('"', '"').replace("'", "'").replace("'", "'")
+    # Normaliza hífens e traços
+    s = s.replace('–', '-').replace('—', '-').replace('−', '-')
+    # Remove espaços não-quebráveis
+    s = s.replace('\u00a0', ' ').replace('\u200b', '')
+    # Normaliza espaços
+    s = re.sub(r'\s+', ' ', s).strip().lower()
+    return s
+
+
+def _is_src_valid_fuzzy(ref: str, src_text: str, threshold: int = 80) -> Tuple[bool, float]:
+    """
+    Validação de SRC com fuzzy matching usando rapidfuzz.
+    
+    Args:
+        ref: Referência SRC do card
+        src_text: Texto fonte original
+        threshold: Similaridade mínima (0-100)
+    
+    Returns:
+        Tuple[is_valid, similarity_score]
+    """
+    ref = (ref or "").strip().strip('"').strip()
+    if not ref:
+        return False, 0.0
+    
+    wc = len(ref.split())
+    if wc < 4 or wc > 30:  # Limites mais flexíveis
+        return False, 0.0
+    
+    ref_norm = _normalize_text_for_matching(ref)
+    src_norm = _normalize_text_for_matching(src_text)
+    
+    # Primeiro tenta match exato (mais rápido)
+    if ref_norm in src_norm:
+        return True, 100.0
+    
+    # Se rapidfuzz disponível, usa fuzzy matching
+    if RAPIDFUZZ_AVAILABLE:
+        # partial_ratio encontra a melhor substring match
+        similarity = fuzz.partial_ratio(ref_norm, src_norm)
+        return similarity >= threshold, float(similarity)
+    
+    # Fallback: busca por palavras-chave
+    ref_words = set(ref_norm.split())
+    src_words = set(src_norm.split())
+    if not ref_words:
+        return False, 0.0
+    
+    overlap = len(ref_words & src_words) / len(ref_words)
+    return overlap >= 0.7, overlap * 100
+
 
 def _is_src_valid(ref: str, src_text: str) -> bool:
     """
-    Heurísticas simples:
+    Heurísticas simples (legacy, para compatibilidade):
     - src deve existir
     - src (normalizado) precisa aparecer no texto-fonte (normalizado)
     - src deve ter 5–25 palavras (para evitar SRC enorme ou trivial)
     """
-    ref = (ref or "").strip().strip('"').strip()
-    if not ref:
-        return False
-
-    wc = len(ref.split())
-    if wc < 5 or wc > 25:
-        return False
-
-    return _norm_ws(ref) in _norm_ws(src_text)
+    is_valid, _ = _is_src_valid_fuzzy(ref, src_text, threshold=80)
+    return is_valid
 
 
 def _filter_cards_with_valid_src(cards, src_text: str):
     """
     Mantém apenas cards cujo campo `src` aparece (quase-verbatim) dentro do texto-fonte.
     Isso ajuda a garantir que o modelo está ancorando no trecho selecionado.
+    
+    Usa fuzzy matching para tolerar pequenas variações tipográficas.
     """
     kept = []
     for c in cards or []:
         ref = (c.get("src") or "").strip().strip('"').strip()
-        if not _is_src_valid(ref, src_text):
+        is_valid, score = _is_src_valid_fuzzy(ref, src_text)
+        if not is_valid:
+            logger.debug("SRC rejected (score=%.1f): %s", score, ref[:50])
             continue
         c["src"] = ref
+        c["_src_score"] = score  # Metadata para scoring
         kept.append(c)
     return kept
+
+
+# =============================================================================
+# Sistema de Scoring de Qualidade de Cards
+# =============================================================================
+
+def score_card_quality(card: dict) -> float:
+    """
+    Calcula um score de qualidade (0.0 a 1.0) para um flashcard.
+    
+    Critérios:
+    - Tamanho da resposta (ideal: 10-30 palavras)
+    - Tipo de pergunta (penaliza sim/não)
+    - Presença e qualidade do SRC
+    - Atomicidade (uma ideia por card)
+    - Clareza (evita termos vagos)
+    """
+    score = 1.0
+    front = (card.get("front") or "").strip()
+    back = (card.get("back") or "").strip()
+    src = (card.get("src") or "").strip()
+    
+    front_lower = front.lower()
+    back_lower = back.lower()
+    
+    # --- Penalizações ---
+    
+    # Respostas muito longas (>40 palavras)
+    back_words = len(back.split())
+    if back_words > 40:
+        score -= 0.25
+    elif back_words > 30:
+        score -= 0.1
+    
+    # Respostas muito curtas (<5 palavras, exceto cloze)
+    if back_words < 5 and "{{c1::" not in front:
+        score -= 0.15
+    
+    # Perguntas sim/não ou muito genéricas
+    yes_no_patterns = [
+        r'^(é verdade|é correto|existe|há|houve|foi|será|pode ser|é possível)',
+        r'\?$.*\b(sim|não|verdadeiro|falso)\b',
+        r'^(verdadeiro ou falso|v ou f)',
+    ]
+    for pattern in yes_no_patterns:
+        if re.search(pattern, front_lower):
+            score -= 0.3
+            break
+    
+    # Termos vagos na resposta
+    vague_terms = ['coisa', 'algo', 'isso', 'aquilo', 'etc', 'entre outros', 'e assim por diante']
+    for term in vague_terms:
+        if term in back_lower:
+            score -= 0.1
+            break
+    
+    # Resposta igual à pergunta (pode indicar problema)
+    if _normalize_text_for_matching(front) == _normalize_text_for_matching(back):
+        score -= 0.4
+    
+    # --- Bonificações ---
+    
+    # SRC presente e válido
+    if src:
+        score += 0.1
+        src_score = card.get("_src_score", 0)
+        if src_score >= 95:
+            score += 0.05  # SRC quase exato
+    
+    # Pergunta específica (começa com interrogativo)
+    interrogatives = ['o que', 'qual', 'quais', 'como', 'por que', 'quando', 'onde', 'quem']
+    for interr in interrogatives:
+        if front_lower.startswith(interr):
+            score += 0.05
+            break
+    
+    # Cloze bem formado
+    if "{{c1::" in front:
+        cloze_content = re.findall(r'\{\{c1::([^}]+)\}\}', front)
+        if cloze_content:
+            cloze_words = len(cloze_content[0].split())
+            if 1 <= cloze_words <= 3:  # Lacuna ideal: 1-3 palavras
+                score += 0.1
+            elif cloze_words > 5:  # Lacuna muito longa
+                score -= 0.15
+    
+    # Garante range 0.0 - 1.0
+    return max(0.0, min(1.0, score))
+
+
+def filter_and_rank_by_quality(
+    cards: list,
+    min_score: float = 0.4,
+    max_cards: Optional[int] = None
+) -> list:
+    """
+    Filtra cards por score mínimo e retorna ordenados por qualidade.
+    
+    Args:
+        cards: Lista de cards
+        min_score: Score mínimo para manter o card
+        max_cards: Máximo de cards a retornar (None = todos)
+    
+    Returns:
+        Lista de cards ordenados por qualidade (melhor primeiro)
+    """
+    scored_cards = []
+    for card in cards or []:
+        quality = score_card_quality(card)
+        card["_quality_score"] = quality
+        if quality >= min_score:
+            scored_cards.append(card)
+        else:
+            logger.debug(
+                "Card rejected (quality=%.2f): %s",
+                quality,
+                (card.get("front") or "")[:50]
+            )
+    
+    # Ordena por qualidade (maior primeiro)
+    scored_cards.sort(key=lambda c: c.get("_quality_score", 0), reverse=True)
+    
+    if max_cards and len(scored_cards) > max_cards:
+        scored_cards = scored_cards[:max_cards]
+    
+    return scored_cards
+
+
+# =============================================================================
+# Geração de Cards Refatorada (função reutilizável)
+# =============================================================================
+
+async def _generate_with_provider(
+    provider: str,
+    model: str,
+    prompt: str,
+    system: str,
+    options: dict,
+    *,
+    openai_key: Optional[str] = None,
+    perplexity_key: Optional[str] = None,
+) -> str:
+    """
+    Executa geração com o provider apropriado e retorna a resposta completa.
+    
+    Args:
+        provider: 'ollama', 'openai', ou 'perplexity'
+        model: Nome do modelo
+        prompt: Prompt de geração
+        system: System prompt
+        options: Opções de geração (temperature, num_predict, etc.)
+        openai_key: API key para OpenAI (se provider='openai')
+        perplexity_key: API key para Perplexity (se provider='perplexity')
+    
+    Returns:
+        Resposta completa do modelo
+    """
+    raw = ""
+    
+    if provider == "openai" and openai_key:
+        async for piece in openai_generate_stream(openai_key, model, prompt, system=system, options=options):
+            raw += piece
+    elif provider == "perplexity" and perplexity_key:
+        async for piece in perplexity_generate_stream(perplexity_key, model, prompt, system=system, options=options):
+            raw += piece
+    else:  # ollama
+        async for piece in ollama_generate_stream(model, prompt, system=system, options=options):
+            raw += piece
+    
+    return raw
+
+
+def _parse_and_normalize_cards(raw: str, card_type: str) -> Tuple[list, str]:
+    """
+    Parseia resposta do LLM e normaliza os cards.
+    
+    Args:
+        raw: Resposta bruta do LLM
+        card_type: Tipo de card ('basic', 'cloze', 'both')
+    
+    Returns:
+        Tuple[cards_normalizados, modo_parse ('qa' ou 'json')]
+    """
+    cards_raw = normalize_cards(parse_flashcards_qa(raw))
+    parse_mode = "qa"
+    
+    if not cards_raw:
+        cards_raw = normalize_cards(parse_flashcards_json(raw))
+        parse_mode = "json"
+    
+    # Aplica filtro por tipo de card
+    cards_raw = _filter_by_card_type(cards_raw, card_type)
+    
+    return cards_raw, parse_mode
+
+
+def _apply_src_and_quality_filters(
+    cards_raw: list,
+    src_text: str,
+    target_min: int,
+    target_max: int,
+    apply_quality_filter: bool = True
+) -> list:
+    """
+    Aplica filtros de SRC e qualidade aos cards.
+    
+    Args:
+        cards_raw: Cards parseados
+        src_text: Texto fonte para validação
+        target_min: Quantidade mínima desejada
+        target_max: Quantidade máxima desejada
+        apply_quality_filter: Se deve aplicar filtro de qualidade
+    
+    Returns:
+        Lista de cards filtrados
+    """
+    # Filtro de SRC com fuzzy matching
+    cards = _filter_cards_with_valid_src(cards_raw, src_text)
+    
+    # Fallback: se filtro derrubar 100% mas há cards parseados
+    if not cards and cards_raw:
+        for c in cards_raw:
+            c.pop("src", None)
+        cards = cards_raw
+    
+    # Relaxa SRC se necessário
+    cards = _relax_src_if_needed(cards, cards_raw, target_min=target_min, target_max=target_max)
+    
+    # Aplica filtro de qualidade
+    if apply_quality_filter and cards:
+        cards = filter_and_rank_by_quality(
+            cards,
+            min_score=0.35,  # Threshold mais tolerante
+            max_cards=target_max
+        )
+    
+    return cards
 
 
 # =============================================================================
@@ -234,21 +538,52 @@ async def analyze_text_stream(request: TextRequest):
         try:
             logger.info("Ollama analysis model (embeddings): %s", OLLAMA_ANALYSIS_MODEL)
 
-            from app.services.ollama import ollama_embed, chunk_text, cosine_similarity
+            from app.services.ollama import (
+                ollama_embed,
+                chunk_text_semantic,
+                chunk_text,
+                cosine_similarity
+            )
 
             yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing'})}\n\n"
 
             src = truncate_source(request.text or "")
-            chunks = chunk_text(src, chunk_size=400)
+            
+            # Usa chunking semântico com overlap para melhor contexto
+            # Detecta idioma para escolher tokenizer correto
+            detected_lang = detect_language_pt_en_es(src[:500])
+            language = "portuguese" if detected_lang == "pt-br" else "english"
+            
+            chunks = chunk_text_semantic(
+                src,
+                max_words=400,
+                overlap_sentences=2,
+                language=language
+            )
+            
+            # Fallback para chunking simples se semântico falhar
+            if not chunks:
+                chunks = chunk_text(src, chunk_size=400)
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'chunking', 'chunks': len(chunks), 'method': 'semantic' if len(chunks) > 0 else 'simple'})}\n\n"
 
             yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'embedding'})}\n\n"
 
             chunk_embeddings = []
-            for chunk in chunks:
+            for i, chunk in enumerate(chunks):
                 emb = await ollama_embed(OLLAMA_ANALYSIS_MODEL, chunk)
                 chunk_embeddings.append((chunk, emb))
+                # Progresso incremental durante embedding
+                if len(chunks) > 3:
+                    progress = 30 + int((i + 1) / len(chunks) * 25)
+                    yield f"event: progress\ndata: {json.dumps({'percent': progress, 'stage': 'embedding', 'chunk': i + 1, 'total': len(chunks)})}\n\n"
 
-            query = "conceitos importantes, definições técnicas, contrastes e distinções"
+            # Query semântica adaptada ao idioma detectado
+            if detected_lang == "pt-br":
+                query = "conceitos importantes, definições técnicas, contrastes e distinções"
+            else:
+                query = "important concepts, technical definitions, contrasts and distinctions"
+            
             query_emb = await ollama_embed(OLLAMA_ANALYSIS_MODEL, query)
 
             yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'ranking'})}\n\n"
@@ -256,7 +591,17 @@ async def analyze_text_stream(request: TextRequest):
             scored = [(chunk, cosine_similarity(emb, query_emb)) for chunk, emb in chunk_embeddings]
             scored.sort(key=lambda x: x[1], reverse=True)
 
-            top_chunks = [chunk for chunk, _ in scored[:3]]
+            # Seleciona top chunks com score mínimo
+            min_similarity = 0.3
+            top_chunks = [
+                chunk for chunk, score in scored[:5]
+                if score >= min_similarity
+            ][:3]  # Máximo 3 chunks
+            
+            if not top_chunks and scored:
+                # Fallback: pega os 3 melhores mesmo com score baixo
+                top_chunks = [chunk for chunk, _ in scored[:3]]
+            
             summary = "\n\n".join(top_chunks)
 
             result = {"content": [{"type": "text", "text": summary}]}
@@ -286,7 +631,7 @@ async def generate_cards_stream(request: CardsRequest):
             use_ollama = not use_openai and not use_perplexity
             
             provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
-            logger.info(f"Using provider: {provider}")
+            logger.info("Using provider: %s", provider)
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'generation_started'})}\n\n"
 
