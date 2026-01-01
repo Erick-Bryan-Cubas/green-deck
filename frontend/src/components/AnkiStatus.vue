@@ -1,45 +1,20 @@
 <!-- frontend/src/components/AnkiStatus.vue -->
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
+import { useAnkiStatus } from '@/composables/useStatusWebSocket'
 
-const connected = ref(false)
-const version = ref(null)
-const checking = ref(true)
+const { connected: ankiState } = useAnkiStatus()
 
 const statusClass = computed(() => {
-  if (checking.value) return 'checking'
-  return connected.value ? 'connected' : 'disconnected'
+  if (ankiState.value.checking) return 'checking'
+  return ankiState.value.connected ? 'connected' : 'disconnected'
 })
 
 const tooltip = computed(() => {
-  if (checking.value) return 'Checking Anki...'
-  return connected.value
-    ? `Anki: Online (v${version.value || 'unknown'})`
+  if (ankiState.value.checking) return 'Checking Anki...'
+  return ankiState.value.connected
+    ? `Anki: Online (v${ankiState.value.version || 'unknown'})`
     : 'Anki: Offline - Make sure Anki is running with AnkiConnect'
-})
-
-let interval = null
-
-async function checkStatus() {
-  try {
-    const response = await fetch('/api/anki-status')
-    const data = await response.json()
-    connected.value = !!data.connected
-    version.value = data.version
-    checking.value = false
-  } catch {
-    connected.value = false
-    checking.value = false
-  }
-}
-
-onMounted(() => {
-  checkStatus()
-  interval = setInterval(checkStatus, 2000)
-})
-
-onBeforeUnmount(() => {
-  if (interval) clearInterval(interval)
 })
 </script>
 

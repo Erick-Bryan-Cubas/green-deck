@@ -22,8 +22,8 @@ import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
 import { useToast } from 'primevue/usetoast'
 
-// App components
-import QuillEditor from '@/components/QuillEditor.vue'
+// App components - with lazy loading for performance
+import LazyQuillEditor from '@/components/LazyQuillEditor.vue'
 import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
@@ -110,12 +110,24 @@ const LS_READER_KEY = 'spaced-rep.reader.v2'
 const immersiveReader = ref(false)
 const readerTwoPage = ref(true) // "spread" (2 páginas) quando a tela permitir
 const readerFontScale = ref(1) // 1.0 = normal
-const readerDark = ref(false) // false = Kindle (claro); true = "como está agora" (escuro)
+const readerTheme = ref('kindle') // 'kindle' | 'dark' | 'sepia'
+const readerDark = ref(false) // mantido para compatibilidade
 
 const readerSurfaceRef = ref(null) // wrapper DOM em volta do QuillEditor
 const readerScrollerEl = ref(null) // ✅ .ql-container (scroll horizontal)
 const readerPage = ref(1)
 const readerTotalPages = ref(1)
+const readerProgress = ref(0) // 0-100 para barra de progresso
+const readerShowProgress = ref(true) // mostrar barra de progresso
+const readerAutoHideControls = ref(false) // auto-hide após inatividade
+const readerControlsVisible = ref(true)
+
+// Touch/swipe support
+let touchStartX = 0
+let touchStartY = 0
+let touchStartScrollLeft = 0
+let isSwiping = false
+const SWIPE_THRESHOLD = 50 // px mínimos para considerar swipe
 
 const readerGapPx = ref(56)
 const readerPadXPx = ref(64)
@@ -125,7 +137,15 @@ const readerPageWidthPx = ref(680)
 // ✅ stride real entre páginas/spreads
 const readerStepPx = ref(0)
 
-const isKindleTheme = computed(() => immersiveReader.value && !readerDark.value)
+const isKindleTheme = computed(() => immersiveReader.value && readerTheme.value === 'kindle')
+const isSepiaTheme = computed(() => immersiveReader.value && readerTheme.value === 'sepia')
+const isDarkTheme = computed(() => immersiveReader.value && readerTheme.value === 'dark')
+
+const readerThemeOptions = [
+  { value: 'kindle', label: 'Claro', icon: 'pi-sun' },
+  { value: 'sepia', label: 'Sépia', icon: 'pi-palette' },
+  { value: 'dark', label: 'Escuro', icon: 'pi-moon' }
+]
 
 const readerVars = computed(() => ({
   '--reader-scale': String(readerFontScale.value),
@@ -145,8 +165,81 @@ function toggleReader() {
 }
 
 function toggleReaderTheme() {
-  readerDark.value = !readerDark.value
+  // Cicla: kindle -> sepia -> dark -> kindle
+  const themes = ['kindle', 'sepia', 'dark']
+  const currentIdx = themes.indexOf(readerTheme.value)
+  readerTheme.value = themes[(currentIdx + 1) % themes.length]
+  readerDark.value = readerTheme.value === 'dark' // compatibilidade
   requestReaderLayout({ preserveProgress: true })
+}
+
+function setReaderTheme(theme) {
+  readerTheme.value = theme
+  readerDark.value = theme === 'dark'
+  requestReaderLayout({ preserveProgress: true })
+}
+
+// Touch/Swipe handlers para navegação móvel
+function onTouchStart(e) {
+  if (!immersiveReader.value) return
+  const touch = e.touches[0]
+  touchStartX = touch.clientX
+  touchStartY = touch.clientY
+  touchStartScrollLeft = readerScrollerEl.value?.scrollLeft || 0
+  isSwiping = false
+}
+
+function onTouchMove(e) {
+  if (!immersiveReader.value || !touchStartX) return
+  const touch = e.touches[0]
+  const deltaX = touch.clientX - touchStartX
+  const deltaY = touch.clientY - touchStartY
+  
+  // Se movimento horizontal é maior que vertical, é swipe
+  if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 10) {
+    isSwiping = true
+    e.preventDefault()
+  }
+}
+
+function onTouchEnd(e) {
+  if (!immersiveReader.value || !touchStartX) return
+  const touch = e.changedTouches[0]
+  const deltaX = touch.clientX - touchStartX
+  
+  if (isSwiping && Math.abs(deltaX) >= SWIPE_THRESHOLD) {
+    if (deltaX > 0) {
+      readerPrevPage()
+    } else {
+      readerNextPage()
+    }
+  }
+  
+  touchStartX = 0
+  touchStartY = 0
+  isSwiping = false
+}
+
+// Auto-hide controls
+let controlsHideTimer = null
+function resetControlsTimer() {
+  readerControlsVisible.value = true
+  if (controlsHideTimer) clearTimeout(controlsHideTimer)
+  if (readerAutoHideControls.value && immersiveReader.value) {
+    controlsHideTimer = setTimeout(() => {
+      readerControlsVisible.value = false
+    }, 3000)
+  }
+}
+
+function toggleAutoHideControls() {
+  readerAutoHideControls.value = !readerAutoHideControls.value
+  if (!readerAutoHideControls.value) {
+    readerControlsVisible.value = true
+    if (controlsHideTimer) clearTimeout(controlsHideTimer)
+  } else {
+    resetControlsTimer()
+  }
 }
 
 function readerFontMinus() {
@@ -183,6 +276,15 @@ function attachReaderScroller() {
   readerScrollerEl.value = el
   if (!el) return
   el.addEventListener('scroll', onReaderScroll, { passive: true })
+  
+  // Touch events para swipe navigation
+  el.addEventListener('touchstart', onTouchStart, { passive: true })
+  el.addEventListener('touchmove', onTouchMove, { passive: false })
+  el.addEventListener('touchend', onTouchEnd, { passive: true })
+  
+  // Mouse move para auto-hide
+  el.addEventListener('mousemove', resetControlsTimer, { passive: true })
+  
   requestReaderLayout({ preserveProgress: true })
 }
 
@@ -190,6 +292,10 @@ function detachReaderScroller() {
   const el = readerScrollerEl.value
   if (!el) return
   el.removeEventListener('scroll', onReaderScroll)
+  el.removeEventListener('touchstart', onTouchStart)
+  el.removeEventListener('touchmove', onTouchMove)
+  el.removeEventListener('touchend', onTouchEnd)
+  el.removeEventListener('mousemove', resetControlsTimer)
   readerScrollerEl.value = null
 }
 
@@ -236,6 +342,7 @@ function updateReaderPageStats() {
   if (!el) {
     readerPage.value = 1
     readerTotalPages.value = 1
+    readerProgress.value = 0
     return
   }
 
@@ -249,6 +356,11 @@ function updateReaderPageStats() {
 
   readerTotalPages.value = total
   readerPage.value = current
+  
+  // Atualiza barra de progresso (0-100)
+  readerProgress.value = maxScroll > 0 
+    ? Math.round((el.scrollLeft / maxScroll) * 100) 
+    : (total === 1 ? 100 : 0)
 }
 
 function snapReaderToNearestPage() {
@@ -331,7 +443,7 @@ function requestReaderLayout({ preserveProgress = false, explicitProgress = null
   })
 }
 
-watch([immersiveReader, readerTwoPage, readerFontScale, readerDark], () => {
+watch([immersiveReader, readerTwoPage, readerFontScale, readerTheme, readerShowProgress, readerAutoHideControls], () => {
   try {
     localStorage.setItem(
       LS_READER_KEY,
@@ -339,7 +451,10 @@ watch([immersiveReader, readerTwoPage, readerFontScale, readerDark], () => {
         immersiveReader: immersiveReader.value,
         readerTwoPage: readerTwoPage.value,
         readerFontScale: readerFontScale.value,
-        readerDark: readerDark.value
+        readerTheme: readerTheme.value,
+        readerDark: readerTheme.value === 'dark',
+        readerShowProgress: readerShowProgress.value,
+        readerAutoHideControls: readerAutoHideControls.value
       })
     )
   } catch {}
@@ -705,6 +820,146 @@ const filteredCards = computed(() => {
 })
 
 // ============================================================
+// Seleção múltipla de cards
+// ============================================================
+const selectedCards = ref(new Set())
+const isSelectionMode = ref(false)
+
+const hasSelectedCards = computed(() => selectedCards.value.size > 0)
+const selectedCount = computed(() => selectedCards.value.size)
+const allCardsSelected = computed(() => 
+  cards.value.length > 0 && selectedCards.value.size === cards.value.length
+)
+
+function toggleCardSelection(index, event) {
+  if (event) event.stopPropagation()
+  if (selectedCards.value.has(index)) {
+    selectedCards.value.delete(index)
+  } else {
+    selectedCards.value.add(index)
+  }
+  // Force reactivity
+  selectedCards.value = new Set(selectedCards.value)
+}
+
+function toggleSelectAll() {
+  if (allCardsSelected.value) {
+    selectedCards.value = new Set()
+  } else {
+    selectedCards.value = new Set(cards.value.map((_, i) => i))
+  }
+}
+
+function clearSelection() {
+  selectedCards.value = new Set()
+  isSelectionMode.value = false
+}
+
+function bulkDeleteSelected() {
+  if (selectedCards.value.size === 0) return
+  // Sort descending to delete from end first (preserve indices)
+  const indices = Array.from(selectedCards.value).sort((a, b) => b - a)
+  // Push to undo history
+  const deletedCards = indices.map(i => ({ index: i, card: { ...cards.value[i] } }))
+  pushToUndoHistory({ type: 'bulk-delete', cards: deletedCards })
+  // Delete
+  indices.forEach(i => cards.value.splice(i, 1))
+  notify(`${indices.length} cards removidos`, 'success', 2500)
+  clearSelection()
+  schedulePersistActiveSession()
+}
+
+function bulkExportSelected() {
+  if (selectedCards.value.size === 0) return
+  // Trigger Anki export with only selected cards
+  exportToAnkiOpenConfig(Array.from(selectedCards.value))
+}
+
+function toggleSelectionMode() {
+  isSelectionMode.value = !isSelectionMode.value
+  if (!isSelectionMode.value) {
+    selectedCards.value = new Set()
+  }
+}
+
+// ============================================================
+// Undo/Redo History
+// ============================================================
+const undoHistory = ref([])
+const redoHistory = ref([])
+const MAX_UNDO_HISTORY = 50
+
+const canUndo = computed(() => undoHistory.value.length > 0)
+const canRedo = computed(() => redoHistory.value.length > 0)
+
+function pushToUndoHistory(action) {
+  undoHistory.value.push(action)
+  if (undoHistory.value.length > MAX_UNDO_HISTORY) {
+    undoHistory.value.shift()
+  }
+  // Clear redo when new action is performed
+  redoHistory.value = []
+}
+
+function undo() {
+  if (undoHistory.value.length === 0) return
+  const action = undoHistory.value.pop()
+  
+  if (action.type === 'delete') {
+    // Restore single card
+    cards.value.splice(action.index, 0, action.card)
+    redoHistory.value.push(action)
+    notify('Card restaurado', 'success', 2000)
+  } else if (action.type === 'bulk-delete') {
+    // Restore multiple cards (in order)
+    action.cards.sort((a, b) => a.index - b.index).forEach(item => {
+      cards.value.splice(item.index, 0, item.card)
+    })
+    redoHistory.value.push(action)
+    notify(`${action.cards.length} cards restaurados`, 'success', 2000)
+  } else if (action.type === 'clear-all') {
+    cards.value = action.cards
+    redoHistory.value.push(action)
+    notify('Todos os cards restaurados', 'success', 2000)
+  }
+  
+  schedulePersistActiveSession()
+}
+
+function redo() {
+  if (redoHistory.value.length === 0) return
+  const action = redoHistory.value.pop()
+  
+  if (action.type === 'delete') {
+    cards.value.splice(action.index, 1)
+    undoHistory.value.push(action)
+    notify('Redo: card removido', 'info', 2000)
+  } else if (action.type === 'bulk-delete') {
+    const indices = action.cards.map(c => c.index).sort((a, b) => b - a)
+    indices.forEach(i => cards.value.splice(i, 1))
+    undoHistory.value.push(action)
+    notify(`Redo: ${action.cards.length} cards removidos`, 'info', 2000)
+  } else if (action.type === 'clear-all') {
+    cards.value = []
+    undoHistory.value.push(action)
+    notify('Redo: todos os cards removidos', 'info', 2000)
+  }
+  
+  schedulePersistActiveSession()
+}
+
+// ============================================================
+// Highlight de busca
+// ============================================================
+function highlightSearchTerm(text) {
+  const q = (cardSearch.value || '').trim()
+  if (!q) return text
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  return String(text || '').replace(regex, '<mark class="search-highlight">$1</mark>')
+}
+
+// ============================================================
 // Timer (processingTimer)
 // ============================================================
 const processingTimerVisible = ref(false)
@@ -992,8 +1247,13 @@ async function generateCardsFromSelection() {
 // ============================================================
 // CRUD cards
 // ============================================================
-function deleteCard(index) {
+function deleteCard(index, skipUndo = false) {
+  if (!skipUndo) {
+    pushToUndoHistory({ type: 'delete', index, card: { ...cards.value[index] } })
+  }
   cards.value.splice(index, 1)
+  notify('Card removido (Ctrl+Z para desfazer)', 'info', 3000)
+  schedulePersistActiveSession()
 }
 
 function openClearAllCards() {
@@ -1001,9 +1261,12 @@ function openClearAllCards() {
 }
 
 function clearAllCards() {
+  if (cards.value.length > 0) {
+    pushToUndoHistory({ type: 'clear-all', cards: [...cards.value] })
+  }
   cards.value = []
   clearCardsVisible.value = false
-  notify('Todos os cards foram removidos.', 'success', 3000)
+  notify('Todos os cards removidos (Ctrl+Z para desfazer)', 'success', 3000)
   schedulePersistActiveSession()
 }
 
@@ -1575,7 +1838,10 @@ onMounted(async () => {
     immersiveReader.value = !!saved.immersiveReader
     readerTwoPage.value = saved.readerTwoPage ?? true
     readerFontScale.value = saved.readerFontScale ?? 1
+    readerTheme.value = saved.readerTheme ?? 'kindle'
     readerDark.value = saved.readerDark ?? false
+    readerShowProgress.value = saved.readerShowProgress ?? true
+    readerAutoHideControls.value = saved.readerAutoHideControls ?? false
   } catch {}
 
   // carrega modelo selecionado
@@ -1700,9 +1966,12 @@ onBeforeUnmount(() => {
     :class="{
       'has-context': hasDocumentContext,
       'reader-mode': immersiveReader,
-      'reader-kindle': immersiveReader && !readerDark,
-      'reader-dark': immersiveReader && readerDark
+      'reader-kindle': immersiveReader && readerTheme === 'kindle',
+      'reader-sepia': immersiveReader && readerTheme === 'sepia',
+      'reader-dark': immersiveReader && readerTheme === 'dark',
+      'controls-hidden': immersiveReader && !readerControlsVisible
     }"
+    @mousemove="resetControlsTimer"
   >
     <!-- HEADER -->
     <Toolbar class="app-header">
@@ -1761,71 +2030,118 @@ onBeforeUnmount(() => {
 
           <Divider v-if="!immersiveReader" layout="vertical" class="hdr-divider" />
 
-          <div class="controls">
+          <div class="controls" :class="{ 'reader-controls': immersiveReader }">
             <!-- Controles do modo leitura -->
             <template v-if="immersiveReader">
-              <Button
-                icon="pi pi-angle-double-left"
-                severity="secondary"
-                text
-                @click="readerFirstPage"
-                :disabled="readerPage <= 1"
-                title="Primeira (Home)"
-              />
-              <Button
-                icon="pi pi-angle-left"
-                severity="secondary"
-                text
-                @click="readerPrevPage"
-                :disabled="readerPage <= 1"
-                title="Anterior (← / PageUp)"
-              />
+              <!-- Navegação de páginas -->
+              <div class="reader-nav-group">
+                <Button
+                  icon="pi pi-angle-double-left"
+                  severity="secondary"
+                  text
+                  rounded
+                  @click="readerFirstPage"
+                  :disabled="readerPage <= 1"
+                  title="Primeira (Home)"
+                />
+                <Button
+                  icon="pi pi-angle-left"
+                  severity="secondary"
+                  text
+                  rounded
+                  @click="readerPrevPage"
+                  :disabled="readerPage <= 1"
+                  title="Anterior (← / PageUp)"
+                />
 
-              <Tag class="pill subtle page-chip">
-                <i class="pi pi-file mr-2" /> {{ readerPage }} / {{ readerTotalPages }}
-              </Tag>
+                <div class="page-indicator">
+                  <span class="page-current">{{ readerPage }}</span>
+                  <span class="page-sep">/</span>
+                  <span class="page-total">{{ readerTotalPages }}</span>
+                </div>
 
-              <Button
-                icon="pi pi-angle-right"
-                severity="secondary"
-                text
-                @click="readerNextPage"
-                :disabled="readerPage >= readerTotalPages"
-                title="Próxima (→ / Space / PageDown)"
-              />
-              <Button
-                icon="pi pi-angle-double-right"
-                severity="secondary"
-                text
-                @click="readerLastPage"
-                :disabled="readerPage >= readerTotalPages"
-                title="Última (End)"
-              />
+                <Button
+                  icon="pi pi-angle-right"
+                  severity="secondary"
+                  text
+                  rounded
+                  @click="readerNextPage"
+                  :disabled="readerPage >= readerTotalPages"
+                  title="Próxima (→ / Space / PageDown)"
+                />
+                <Button
+                  icon="pi pi-angle-double-right"
+                  severity="secondary"
+                  text
+                  rounded
+                  @click="readerLastPage"
+                  :disabled="readerPage >= readerTotalPages"
+                  title="Última (End)"
+                />
+              </div>
 
               <Divider layout="vertical" class="hdr-divider" />
 
-              <Button icon="pi pi-minus" severity="secondary" text @click="readerFontMinus" title="Diminuir fonte (Ctrl -)" />
-              <Tag class="pill subtle">{{ Math.round(readerFontScale * 100) }}%</Tag>
-              <Button icon="pi pi-plus" severity="secondary" text @click="readerFontPlus" title="Aumentar fonte (Ctrl +)" />
+              <!-- Controle de fonte -->
+              <div class="reader-font-group">
+                <Button icon="pi pi-minus" severity="secondary" text rounded size="small" @click="readerFontMinus" title="Diminuir fonte (Ctrl -)" />
+                <span class="font-scale-label">{{ Math.round(readerFontScale * 100) }}%</span>
+                <Button icon="pi pi-plus" severity="secondary" text rounded size="small" @click="readerFontPlus" title="Aumentar fonte (Ctrl +)" />
+              </div>
 
-              <Button
-                icon="pi pi-columns"
-                severity="secondary"
-                :outlined="!readerTwoPage"
-                :text="readerTwoPage"
-                @click="toggleTwoPage"
-                title="Alternar 1p / 2p (spread)"
+              <Divider layout="vertical" class="hdr-divider" />
+
+              <!-- Layout e Tema -->
+              <div class="reader-layout-group">
+                <Button
+                  :icon="readerTwoPage ? 'pi pi-stop' : 'pi pi-columns'"
+                  severity="secondary"
+                  :outlined="readerTwoPage"
+                  :text="!readerTwoPage"
+                  rounded
+                  @click="toggleTwoPage"
+                  :title="readerTwoPage ? 'Modo página única' : 'Modo duas páginas'"
+                />
+
+                <!-- Seletor de tema visual -->
+                <div class="theme-selector">
+                  <Button
+                    v-for="opt in readerThemeOptions"
+                    :key="opt.value"
+                    :icon="'pi ' + opt.icon"
+                    :severity="readerTheme === opt.value ? 'primary' : 'secondary'"
+                    :outlined="readerTheme !== opt.value"
+                    :text="readerTheme !== opt.value"
+                    rounded
+                    size="small"
+                    @click="setReaderTheme(opt.value)"
+                    :title="opt.label"
+                    :class="{ 'theme-active': readerTheme === opt.value }"
+                  />
+                </div>
+
+                <Button
+                  :icon="readerShowProgress ? 'pi pi-chart-line' : 'pi pi-minus'"
+                  severity="secondary"
+                  :text="!readerShowProgress"
+                  :outlined="readerShowProgress"
+                  rounded
+                  size="small"
+                  @click="readerShowProgress = !readerShowProgress"
+                  :title="readerShowProgress ? 'Ocultar barra de progresso' : 'Mostrar barra de progresso'"
+                />
+              </div>
+
+              <Divider layout="vertical" class="hdr-divider" />
+
+              <Button 
+                icon="pi pi-times" 
+                severity="secondary" 
+                outlined 
+                rounded
+                @click="toggleReader" 
+                title="Sair (Esc)" 
               />
-
-              <Button
-                :icon="readerDark ? 'pi pi-sun' : 'pi pi-moon'"
-                severity="secondary"
-                text
-                @click="toggleReaderTheme"
-                :title="readerDark ? 'Modo claro (Kindle)' : 'Modo escuro'"
-              />
-
-              <Button icon="pi pi-times" severity="secondary" outlined @click="toggleReader" title="Sair (Esc)" />
             </template>
 
             <!-- Controles normais -->
@@ -1904,19 +2220,63 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="panel-body" :class="{ 'reader-body': immersiveReader }">
+              <!-- Barra de progresso flutuante -->
+              <Transition name="progress-bar">
+                <div v-if="immersiveReader && readerShowProgress" class="reader-progress-wrapper">
+                  <div class="reader-progress-bar">
+                    <div 
+                      class="reader-progress-fill" 
+                      :style="{ width: readerProgress + '%' }"
+                    ></div>
+                  </div>
+                  <span class="reader-progress-label">{{ readerProgress }}%</span>
+                </div>
+              </Transition>
+
+              <!-- Indicadores laterais de navegação (touch/click zones) -->
+              <Transition name="fade">
+                <div v-if="immersiveReader" class="reader-nav-zones">
+                  <button 
+                    class="nav-zone nav-zone-left" 
+                    @click="readerPrevPage"
+                    :disabled="readerPage <= 1"
+                    title="Página anterior"
+                  >
+                    <i class="pi pi-chevron-left"></i>
+                  </button>
+                  <button 
+                    class="nav-zone nav-zone-right" 
+                    @click="readerNextPage"
+                    :disabled="readerPage >= readerTotalPages"
+                    title="Próxima página"
+                  >
+                    <i class="pi pi-chevron-right"></i>
+                  </button>
+                </div>
+              </Transition>
+
               <div
                 ref="readerSurfaceRef"
                 class="editor-surface"
                 :class="{ 'reader-surface': immersiveReader }"
                 :style="immersiveReader ? readerVars : null"
               >
-                <QuillEditor
+                <LazyQuillEditor
                   ref="editorRef"
                   @selection-changed="onSelectionChanged"
                   @content-changed="onContentChanged"
                   @context-menu="onEditorContextMenu"
                 />
               </div>
+
+              <!-- Indicador de página flutuante -->
+              <Transition name="fade">
+                <div v-if="immersiveReader" class="reader-page-float">
+                  <span class="float-page">{{ readerPage }}</span>
+                  <span class="float-sep">de</span>
+                  <span class="float-total">{{ readerTotalPages }}</span>
+                </div>
+              </Transition>
             </div>
           </div>
         </SplitterPanel>
@@ -3237,21 +3597,418 @@ onBeforeUnmount(() => {
 }
 
 /* =========================
+   Tema Sépia (conforto visual)
+========================= */
+.reader-mode.reader-sepia .panel-editor{
+  background: #f4ecd8 !important;
+}
+
+.reader-mode.reader-sepia .reader-surface :deep(.ql-container),
+.reader-mode.reader-sepia .reader-surface :deep(.ql-editor){
+  background: #f4ecd8 !important;
+  color: #5c4b37 !important;
+}
+
+.reader-mode.reader-sepia .reader-surface :deep(.ql-toolbar){
+  background: rgba(244,236,216,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(92,75,55,0.15) !important;
+  color: #5c4b37 !important;
+}
+
+.reader-mode.reader-sepia .reader-page-float,
+.reader-mode.reader-sepia .reader-progress-label {
+  background: rgba(92, 75, 55, 0.85) !important;
+  color: #f4ecd8 !important;
+}
+
+.reader-mode.reader-sepia .reader-progress-bar {
+  background: rgba(92, 75, 55, 0.2) !important;
+}
+
+.reader-mode.reader-sepia .reader-progress-fill {
+  background: linear-gradient(90deg, #8b7355 0%, #6b5344 100%) !important;
+}
+
+.reader-mode.reader-sepia .nav-zone i {
+  color: #5c4b37 !important;
+}
+
+/* =========================
    Tema escuro (mantém look atual)
 ========================= */
 .reader-mode.reader-dark .panel-editor{
-  background: rgba(17, 24, 39, 0.58);
+  background: rgba(17, 24, 39, 0.98);
+}
+
+.reader-mode.reader-dark .reader-surface :deep(.ql-container),
+.reader-mode.reader-dark .reader-surface :deep(.ql-editor){
+  background: #0f172a !important;
+  color: #e2e8f0 !important;
+}
+
+/* =========================
+   Barra de Progresso
+========================= */
+.reader-progress-wrapper {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px);
+  border-radius: 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.reader-progress-bar {
+  width: 200px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.reader-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  border-radius: 3px;
+  transition: width 0.3s ease-out;
+}
+
+.reader-progress-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  min-width: 36px;
+  text-align: right;
+}
+
+/* Animação de entrada/saída da barra de progresso */
+.progress-bar-enter-active,
+.progress-bar-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.progress-bar-enter-from,
+.progress-bar-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px);
+}
+
+/* =========================
+   Indicador de Página Flutuante
+========================= */
+.reader-page-float {
+  position: absolute;
+  bottom: 20px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 18px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+  border-radius: 20px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+.float-page {
+  font-size: 22px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.float-sep {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 400;
+}
+
+.float-total {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* =========================
+   Zonas de Navegação Laterais
+========================= */
+.reader-nav-zones {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.nav-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 80px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  pointer-events: all;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.25s ease, background 0.25s ease;
+}
+
+.nav-zone:hover {
+  opacity: 1;
+  background: linear-gradient(90deg, rgba(0,0,0,0.08) 0%, transparent 100%);
+}
+
+.nav-zone-left {
+  left: 0;
+}
+
+.nav-zone-left:hover {
+  background: linear-gradient(90deg, rgba(0,0,0,0.12) 0%, transparent 100%);
+}
+
+.nav-zone-right {
+  right: 0;
+}
+
+.nav-zone-right:hover {
+  background: linear-gradient(-90deg, rgba(0,0,0,0.12) 0%, transparent 100%);
+}
+
+.nav-zone i {
+  font-size: 28px;
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s ease;
+}
+
+.nav-zone:hover i {
+  transform: scale(1.15);
+}
+
+.nav-zone:disabled {
+  cursor: default;
+  opacity: 0 !important;
+}
+
+/* Tema claro - ajusta cores das zonas */
+.reader-mode.reader-kindle .nav-zone i {
+  color: rgba(0, 0, 0, 0.4);
+  text-shadow: none;
+}
+
+.reader-mode.reader-kindle .nav-zone:hover {
+  background: linear-gradient(90deg, rgba(0,0,0,0.06) 0%, transparent 100%);
+}
+
+.reader-mode.reader-kindle .nav-zone-right:hover {
+  background: linear-gradient(-90deg, rgba(0,0,0,0.06) 0%, transparent 100%);
+}
+
+.reader-mode.reader-kindle .reader-page-float,
+.reader-mode.reader-kindle .reader-progress-wrapper {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+.reader-mode.reader-kindle .float-page {
+  color: #111827;
+}
+
+.reader-mode.reader-kindle .float-sep {
+  color: rgba(17, 24, 39, 0.4);
+}
+
+.reader-mode.reader-kindle .float-total {
+  color: rgba(17, 24, 39, 0.6);
+}
+
+.reader-mode.reader-kindle .reader-progress-bar {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.reader-mode.reader-kindle .reader-progress-label {
+  color: #111827;
+}
+
+/* =========================
+   Controles do Modo Leitura
+========================= */
+.reader-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reader-nav-group,
+.reader-font-group,
+.reader-layout-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-indicator {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.page-current {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.page-sep {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.page-total {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.font-scale-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  min-width: 40px;
+  text-align: center;
+  padding: 0 4px;
+}
+
+.theme-selector {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 20px;
+  padding: 3px;
+}
+
+.theme-selector .theme-active {
+  background: rgba(99, 102, 241, 0.3) !important;
+}
+
+/* Fade animation */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Auto-hide controles */
+.controls-hidden .app-header {
+  opacity: 0;
+  transform: translateY(-100%);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.controls-hidden:hover .app-header {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.controls-hidden .reader-progress-wrapper {
+  opacity: 0.3;
+}
+
+.controls-hidden:hover .reader-progress-wrapper {
+  opacity: 1;
+}
+
+/* =========================
+   Panel body no modo leitura
+========================= */
+.reader-mode .panel-body {
+  position: relative;
 }
 
 /* =========================
    Responsivo
 ========================= */
+@media (max-width: 768px) {
+  .reader-progress-bar {
+    width: 120px;
+  }
+  
+  .nav-zone {
+    width: 50px;
+  }
+  
+  .reader-page-float {
+    bottom: 12px;
+    right: 12px;
+    padding: 8px 14px;
+  }
+  
+  .float-page {
+    font-size: 18px;
+  }
+  
+  .theme-selector {
+    display: none;
+  }
+  
+  .reader-nav-group,
+  .reader-font-group {
+    gap: 2px;
+  }
+}
+
 @media (max-width: 520px){
   .reader-mode .reader-surface :deep(.ql-container){
     padding: 28px 22px;
   }
   .reader-mode .reader-surface :deep(.ql-editor){
     font-size: calc(18px * var(--reader-scale));
+  }
+  
+  .reader-progress-wrapper {
+    padding: 6px 12px;
+  }
+  
+  .reader-progress-bar {
+    width: 80px;
+  }
+  
+  .reader-page-float {
+    bottom: 8px;
+    right: 8px;
+    padding: 6px 10px;
+    border-radius: 14px;
+  }
+  
+  .float-page {
+    font-size: 16px;
+  }
+  
+  .float-total {
+    font-size: 12px;
   }
 }
 

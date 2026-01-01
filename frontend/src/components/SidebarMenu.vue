@@ -1,4 +1,4 @@
-<!-- frontend/src/components/SidebarMenu.vue -->
+﻿<!-- frontend/src/components/SidebarMenu.vue -->
 <script setup>
 import { ref } from 'vue'
 import Button from 'primevue/button'
