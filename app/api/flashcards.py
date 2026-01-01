@@ -20,7 +20,7 @@ from app.utils.text import (
     truncate_source,
     detect_language_pt_en_es,
 )
-from app.services.storage import save_analysis, save_cards, save_llm_response, save_filter_result, _get_connection
+from app.services.storage import save_analysis, save_cards, save_llm_response, save_filter_result, save_generation_request, save_pipeline_stage, _get_connection
 
 # Fuzzy matching para validação de SRC
 try:
@@ -943,6 +943,20 @@ async def generate_cards_stream(request: CardsRequest):
             else:
                 target_min, target_max = 10, 30
 
+            # Salva request de geração para rastreamento
+            request_id = save_generation_request(
+                source_text=src,
+                context_text=ctx,
+                card_type=card_type,
+                model=model,
+                provider=provider,
+                source_type="highlight" if len(src) < len(ctx) else "full_text",
+                word_count=word_count,
+                target_min=target_min,
+                target_max=target_max,
+                analysis_id=request.analysisId
+            )
+
             type_instruction = {
                 "basic": "Gere APENAS cards básicos (perguntas e respostas). NÃO gere cards cloze.",
                 "cloze": "Gere APENAS cards cloze. Cada card cloze é uma FRASE AFIRMATIVA (não pergunta) com uma lacuna {{c1::termo}}. Use o prefixo CLOZE: (não Q:).",
@@ -1059,16 +1073,6 @@ COMECE:
             # Seleciona system prompt: dedicado para cloze, genérico para outros
             system_prompt = SYSTEM_CLOZE if card_type == "cloze" else SYSTEM_PTBR
             
-            # ============= LOGGING DO PROMPT COMPLETO =============
-            logger.info("=== PROMPT ENVIADO AO LLM ===")
-            logger.info("Card type: %s", card_type)
-            logger.info("System prompt: %s", system_prompt.replace('\n', ' | '))
-            logger.info("Prompt (primeiros 1500 chars):\n%s", prompt[:1500])
-            logger.info("Prompt (ultimos 800 chars):\n%s", prompt[-800:])
-            logger.info("Tamanho total do prompt: %d chars", len(prompt))
-            logger.info("=" * 50)
-            # ======================================================
-            
             if use_openai:
                 async for piece in openai_generate_stream(request.openaiApiKey, model, prompt, system=system_prompt, options=options):
                     raw += piece
@@ -1079,7 +1083,28 @@ COMECE:
                 async for piece in ollama_generate_stream(model, prompt, system=system_prompt, options=options):
                     raw += piece
 
-            save_llm_response(provider, model, prompt, raw, analysis_id=request.analysisId)
+            # Salva resposta do LLM com campos expandidos para debug
+            save_llm_response(
+                provider=provider, 
+                model=model, 
+                prompt=prompt, 
+                response=raw, 
+                analysis_id=request.analysisId,
+                system_prompt=system_prompt,
+                card_type=card_type,
+                source_text_length=len(src),
+                options=options
+            )
+            
+            # Registra etapa de geração no pipeline
+            save_pipeline_stage(
+                request_id=request_id,
+                stage="llm_generation",
+                cards_in=0,
+                cards_out=0,
+                details={"response_length": len(raw), "model": model, "provider": provider},
+                analysis_id=request.analysisId
+            )
 
             # Parse/normalize (QA -> JSON fallback)
             cards_raw = normalize_cards(parse_flashcards_qa(raw))
@@ -1088,35 +1113,49 @@ COMECE:
                 cards_raw = normalize_cards(parse_flashcards_json(raw))
                 parse_mode = "json"
 
-            # ============= DIAGNÓSTICO: Log ANTES do filtro de tipo =============
+            # Registra etapa de parsing no pipeline
+            save_pipeline_stage(
+                request_id=request_id,
+                stage="parsing",
+                cards_in=0,
+                cards_out=len(cards_raw),
+                details={"parse_mode": parse_mode},
+                analysis_id=request.analysisId
+            )
+
+            # Log resumido do diagnóstico
             cards_before_type_filter = len(cards_raw)
-            logger.info("=== DIAGNÓSTICO CLOZE ===")
-            logger.info("Card type solicitado: %s", card_type)
-            logger.info("Cards parseados (ANTES do filtro de tipo): %d", cards_before_type_filter)
-            logger.info("Raw response (primeiros 500 chars): %s", raw[:500].replace('\n', '\\n'))
-            
-            # Mostra cada card e se tem formato cloze
-            for i, c in enumerate(cards_raw):
-                front = (c.get("front") or "")[:100]
-                has_cloze = "{{c1::" in front
-                has_partial_cloze = any(x in front for x in ["{c1::", "{{c1:", "[c1::", "{{c1}}", "{c1}"])
-                logger.info(
-                    "  Card %d: has_cloze=%s, has_partial=%s, front='%s'",
-                    i + 1, has_cloze, has_partial_cloze, front.replace('\n', ' ')
-                )
-            # =====================================================================
+            cloze_count = sum(1 for c in cards_raw if "{{c1::" in (c.get("front") or ""))
+            logger.info("Parsed %d cards (%d with cloze syntax), card_type=%s", cards_before_type_filter, cloze_count, card_type)
 
             # Aplica filtro por tipo de card (basic / cloze / both)
             cards_raw = _filter_by_card_type(cards_raw, card_type, analysis_id=request.analysisId)
             
-            # Log APÓS o filtro
-            logger.info("Cards APÓS filtro de tipo (%s): %d (removidos: %d)", 
-                       card_type, len(cards_raw), cards_before_type_filter - len(cards_raw))
+            # Registra etapa de filtro por tipo no pipeline
+            save_pipeline_stage(
+                request_id=request_id,
+                stage="type_filter",
+                cards_in=cards_before_type_filter,
+                cards_out=len(cards_raw),
+                details={"card_type": card_type, "cloze_syntax_count": cloze_count},
+                analysis_id=request.analysisId
+            )
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw), 'before_type_filter': cards_before_type_filter})}\n\n"
 
             # SRC filter
+            cards_before_src = len(cards_raw)
             cards = _filter_cards_with_valid_src(cards_raw, src, analysis_id=request.analysisId)
+            
+            # Registra etapa de filtro SRC no pipeline
+            save_pipeline_stage(
+                request_id=request_id,
+                stage="src_filter",
+                cards_in=cards_before_src,
+                cards_out=len(cards),
+                analysis_id=request.analysisId
+            )
+            
             yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards))})}\n\n"
 
             # Content relevance filter usando LLM - garante que cards são sobre o trecho selecionado
