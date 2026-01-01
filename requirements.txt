@@ -6,3 +6,11 @@ python-dotenv>=1.0.0
 numpy>=1.24.0
 langid
 duckdb>=1.1.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+
+# Development & Linting
+ruff>=0.8.0
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
