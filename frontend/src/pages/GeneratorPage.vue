@@ -2566,18 +2566,21 @@ onBeforeUnmount(() => {
 ========================= */
 .sidebar {
   position: fixed;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 72px;
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(17, 24, 39, 0.99) 100%);
+  left: 12px;
+  top: 12px;
+  bottom: 12px;
+  width: 80px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(17, 24, 39, 0.98) 100%);
   backdrop-filter: blur(24px);
-  border-right: 1px solid rgba(148, 163, 184, 0.12);
-  box-shadow: 4px 0 32px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 24px;
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  overflow: visible;
+  overflow: hidden;
   transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -2586,20 +2589,21 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-header {
-  padding: 12px 10px;
+  padding: 16px 14px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
   display: flex;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, transparent 100%);
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1) 0%, transparent 100%);
   min-height: auto;
   overflow: visible;
-  gap: 8px;
+  gap: 10px;
+  border-radius: 23px 23px 0 0;
 }
 
 .sidebar.expanded .sidebar-header {
-  padding: 14px 16px;
+  padding: 18px 20px;
 }
 
 .sidebar-logo {
@@ -2615,41 +2619,45 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-toggle {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
   flex-shrink: 0;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  background: rgba(16, 185, 129, 0.15) !important;
-  border: 1px solid rgba(16, 185, 129, 0.3) !important;
-  border-radius: 8px !important;
+  transition: all 0.2s ease;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
 }
 
 .sidebar.expanded .sidebar-toggle {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
 }
 
 .sidebar-toggle:hover {
-  background: rgba(16, 185, 129, 0.28) !important;
-  transform: scale(1.1);
-  border-color: rgba(16, 185, 129, 0.5) !important;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.25);
+  background: transparent !important;
+  transform: scale(1.15);
 }
 
 .sidebar-toggle :deep(.p-button-icon) {
-  font-size: 11px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.2s ease;
+}
+
+.sidebar-toggle:hover :deep(.p-button-icon) {
   color: #10B981;
 }
 
 .sidebar.expanded .sidebar-toggle :deep(.p-button-icon) {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .sidebar-nav {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px 10px;
+  padding: 12px 8px;
   scrollbar-width: thin;
   scrollbar-color: rgba(16, 185, 129, 0.3) transparent;
 }
@@ -2679,6 +2687,7 @@ onBeforeUnmount(() => {
 
 .sidebar-item {
   margin-bottom: 4px;
+  overflow: visible;
 }
 
 .sidebar-link {
@@ -2686,8 +2695,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: 10px;
+  gap: 12px;
+  padding: 6px;
   border: none;
   background: transparent;
   color: rgba(255, 255, 255, 0.85);
@@ -2699,11 +2708,12 @@ onBeforeUnmount(() => {
   text-align: left;
   white-space: nowrap;
   position: relative;
+  overflow: visible;
 }
 
 .sidebar.expanded .sidebar-link {
   justify-content: flex-start;
-  padding: 12px 14px;
+  padding: 10px 14px;
 }
 
 .sidebar-link::before {
@@ -2739,8 +2749,9 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-icon-wrap {
-  width: 40px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
+  min-width: 46px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2751,8 +2762,9 @@ onBeforeUnmount(() => {
 }
 
 .sidebar.expanded .sidebar-icon-wrap {
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
   border-radius: 10px;
 }
 
@@ -2956,13 +2968,19 @@ onBeforeUnmount(() => {
 
 /* Sidebar Footer */
 .sidebar-footer {
-  padding: 12px;
-  border-top: 1px solid rgba(148, 163, 184, 0.1);
-  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.08);
+  background: transparent;
   display: flex;
   align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 0 0 23px 23px;
+}
+
+.sidebar.expanded .sidebar-footer {
   justify-content: space-between;
-  gap: 8px;
+  padding: 12px 14px;
 }
 
 .sidebar-footer-actions {
@@ -2971,25 +2989,24 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-footer-btn {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  color: rgba(255, 255, 255, 0.6);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.4);
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .sidebar-footer-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #10B981;
+  transform: scale(1.1);
 }
 
 .sidebar-version {
@@ -3012,17 +3029,26 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  margin-left: 70px;
-  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-left: 104px;
+  margin-right: 12px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  border-radius: 24px;
+  overflow: hidden;
+  transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.25), transparent 55%),
-    radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.18), transparent 60%),
-    radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.14), transparent 55%),
-    linear-gradient(180deg, rgba(10, 10, 12, 0.0), rgba(10, 10, 12, 0.35));
+    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.22), transparent 55%),
+    radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.16), transparent 60%),
+    radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.12), transparent 55%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.95), rgba(10, 10, 12, 0.98));
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
 }
 
 .sidebar.expanded ~ .app-shell {
-  margin-left: 280px;
+  margin-left: 324px;
 }
 
 .main {
@@ -3040,13 +3066,16 @@ onBeforeUnmount(() => {
   top: 0;
   z-index: 50;
   border: 0;
-  padding: 14px 14px;
-  backdrop-filter: blur(10px);
+  padding: 12px 16px;
+  backdrop-filter: blur(16px);
+  border-radius: 24px 24px 0 0;
+  background: rgba(17, 24, 39, 0.5);
 }
 
 :deep(.p-toolbar) {
-  background: rgba(17, 24, 39, 0.60);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
 .header-left {
@@ -3146,21 +3175,32 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(17, 24, 39, 0.58);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 14px 30px rgba(0,0,0,0.26);
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.65) 0%, rgba(15, 23, 42, 0.75) 100%);
+  backdrop-filter: blur(16px);
+  box-shadow: 
+    0 8px 24px rgba(0, 0, 0, 0.2),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   overflow: hidden;
+  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+.panel:hover {
+  border-color: rgba(148, 163, 184, 0.18);
+  box-shadow: 
+    0 12px 32px rgba(0, 0, 0, 0.25),
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset;
 }
 
 .panel-head {
-  padding: 12px 12px;
+  padding: 14px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .panel-title {
