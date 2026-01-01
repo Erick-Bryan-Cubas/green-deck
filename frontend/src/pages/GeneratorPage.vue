@@ -124,6 +124,9 @@ const readerShowProgress = ref(true) // mostrar barra de progresso
 const readerAutoHideControls = ref(false) // auto-hide após inatividade
 const readerControlsVisible = ref(true)
 
+// Flag para ignorar onContentChanged durante navegação de página PDF
+let isNavigatingPdfPage = false
+
 // Touch/swipe support
 let touchStartX = 0
 let touchStartY = 0
@@ -159,9 +162,14 @@ const readerVars = computed(() => ({
 
 function toggleReader() {
   immersiveReader.value = !immersiveReader.value
+  console.log('[toggleReader] immersiveReader:', immersiveReader.value, 
+    'usePdfPagination:', usePdfPagination.value, 
+    'pdfPagesContent.length:', pdfPagesContent.value.length)
+    
   if (immersiveReader.value) {
     // Se temos paginação do PDF, inicializa com as páginas do PDF
     if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
+      console.log('[toggleReader] initializing PDF pagination')
       readerTotalPages.value = pdfPagesContent.value.length
       // Vai para a primeira página do PDF
       readerGoToPdfPage(1)
@@ -321,6 +329,9 @@ let readerSnapTimer = null
 
 function onReaderScroll() {
   if (!immersiveReader.value) return
+  
+  // Quando usa paginação do PDF, não recalcula baseado em scroll
+  if (usePdfPagination.value) return
 
   if (readerScrollRaf) cancelAnimationFrame(readerScrollRaf)
   readerScrollRaf = requestAnimationFrame(() => {
@@ -393,6 +404,9 @@ function updateReaderPageStats() {
 }
 
 function snapReaderToNearestPage() {
+  // Não faz snap quando usando paginação do PDF (cada página é uma unidade)
+  if (usePdfPagination.value) return
+  
   const el = readerScrollerEl.value
   if (!el || !immersiveReader.value) return
 
@@ -432,15 +446,28 @@ function setReaderProgress(progress01) {
 
 // Navega para uma página específica do PDF
 function readerGoToPdfPage(pageNumber) {
+  console.log('[readerGoToPdfPage] pageNumber:', pageNumber, 
+    'usePdfPagination:', usePdfPagination.value, 
+    'pdfPagesContent.length:', pdfPagesContent.value.length)
+    
   if (!usePdfPagination.value || pdfPagesContent.value.length === 0) return
   
   const total = pdfPagesContent.value.length
   const p = clamp(pageNumber, 1, total)
   
+  // Evita navegação para a mesma página
+  if (p === readerPage.value) return
+  
+  console.log('[readerGoToPdfPage] navigating to page:', p, 'of', total)
+  
+  // Ativa flag para ignorar onContentChanged
+  isNavigatingPdfPage = true
+  
   // Atualiza o conteúdo do editor para mostrar apenas esta página
   const pageContent = pdfPagesContent.value[p - 1]
   if (pageContent && editorRef.value?.setContent) {
     editorRef.value.setContent(pageContent.text)
+    console.log('[readerGoToPdfPage] content set, words:', pageContent.word_count)
   }
   
   readerPage.value = p
@@ -452,9 +479,20 @@ function readerGoToPdfPage(pageNumber) {
   if (el) {
     el.scrollTo({ left: 0, top: 0, behavior: 'auto' })
   }
+  
+  // Desativa flag após um pequeno delay para garantir que onContentChanged foi processado
+  nextTick(() => {
+    isNavigatingPdfPage = false
+  })
 }
 
 function readerScrollToPage(pageNumber, behavior = 'smooth') {
+  // DEBUG: log para verificar estado da paginação
+  console.log('[readerScrollToPage] pageNumber:', pageNumber, 
+    'usePdfPagination:', usePdfPagination.value, 
+    'pdfPagesContent.length:', pdfPagesContent.value.length,
+    'readerPage:', readerPage.value)
+  
   // Se temos paginação PDF, usa a navegação por página
   if (usePdfPagination.value && pdfPagesContent.value.length > 0) {
     readerGoToPdfPage(pageNumber)
@@ -495,14 +533,27 @@ function readerLastPage() {
 function onPaginatorPageChange(event) {
   // event.page é 0-indexed, convertemos para 1-indexed
   const newPage = event.page + 1
-  readerScrollToPage(newPage)
+  // Evita loop: só navega se a página for diferente da atual
+  if (newPage !== readerPage.value) {
+    readerGoToPdfPage(newPage)
+  }
 }
+
+// Computed para o índice 0-based usado pelo Paginator
+const paginatorFirst = computed(() => readerPage.value - 1)
 
 let readerResizeObserver = null
 let winResizeHandler = null
 
 function requestReaderLayout({ preserveProgress = false, explicitProgress = null } = {}) {
   if (!immersiveReader.value) return
+  
+  // Se estamos usando paginação do PDF, não precisa recalcular layout de scroll
+  if (usePdfPagination.value) {
+    // Apenas atualiza as estatísticas de página
+    updateReaderPageStats()
+    return
+  }
 
   const beforeProgress = preserveProgress ? (explicitProgress ?? getReaderProgress()) : 0
 
@@ -2240,6 +2291,12 @@ function onSelectionChanged(payload) {
 }
 
 function onContentChanged(payload) {
+  // Ignora mudanças de conteúdo causadas pela navegação de página do PDF
+  if (isNavigatingPdfPage) {
+    console.log('[onContentChanged] ignorando - navegação de página PDF em andamento')
+    return
+  }
+  
   if (isRestoringSession.value) return
 
   const fullText = payload?.fullText ?? ''
@@ -2265,7 +2322,8 @@ function onContentChanged(payload) {
   if (normalized.length > 100) scheduleAnalyze(fullText)
 
   // se estiver lendo, recalcula o layout/páginas (mantendo progresso)
-  if (immersiveReader.value) {
+  // Mas não se estiver usando paginação do PDF (a navegação é controlada manualmente)
+  if (immersiveReader.value && !usePdfPagination.value) {
     requestReaderLayout({ preserveProgress: true })
   }
 }
@@ -2278,9 +2336,13 @@ const pdfPagesContent = ref([])  // Array com { page_number, text, word_count }
 const usePdfPagination = ref(false)  // Se deve usar paginação baseada no PDF
 
 function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metadata }) {
+  console.log('[onPdfExtracted] pagesContent:', pagesContent?.length, 'pages:', pages)
+  
   // Armazena conteúdo das páginas para paginação
   pdfPagesContent.value = pagesContent || []
   usePdfPagination.value = pagesContent && pagesContent.length > 0
+  
+  console.log('[onPdfExtracted] usePdfPagination set to:', usePdfPagination.value)
   
   // Insere o texto extraído do PDF no editor
   if (editorRef.value?.setContent) {
@@ -2991,10 +3053,10 @@ onBeforeUnmount(() => {
                     v-if="usePdfPagination"
                     :rows="1"
                     :totalRecords="readerTotalPages"
-                    :first="readerPage - 1"
+                    :first="paginatorFirst"
                     @page="onPaginatorPageChange"
                     template="FirstPageLink PrevPageLink CurrentPageReport NextPageLink LastPageLink"
-                    :currentPageReportTemplate="`{first} de {totalRecords}`"
+                    currentPageReportTemplate="{currentPage} de {totalPages}"
                     class="reader-paginator"
                   />
                   <!-- Indicador simples para texto normal -->
