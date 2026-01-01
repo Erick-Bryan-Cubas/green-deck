@@ -2,6 +2,7 @@ from fastapi import APIRouter
 import httpx
 import os
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, ANKI_CONNECT_URL
+from app.services.ollama import get_embedding_cache_stats
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -12,6 +13,13 @@ async def health():
         "llm_model": OLLAMA_MODEL,
         "analysis_model": OLLAMA_ANALYSIS_MODEL,
         "anki_connect_url": ANKI_CONNECT_URL,  # ajuda debug
+    }
+
+@router.get("/cache-stats")
+async def cache_stats():
+    """Get embedding cache statistics for monitoring."""
+    return {
+        "embedding_cache": get_embedding_cache_stats()
     }
 
 @router.get("/anki-status")

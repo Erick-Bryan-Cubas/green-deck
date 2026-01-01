@@ -8,15 +8,15 @@ import Toolbar from 'primevue/toolbar'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Card from 'primevue/card'
-import Chart from 'primevue/chart'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Skeleton from 'primevue/skeleton'
 import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
 
-// App components
+// App components - with lazy loading for performance
 import SidebarMenu from '@/components/SidebarMenu.vue'
+import LazyChart from '@/components/LazyChart.vue'
 
 const router = useRouter()
 const toast = useToast()
@@ -412,7 +412,7 @@ onMounted(fetchDashboard)
 
           <div class="chart-wrap">
             <Skeleton v-if="loading" width="100%" height="290px" />
-            <Chart v-else type="line" :data="lineData" :options="lineOptions" style="height: 300px" />
+            <LazyChart v-else type="line" :data="lineData" :options="lineOptions" height="300px" />
           </div>
         </div>
 
@@ -427,7 +427,7 @@ onMounted(fetchDashboard)
 
           <div class="chart-wrap">
             <Skeleton v-if="loading" width="100%" height="290px" />
-            <Chart v-else type="doughnut" :data="statusDoughnutData" :options="doughnutOptions" style="height: 300px" />
+            <LazyChart v-else type="doughnut" :data="statusDoughnutData" :options="doughnutOptions" height="300px" />
           </div>
 
           <div v-if="!loading" class="mini-legend">
@@ -458,7 +458,7 @@ onMounted(fetchDashboard)
 
           <div class="chart-wrap">
             <Skeleton v-if="loading" width="100%" height="290px" />
-            <Chart v-else type="bar" :data="deckBarData" :options="deckBarOptions" style="height: 300px" />
+            <LazyChart v-else type="bar" :data="deckBarData" :options="deckBarOptions" height="300px" />
           </div>
         </div>
 
@@ -473,7 +473,7 @@ onMounted(fetchDashboard)
 
           <div class="chart-wrap">
             <Skeleton v-if="loading" width="100%" height="290px" />
-            <Chart v-else type="bar" :data="segmentsBarData" :options="segmentsBarOptions" style="height: 300px" />
+            <LazyChart v-else type="bar" :data="segmentsBarData" :options="segmentsBarOptions" height="300px" />
           </div>
         </div>
       </div>

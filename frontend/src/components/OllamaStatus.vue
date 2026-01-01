@@ -1,45 +1,18 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
+import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 
-const connected = ref(false)
-const loading = ref(true)
-const models = ref([])
-const host = ref('')
+const { status: ollamaState } = useOllamaStatus()
 
-let timer = null
+const connected = computed(() => ollamaState.value.connected)
+const loading = computed(() => ollamaState.value.loading)
+const models = computed(() => ollamaState.value.models)
 
 const title = computed(() => {
   if (loading.value) return 'Ollama: verificando...'
   if (!connected.value) return 'Ollama: desconectado'
   const m = models.value?.length ? ` (${models.value.length} modelos)` : ''
   return `Ollama: conectado${m}`
-})
-
-async function refresh() {
-  loading.value = true
-  try {
-    const resp = await fetch('/api/ollama-status')
-    if (!resp.ok) throw new Error('bad_response')
-    const data = await resp.json()
-    connected.value = !!data.connected
-    models.value = Array.isArray(data.models) ? data.models : []
-    host.value = data.host || ''
-  } catch {
-    connected.value = false
-    models.value = []
-    host.value = ''
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => {
-  refresh()
-  timer = setInterval(refresh, 8000)
-})
-
-onBeforeUnmount(() => {
-  if (timer) clearInterval(timer)
 })
 </script>
 
