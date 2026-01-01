@@ -467,6 +467,183 @@ async function generateCardsWithStream(
   throw new Error("No cards returned from API");
 }
 
+// =============================================================================
+// Document Extraction API
+// =============================================================================
+
+/**
+ * Checks if document extraction service is available
+ * @returns {Promise<Object>} Status object with available flag and supported formats
+ */
+async function getDocumentExtractionStatus() {
+  try {
+    const response = await fetch("/api/documents/status");
+    if (!response.ok) {
+      return { available: false, supported_formats: [], max_file_size_mb: 0 };
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Error checking document extraction status:", error);
+    return { available: false, supported_formats: [], max_file_size_mb: 0 };
+  }
+}
+
+/**
+ * Extracts text from a PDF document
+ * @param {File} file - PDF file to extract text from
+ * @param {Object} options - Extraction options
+ * @param {string} options.quality - Extraction quality: 'raw', 'cleaned', or 'llm'
+ * @param {number} options.chunkSize - Optional chunk size in words
+ * @param {(progress: number) => void} onProgress - Progress callback (0-100)
+ * @returns {Promise<Object>} Extraction result with text, pages, word_count, etc.
+ */
+async function extractDocumentText(file, options = {}, onProgress = null) {
+  const { quality = "cleaned", chunkSize = null } = options;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("quality", quality);
+  if (chunkSize) {
+    formData.append("chunk_size", chunkSize.toString());
+  }
+
+  try {
+    const response = await fetch("/api/documents/extract", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Extraction failed");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || "Extraction failed");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error extracting document:", error);
+    throw error;
+  }
+}
+
+/**
+ * Extracts text from PDF and returns a preview
+ * @param {File} file - PDF file
+ * @param {number} maxPreviewChars - Maximum characters in preview
+ * @returns {Promise<Object>} Preview result with truncated text and stats
+ */
+async function extractDocumentPreview(file, maxPreviewChars = 2000) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("max_preview_chars", maxPreviewChars.toString());
+
+  try {
+    const response = await fetch("/api/documents/extract-and-preview", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Preview extraction failed");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error extracting document preview:", error);
+    throw error;
+  }
+}
+
+/**
+ * Gets preview of each page in a PDF document
+ * @param {File} file - PDF file
+ * @returns {Promise<Object>} Preview result with page info
+ */
+async function getPdfPagesPreview(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch("/api/documents/preview-pages", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Preview failed");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error getting PDF pages preview:", error);
+    throw error;
+  }
+}
+
+/**
+ * Extracts text from selected pages of a PDF
+ * @param {File} file - PDF file
+ * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
+ * @param {string} quality - Extraction quality: 'raw', 'cleaned', or 'llm'
+ * @returns {Promise<Object>} Extraction result with text from selected pages
+ */
+async function extractSelectedPages(file, pageNumbers, quality = "cleaned") {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("page_numbers", pageNumbers.join(","));
+  formData.append("quality", quality);
+
+  try {
+    const response = await fetch("/api/documents/extract-pages", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Extraction failed");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || "Extraction failed");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error extracting selected pages:", error);
+    throw error;
+  }
+}
+
 export {
   generateCards,
   generateCardsWithStream,
@@ -475,4 +652,9 @@ export {
   storeApiKeys,
   validateAnthropicApiKey,
   hasApiKeys,
+  getDocumentExtractionStatus,
+  extractDocumentText,
+  extractDocumentPreview,
+  getPdfPagesPreview,
+  extractSelectedPages,
 };

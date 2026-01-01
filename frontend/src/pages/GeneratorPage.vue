@@ -27,6 +27,7 @@ import LazyQuillEditor from '@/components/LazyQuillEditor.vue'
 import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
+import PdfUpload from '@/components/PdfUpload.vue'
 import { useRouter } from 'vue-router'
 
 // Services
@@ -2092,6 +2093,9 @@ const contextHasSelection = ref(false)
 const contextHasHighlight = ref(false)
 const contextSelectedText = ref('')
 
+// PDF Upload ref
+const pdfUploadRef = ref(null)
+
 function onEditorContextMenu(payload) {
   contextHasSelection.value = !!payload.hasSelection
   contextHasHighlight.value = !!payload.hasHighlight
@@ -2184,6 +2188,44 @@ function onContentChanged(payload) {
   if (immersiveReader.value) {
     requestReaderLayout({ preserveProgress: true })
   }
+}
+
+// ============================================================
+// PDF Upload Handlers
+// ============================================================
+function onPdfExtracted({ text, filename, pages, wordCount }) {
+  // Insere o texto extraído do PDF no editor
+  if (editorRef.value?.setContent) {
+    editorRef.value.setContent(text)
+    notify(`PDF "${filename}" carregado: ${wordCount} palavras`, 'success', 4000)
+    
+    // Cria uma nova sessão para o PDF
+    const newSession = {
+      id: safeId(),
+      title: `📄 ${filename}`,
+      createdAt: new Date().toISOString(),
+      lastModifiedAt: new Date().toISOString(),
+      source: 'pdf',
+      pdfFilename: filename,
+      pdfPages: pages
+    }
+    activeSessionId.value = newSession.id
+    sessions.value.unshift(newSession)
+    
+    // Dispara análise automática
+    nextTick(() => {
+      if (text.length > 100) {
+        scheduleAnalyze(text)
+      }
+    })
+  } else {
+    notify('Erro ao inserir texto no editor', 'error', 4000)
+  }
+}
+
+function onPdfError(error) {
+  console.error('PDF extraction error:', error)
+  // Toast já é exibido pelo componente PdfUpload
 }
 
 // ============================================================
@@ -2580,6 +2622,13 @@ onBeforeUnmount(() => {
                 outlined
                 @click="toggleReader"
                 title="Ativar modo leitura"
+              />
+
+              <!-- PDF Upload Button -->
+              <PdfUpload 
+                ref="pdfUploadRef"
+                @extracted="onPdfExtracted"
+                @error="onPdfError"
               />
 
               <Select

@@ -6,7 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 from contextlib import asynccontextmanager
 from fastapi.responses import FileResponse, JSONResponse
-from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router, models_router, websocket_router, start_broadcaster, stop_broadcaster
+from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router, models_router, websocket_router, documents_router, start_broadcaster, stop_broadcaster
 
 
 class AnkiStatusFilter(logging.Filter):
@@ -51,6 +51,7 @@ app.include_router(history_router)
 app.include_router(dashboard_router)
 app.include_router(models_router)
 app.include_router(websocket_router)
+app.include_router(documents_router)
 
 @app.exception_handler(StarletteHTTPException)
 async def spa_fallback(request: Request, exc: StarletteHTTPException):
