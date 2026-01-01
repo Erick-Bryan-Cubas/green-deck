@@ -387,7 +387,9 @@ function useExtractedText() {
     text: extractedResult.value.text,
     filename: extractedResult.value.filename,
     pages: extractedResult.value.pages,
-    wordCount: extractedResult.value.word_count
+    wordCount: extractedResult.value.word_count,
+    pagesContent: extractedResult.value.pages_content || [],
+    metadata: extractedResult.value.metadata || {}
   })
   
   closeDialog()
