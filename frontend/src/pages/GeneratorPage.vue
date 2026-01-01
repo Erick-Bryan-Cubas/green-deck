@@ -1566,10 +1566,22 @@ watch(ankiModel, () => {
   ankiBackField.value = fields[1]?.value || fields[0]?.value || ''
 })
 
-async function exportToAnkiOpenConfig() {
+// Armazena quais cards exportar (null = todos, array = índices específicos)
+const cardsToExport = ref(null)
+
+const exportableCards = computed(() => {
+  if (cardsToExport.value === null) return cards.value
+  return cardsToExport.value.map(i => cards.value[i]).filter(Boolean)
+})
+
+async function exportToAnkiOpenConfig(selectedIndices = null) {
   try {
-    if (!cards.value.length) {
-      notify('No cards to export', 'info')
+    // Se passar índices, exporta apenas esses; senão, exporta todos
+    cardsToExport.value = Array.isArray(selectedIndices) ? selectedIndices : null
+    const cardsCount = cardsToExport.value ? cardsToExport.value.length : cards.value.length
+    
+    if (cardsCount === 0) {
+      notify('Nenhum card para exportar', 'info')
       return
     }
     showProgress('Carregando modelos do Anki...')
@@ -1598,11 +1610,13 @@ async function exportToAnkiConfirm() {
     showProgress('Enviando para Anki...')
     setProgress(20)
 
+    const cardsData = exportableCards.value
+    
     const resp = await fetch('/api/upload-to-anki', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        cards: cards.value,
+        cards: cardsData,
         modelName: ankiModel.value,
         frontField: ankiFrontField.value,
         backField: ankiBackField.value,
@@ -1621,6 +1635,12 @@ async function exportToAnkiConfirm() {
     completeProgress()
     notify(`${result.totalSuccess} de ${result.totalCards} enviados ao Anki!`, 'success')
     ankiVisible.value = false
+    
+    // Limpa seleção após exportar
+    if (cardsToExport.value !== null) {
+      clearSelection()
+    }
+    cardsToExport.value = null
   } catch (e) {
     notify('Erro ao enviar ao Anki: ' + (e?.message || String(e)), 'error', 8000)
   } finally {
@@ -1911,11 +1931,42 @@ onMounted(async () => {
     }
 
     // Ctrl+Enter gera cards (modo normal)
-    const isCtrlEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter'
-    if (!isCtrlEnter) return
-    if (hasSelection.value && !generating.value && !isAnalyzing.value) {
+    const isCtrl = e.ctrlKey || e.metaKey
+    const isCtrlEnter = isCtrl && e.key === 'Enter'
+    if (isCtrlEnter && hasSelection.value && !generating.value && !isAnalyzing.value) {
       e.preventDefault()
       generateCardsFromSelection()
+      return
+    }
+
+    // Undo: Ctrl+Z
+    if (isCtrl && e.key === 'z' && !e.shiftKey) {
+      // Only trigger if not in an input/textarea
+      const activeEl = document.activeElement
+      const isInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)
+      if (!isInput && canUndo.value) {
+        e.preventDefault()
+        undo()
+        return
+      }
+    }
+
+    // Redo: Ctrl+Y or Ctrl+Shift+Z
+    if ((isCtrl && e.key === 'y') || (isCtrl && e.shiftKey && e.key === 'z') || (isCtrl && e.shiftKey && e.key === 'Z')) {
+      const activeEl = document.activeElement
+      const isInput = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)
+      if (!isInput && canRedo.value) {
+        e.preventDefault()
+        redo()
+        return
+      }
+    }
+
+    // Escape cancela modo seleção
+    if (e.key === 'Escape' && isSelectionMode.value) {
+      e.preventDefault()
+      clearSelection()
+      return
     }
   }
   window.addEventListener('keydown', globalKeyHandler)
@@ -2291,9 +2342,49 @@ onBeforeUnmount(() => {
                 <Tag :severity="hasCards ? 'success' : 'secondary'" class="pill ml-2">
                   {{ hasCards ? `${cards.length} total` : 'Sem cards' }}
                 </Tag>
+                <Tag v-if="hasSelectedCards" severity="warning" class="pill ml-2">
+                  {{ selectedCount }} selecionados
+                </Tag>
               </div>
 
               <div class="panel-actions">
+                <!-- Undo/Redo buttons -->
+                <div class="undo-redo-group">
+                  <Button
+                    icon="pi pi-undo"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    :disabled="!canUndo"
+                    @click="undo"
+                    title="Desfazer (Ctrl+Z)"
+                  />
+                  <Button
+                    icon="pi pi-refresh"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    :disabled="!canRedo"
+                    @click="redo"
+                    title="Refazer (Ctrl+Y)"
+                  />
+                </div>
+
+                <!-- Selection mode toggle -->
+                <Button
+                  :icon="isSelectionMode ? 'pi pi-check-square' : 'pi pi-stop'"
+                  :severity="isSelectionMode ? 'primary' : 'secondary'"
+                  :outlined="isSelectionMode"
+                  text
+                  rounded
+                  size="small"
+                  :disabled="!hasCards"
+                  @click="toggleSelectionMode"
+                  :title="isSelectionMode ? 'Sair do modo seleção' : 'Modo seleção'"
+                />
+
                 <div class="search-wrap" :class="{ 'expanded': searchExpanded }">
                   <button class="search-toggle" @click="searchExpanded = !searchExpanded" type="button">
                     <i class="pi pi-search" />
@@ -2341,6 +2432,45 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <!-- Floating selection bar -->
+            <Transition name="slide-up">
+              <div v-if="hasSelectedCards" class="selection-bar">
+                <div class="selection-info">
+                  <Checkbox 
+                    :modelValue="allCardsSelected" 
+                    @update:modelValue="toggleSelectAll"
+                    binary
+                  />
+                  <span class="selection-count">{{ selectedCount }} de {{ cards.length }}</span>
+                </div>
+                <div class="selection-actions">
+                  <Button
+                    icon="pi pi-send"
+                    label="Exportar"
+                    severity="primary"
+                    size="small"
+                    @click="bulkExportSelected"
+                  />
+                  <Button
+                    icon="pi pi-trash"
+                    label="Excluir"
+                    severity="danger"
+                    size="small"
+                    @click="bulkDeleteSelected"
+                  />
+                  <Button
+                    icon="pi pi-times"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    @click="clearSelection"
+                    title="Cancelar seleção"
+                  />
+                </div>
+              </div>
+            </Transition>
+
             <div class="panel-body output-body">
               <div v-if="!hasCards" class="empty-state">
                 <div class="empty-icon">✨</div>
@@ -2367,11 +2497,21 @@ onBeforeUnmount(() => {
                     <template v-for="(item, i) in items" :key="i">
                       <Card
                         class="card-item clickable"
-                        @click="openEditCard(item.actualIdx)"
+                        :class="{ 'card-selected': selectedCards.has(item.actualIdx) }"
+                        @click="isSelectionMode ? toggleCardSelection(item.actualIdx, $event) : openEditCard(item.actualIdx)"
                       >
                         <template #title>
                           <div class="card-head">
                             <div class="card-left">
+                              <!-- Checkbox para seleção -->
+                              <Checkbox
+                                v-if="isSelectionMode"
+                                :modelValue="selectedCards.has(item.actualIdx)"
+                                @update:modelValue="toggleCardSelection(item.actualIdx, $event)"
+                                @click.stop
+                                binary
+                                class="card-checkbox"
+                              />
                               <Button
                                 v-if="item.children.length > 0"
                                 :icon="expandedCards.has(i) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'"
@@ -2397,6 +2537,7 @@ onBeforeUnmount(() => {
                             </div>
 
                             <Button
+                              v-if="!isSelectionMode"
                               icon="pi pi-trash"
                               severity="danger"
                               text
@@ -2411,22 +2552,22 @@ onBeforeUnmount(() => {
                           <div class="preview-grid">
                             <div class="preview-block">
                               <div class="preview-label">Front</div>
-                              <div class="preview-text" v-html="renderMarkdownSafe(previewText(item.card.front, 300))"></div>
+                              <div class="preview-text" v-html="highlightSearchTerm(renderMarkdownSafe(previewText(item.card.front, 300)))"></div>
                             </div>
 
                             <div class="preview-block">
                               <div class="preview-label">Back</div>
-                              <div class="preview-text" v-html="renderMarkdownSafe(previewText(item.card.back, 300))"></div>
+                              <div class="preview-text" v-html="highlightSearchTerm(renderMarkdownSafe(previewText(item.card.back, 300)))"></div>
                             </div>
                           </div>
 
                           <div v-if="item.card.src" class="text-xs opacity-70 mt-2">
-                            <strong>Fonte:</strong> {{ previewText(item.card.src, 160) }}
+                            <strong>Fonte:</strong> <span v-html="highlightSearchTerm(previewText(item.card.src, 160))"></span>
                           </div>
 
                           <div class="preview-hint">
                             <i class="pi pi-pen-to-square mr-2" />
-                            Clique no card para editar
+                            {{ isSelectionMode ? 'Clique para selecionar' : 'Clique no card para editar' }}
                           </div>
                         </template>
                       </Card>
@@ -2438,11 +2579,21 @@ onBeforeUnmount(() => {
                             v-for="(child, ci) in item.children"
                             :key="ci"
                             class="card-item card-child clickable"
-                            @click="openEditCard(child.actualIdx)"
+                            :class="{ 'card-selected': selectedCards.has(child.actualIdx) }"
+                            @click="isSelectionMode ? toggleCardSelection(child.actualIdx, $event) : openEditCard(child.actualIdx)"
                           >
                             <template #title>
                               <div class="card-head">
                                 <div class="card-left">
+                                  <!-- Checkbox para seleção -->
+                                  <Checkbox
+                                    v-if="isSelectionMode"
+                                    :modelValue="selectedCards.has(child.actualIdx)"
+                                    @update:modelValue="toggleCardSelection(child.actualIdx, $event)"
+                                    @click.stop
+                                    binary
+                                    class="card-checkbox"
+                                  />
                                   <span class="card-index">Card {{ child.actualIdx + 1 }}</span>
                                   <Tag 
                                     :severity="getCardType(child.card.front) === 'cloze' ? 'warning' : 'info'" 
@@ -2456,6 +2607,7 @@ onBeforeUnmount(() => {
                                 </div>
 
                                 <Button
+                                  v-if="!isSelectionMode"
                                   icon="pi pi-trash"
                                   severity="danger"
                                   text
@@ -2470,22 +2622,22 @@ onBeforeUnmount(() => {
                               <div class="preview-grid">
                                 <div class="preview-block">
                                   <div class="preview-label">Front</div>
-                                  <div class="preview-text" v-html="renderMarkdownSafe(previewText(child.card.front, 300))"></div>
+                                  <div class="preview-text" v-html="highlightSearchTerm(renderMarkdownSafe(previewText(child.card.front, 300)))"></div>
                                 </div>
 
                                 <div class="preview-block">
                                   <div class="preview-label">Back</div>
-                                  <div class="preview-text" v-html="renderMarkdownSafe(previewText(child.card.back, 300))"></div>
+                                  <div class="preview-text" v-html="highlightSearchTerm(renderMarkdownSafe(previewText(child.card.back, 300)))"></div>
                                 </div>
                               </div>
 
                               <div v-if="child.card.src" class="text-xs opacity-70 mt-2">
-                                <strong>Fonte:</strong> {{ previewText(child.card.src, 160) }}
+                                <strong>Fonte:</strong> <span v-html="highlightSearchTerm(previewText(child.card.src, 160))"></span>
                               </div>
 
                               <div class="preview-hint">
                                 <i class="pi pi-pen-to-square mr-2" />
-                                Clique no card para editar
+                                {{ isSelectionMode ? 'Clique para selecionar' : 'Clique no card para editar' }}
                               </div>
                             </template>
                           </Card>
@@ -3113,6 +3265,78 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
+/* =========================
+   Seleção múltipla e Undo/Redo
+========================= */
+.undo-redo-group {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  margin: 0 12px 12px 12px;
+  backdrop-filter: blur(8px);
+}
+
+.selection-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.selection-count {
+  font-weight: 700;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.selection-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.card-checkbox {
+  margin-right: 8px;
+}
+
+.card-item.card-selected :deep(.p-card) {
+  border: 2px solid rgba(99, 102, 241, 0.7);
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+/* Slide up animation para selection bar */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+/* =========================
+   Highlight de busca
+========================= */
+:deep(.search-highlight) {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.4) 0%, rgba(245, 158, 11, 0.4) 100%);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 700;
+  color: inherit;
+}
+
 /* Cards preview */
 .cards-list {
   display: flex;
@@ -3121,6 +3345,7 @@ onBeforeUnmount(() => {
 }
 .card-item :deep(.p-card) {
   border-radius: 16px;
+  transition: all 0.2s ease;
 }
 .card-item :deep(.p-card-body) {
   padding: 14px;
