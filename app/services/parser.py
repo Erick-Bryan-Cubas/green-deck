@@ -54,16 +54,18 @@ def parse_flashcards_qa(text: str) -> List[Dict[str, str]]:
                 flush()
             continue
 
-        if re.match(r"(?i)^q\s*:\s*", ln):
+        # Reconhece Q: ou CLOZE: como front do card
+        if re.match(r"(?i)^(q|cloze)\s*:\s*", ln):
             if cur_q and cur_a:
                 flush()
             mode = "q"
-            cur_q = re.sub(r"(?i)^q\s*:\s*", "", ln).strip()
+            cur_q = re.sub(r"(?i)^(q|cloze)\s*:\s*", "", ln).strip()
             continue
 
-        if re.match(r"(?i)^a\s*:\s*", ln):
+        # Reconhece A: ou EXTRA: como back do card
+        if re.match(r"(?i)^(a|extra)\s*:\s*", ln):
             mode = "a"
-            cur_a = re.sub(r"(?i)^a\s*:\s*", "", ln).strip()
+            cur_a = re.sub(r"(?i)^(a|extra)\s*:\s*", "", ln).strip()
             continue
 
         if re.match(r"(?i)^(src|fonte|ref)\s*:\s*", ln):

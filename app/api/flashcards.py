@@ -842,8 +842,8 @@ async def generate_cards_stream(request: CardsRequest):
 
             type_instruction = {
                 "basic": "Gere APENAS cards básicos (perguntas e respostas). NÃO gere cards cloze.",
-                "cloze": "Gere APENAS cards cloze (frases com lacunas {{c1::termo}}). NÃO gere perguntas e respostas.",
-                "both": "Para cada conceito importante, gere 1 card básico + 1 card cloze.",
+                "cloze": "Gere APENAS cards cloze. Cada card cloze é uma FRASE AFIRMATIVA (não pergunta) com uma lacuna {{c1::termo}}. Use o prefixo CLOZE: (não Q:).",
+                "both": "Para cada conceito importante, gere 1 card básico (Q:/A:) + 1 card cloze (CLOZE:/EXTRA:).",
             }[card_type]
 
             # Bloco de formato dependente do tipo
@@ -863,25 +863,28 @@ RESTRIÇÕES:
                 format_block = """
 FORMATO OBRIGATÓRIO (use exatamente estas chaves):
 
-Q: <frase em PT-BR com UMA lacuna {{c1::termo}}>
-A: Extra: <1 frase de contexto adicional em PT-BR>
+CLOZE: <frase AFIRMATIVA em PT-BR com UMA lacuna {{c1::termo}}>
+EXTRA: <1 frase de contexto adicional em PT-BR>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
 RESTRIÇÕES:
-- NUNCA use o formato de pergunta e resposta.
+- NUNCA use Q: ou A: para cloze. Use CLOZE: e EXTRA:.
+- NUNCA escreva uma pergunta. Escreva uma frase afirmativa com lacuna.
 - Cada card DEVE ter exatamente uma ocorrência de "{{c1::".
-- Se não conseguir escrever uma frase com lacuna para um conceito, simplesmente NÃO crie card básico; apenas ignore o conceito.
+- Se não conseguir escrever uma frase com lacuna para um conceito, simplesmente ignore o conceito.
 """.strip()
             else:  # both
                 format_block = """
-FORMATO OBRIGATÓRIO (use exatamente estas chaves):
+FORMATO OBRIGATÓRIO:
 
+Para cards BÁSICOS (pergunta/resposta):
 Q: <pergunta específica em PT-BR>
 A: <resposta curta em PT-BR (1-2 frases)>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 
-Q: <frase em PT-BR com UMA lacuna {{c1::termo}}>
-A: Extra: <1 frase de contexto adicional em PT-BR>
+Para cards CLOZE (frase com lacuna):
+CLOZE: <frase AFIRMATIVA em PT-BR com UMA lacuna {{c1::termo}}>
+EXTRA: <1 frase de contexto adicional em PT-BR>
 SRC: "<trecho COPIADO do CONTEÚDO-FONTE (5-25 palavras), sem alterar>"
 """.strip()
 
@@ -912,8 +915,8 @@ TIPOS:
 {format_block}
 
 EXEMPLO DE CLOZE CORRETO:
-Q: A capital do Brasil é {{c1::Brasília}}.
-A: Extra: Brasília foi inaugurada em 1960.
+CLOZE: A capital do Brasil é {{c1::Brasília}}.
+EXTRA: Brasília foi inaugurada em 1960.
 SRC: "A capital do Brasil é Brasília"
 
 ATENÇÃO: Use EXATAMENTE {{c1::palavra}} (dois dois-pontos, NÃO três)
@@ -950,10 +953,32 @@ COMECE:
                 cards_raw = normalize_cards(parse_flashcards_json(raw))
                 parse_mode = "json"
 
+            # ============= DIAGNÓSTICO: Log ANTES do filtro de tipo =============
+            cards_before_type_filter = len(cards_raw)
+            logger.info("=== DIAGNÓSTICO CLOZE ===")
+            logger.info("Card type solicitado: %s", card_type)
+            logger.info("Cards parseados (ANTES do filtro de tipo): %d", cards_before_type_filter)
+            logger.info("Raw response (primeiros 500 chars): %s", raw[:500].replace('\n', '\\n'))
+            
+            # Mostra cada card e se tem formato cloze
+            for i, c in enumerate(cards_raw):
+                front = (c.get("front") or "")[:100]
+                has_cloze = "{{c1::" in front
+                has_partial_cloze = any(x in front for x in ["{c1::", "{{c1:", "[c1::", "{{c1}}", "{c1}"])
+                logger.info(
+                    "  Card %d: has_cloze=%s, has_partial=%s, front='%s'",
+                    i + 1, has_cloze, has_partial_cloze, front.replace('\n', ' ')
+                )
+            # =====================================================================
+
             # Aplica filtro por tipo de card (basic / cloze / both)
             cards_raw = _filter_by_card_type(cards_raw, card_type)
+            
+            # Log APÓS o filtro
+            logger.info("Cards APÓS filtro de tipo (%s): %d (removidos: %d)", 
+                       card_type, len(cards_raw), cards_before_type_filter - len(cards_raw))
 
-            yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw)})}\n\n"
+            yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw), 'before_type_filter': cards_before_type_filter})}\n\n"
 
             # SRC filter
             cards = _filter_cards_with_valid_src(cards_raw, src)
@@ -1035,8 +1060,8 @@ Gere entre {target_min} e {target_max} cards.
 {format_block}
 
 EXEMPLO DE CLOZE CORRETO:
-Q: A capital do Brasil é {{c1::Brasília}}.
-A: Extra: Brasília foi inaugurada em 1960.
+CLOZE: A capital do Brasil é {{c1::Brasília}}.
+EXTRA: Brasília foi inaugurada em 1960.
 SRC: "A capital do Brasil é Brasília"
 
 PROIBIDO:
