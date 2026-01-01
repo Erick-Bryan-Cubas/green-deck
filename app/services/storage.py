@@ -1,21 +1,32 @@
-import os
+"""
+Módulo de persistência unificado usando apenas DuckDB.
+
+Todas as operações de armazenamento (analyses, cards, llm_responses, filter_results)
+são feitas exclusivamente no DuckDB para simplicidade e performance.
+"""
 import json
 import duckdb
-import sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
 
 DATA_DIR = Path("data/generator")
 DB_PATH = Path("data/storage.duckdb")
-SQLITE_PATH = Path("data/storage.sqlite3")
+
 
 def _ensure_data_dir():
-    DATA_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def _get_connection():
+    """
+    Retorna conexão DuckDB com todas as tabelas criadas.
+    Esta é a única fonte de persistência do sistema.
+    """
     _ensure_data_dir()
     conn = duckdb.connect(str(DB_PATH))
+    
+    # Tabela de análises de texto
     conn.execute("""
         CREATE TABLE IF NOT EXISTS analyses (
             id VARCHAR PRIMARY KEY,
@@ -25,6 +36,8 @@ def _get_connection():
             metadata TEXT
         )
     """)
+    
+    # Tabela de cards finais (após todos os filtros)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS cards (
             id VARCHAR PRIMARY KEY,
@@ -35,6 +48,8 @@ def _get_connection():
             cards TEXT
         )
     """)
+    
+    # Tabela de respostas brutas do LLM
     conn.execute("""
         CREATE TABLE IF NOT EXISTS llm_responses (
             id VARCHAR PRIMARY KEY,
@@ -47,67 +62,27 @@ def _get_connection():
             analysis_id VARCHAR
         )
     """)
+    
+    # Tabela de resultados de filtragem (cards mantidos/removidos)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS filter_results (
+            id VARCHAR PRIMARY KEY,
+            timestamp TIMESTAMP,
+            cards_id VARCHAR,
+            analysis_id VARCHAR,
+            filter_type VARCHAR,
+            cards_before INTEGER,
+            cards_after INTEGER,
+            kept_cards TEXT,
+            removed_cards TEXT,
+            filter_metadata TEXT
+        )
+    """)
+    
     return conn
-
-def _get_sqlite_connection():
-    _ensure_data_dir()
-    conn = sqlite3.connect(str(SQLITE_PATH))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS analyses (
-            id TEXT PRIMARY KEY,
-            timestamp TEXT,
-            text TEXT,
-            summary TEXT,
-            metadata TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cards (
-            id TEXT PRIMARY KEY,
-            timestamp TEXT,
-            analysis_id TEXT,
-            source_text TEXT,
-            cards_count INTEGER,
-            cards TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS llm_responses (
-            id TEXT PRIMARY KEY,
-            timestamp TEXT,
-            provider TEXT,
-            model TEXT,
-            prompt TEXT,
-            response TEXT,
-            cards_id TEXT,
-            analysis_id TEXT
-        )
-    """)
-    conn.commit()
-    return conn
-
-def _to_toon(data: Dict) -> str:
-    """Converte dict para formato TOON"""
-    lines = []
-    for key, value in data.items():
-        if isinstance(value, list):
-            lines.append(f"@{key}")
-            for item in value:
-                if isinstance(item, dict):
-                    for k, v in item.items():
-                        lines.append(f"  :{k} {v}")
-                    lines.append("")
-                else:
-                    lines.append(f"  {item}")
-        elif isinstance(value, dict):
-            lines.append(f"@{key}")
-            for k, v in value.items():
-                lines.append(f"  :{k} {v}")
-        else:
-            lines.append(f":{key} {value}")
-    return "\n".join(lines)
 
 def save_analysis(text: str, summary: str, metadata: Optional[Dict] = None) -> str:
+    """Salva análise de texto no DuckDB."""
     analysis_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     timestamp = datetime.now()
     
@@ -118,23 +93,11 @@ def save_analysis(text: str, summary: str, metadata: Optional[Dict] = None) -> s
     """, [analysis_id, timestamp, text, summary, json.dumps(metadata or {})])
     conn.close()
     
-    sqlite_conn = _get_sqlite_connection()
-    sqlite_conn.execute("""
-        INSERT INTO analyses (id, timestamp, text, summary, metadata)
-        VALUES (?, ?, ?, ?, ?)
-    """, [analysis_id, timestamp.isoformat(), text, summary, json.dumps(metadata or {})])
-    sqlite_conn.commit()
-    sqlite_conn.close()
-    
-    # Salvar arquivo TOON para compatibilidade
-    record = {"id": analysis_id, "timestamp": timestamp.isoformat(), "text": text, "summary": summary, "metadata": metadata or {}}
-    filepath = DATA_DIR / f"analysis_{analysis_id}.toon"
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(_to_toon(record))
-    
     return analysis_id
 
+
 def save_cards(cards: List[Dict], analysis_id: Optional[str] = None, source_text: Optional[str] = None) -> str:
+    """Salva cards finais (após todos os filtros) no DuckDB."""
     cards_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     timestamp = datetime.now()
     
@@ -144,20 +107,6 @@ def save_cards(cards: List[Dict], analysis_id: Optional[str] = None, source_text
         VALUES (?, ?, ?, ?, ?, ?)
     """, [cards_id, timestamp, analysis_id or "", source_text or "", len(cards), json.dumps(cards)])
     conn.close()
-    
-    sqlite_conn = _get_sqlite_connection()
-    sqlite_conn.execute("""
-        INSERT INTO cards (id, timestamp, analysis_id, source_text, cards_count, cards)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, [cards_id, timestamp.isoformat(), analysis_id or "", source_text or "", len(cards), json.dumps(cards)])
-    sqlite_conn.commit()
-    sqlite_conn.close()
-    
-    # Salvar arquivo TOON para compatibilidade
-    record = {"id": cards_id, "timestamp": timestamp.isoformat(), "analysis_id": analysis_id or "", "source_text": source_text or "", "cards_count": str(len(cards)), "cards": cards}
-    filepath = DATA_DIR / f"cards_{cards_id}.toon"
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(_to_toon(record))
     
     return cards_id
 
@@ -186,18 +135,32 @@ def get_recent_cards(limit: int = 10) -> List[Dict]:
     return [{"id": r[0], "timestamp": r[1].isoformat(), "analysis_id": r[2], "source_text": r[3], "cards_count": str(r[4]), "cards": json.loads(r[5])} for r in result]
 
 def get_stats() -> Dict:
+    """Retorna estatísticas gerais do sistema."""
     conn = _get_connection()
     analyses_count = conn.execute("SELECT COUNT(*) FROM analyses").fetchone()[0]
     cards_count = conn.execute("SELECT SUM(cards_count) FROM cards").fetchone()[0] or 0
+    filter_count = conn.execute("SELECT COUNT(*) FROM filter_results").fetchone()[0]
+    llm_responses_count = conn.execute("SELECT COUNT(*) FROM llm_responses").fetchone()[0]
     conn.close()
     
     return {
         "total_analyses": analyses_count,
         "total_cards": cards_count,
-        "data_dir": str(DATA_DIR.absolute())
+        "total_filter_operations": filter_count,
+        "total_llm_responses": llm_responses_count,
+        "db_path": str(DB_PATH.absolute())
     }
 
-def save_llm_response(provider: str, model: str, prompt: str, response: str, cards_id: Optional[str] = None, analysis_id: Optional[str] = None) -> str:
+
+def save_llm_response(
+    provider: str, 
+    model: str, 
+    prompt: str, 
+    response: str, 
+    cards_id: Optional[str] = None, 
+    analysis_id: Optional[str] = None
+) -> str:
+    """Salva resposta bruta do LLM no DuckDB."""
     response_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     timestamp = datetime.now()
     
@@ -208,12 +171,153 @@ def save_llm_response(provider: str, model: str, prompt: str, response: str, car
     """, [response_id, timestamp, provider, model, prompt, response, cards_id or "", analysis_id or ""])
     conn.close()
     
-    sqlite_conn = _get_sqlite_connection()
-    sqlite_conn.execute("""
-        INSERT INTO llm_responses (id, timestamp, provider, model, prompt, response, cards_id, analysis_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, [response_id, timestamp.isoformat(), provider, model, prompt, response, cards_id or "", analysis_id or ""])
-    sqlite_conn.commit()
-    sqlite_conn.close()
-    
     return response_id
+
+
+def save_filter_result(
+    filter_type: str,
+    cards_before: List[Dict],
+    cards_after: List[Dict],
+    cards_id: Optional[str] = None,
+    analysis_id: Optional[str] = None,
+    metadata: Optional[Dict] = None
+) -> str:
+    """
+    Salva resultado de uma operação de filtragem no DuckDB.
+    
+    Args:
+        filter_type: Tipo do filtro aplicado (ex: 'src_validation', 'llm_relevance', 'quality_score', 'type_filter')
+        cards_before: Lista de cards ANTES do filtro
+        cards_after: Lista de cards APÓS o filtro (mantidos)
+        cards_id: ID do registro de cards final (opcional)
+        analysis_id: ID da análise associada (opcional)
+        metadata: Metadados adicionais (ex: threshold usado, scores, etc.)
+    
+    Returns:
+        ID do registro de filter_result
+    """
+    filter_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = datetime.now()
+    
+    # Identifica cards removidos
+    kept_keys = {_card_key(c) for c in cards_after}
+    removed_cards = [c for c in cards_before if _card_key(c) not in kept_keys]
+    
+    conn = _get_connection()
+    conn.execute("""
+        INSERT INTO filter_results (
+            id, timestamp, cards_id, analysis_id, filter_type, 
+            cards_before, cards_after, kept_cards, removed_cards, filter_metadata
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        filter_id, 
+        timestamp, 
+        cards_id or "", 
+        analysis_id or "", 
+        filter_type,
+        len(cards_before),
+        len(cards_after),
+        json.dumps(cards_after),
+        json.dumps(removed_cards),
+        json.dumps(metadata or {})
+    ])
+    conn.close()
+    
+    return filter_id
+
+
+def _card_key(card: Dict) -> str:
+    """Gera chave única para identificar um card."""
+    front = (card.get("front") or "").strip()
+    back = (card.get("back") or "").strip()
+    return f"{front}||{back}"
+
+
+def get_filter_results(
+    analysis_id: Optional[str] = None, 
+    cards_id: Optional[str] = None,
+    filter_type: Optional[str] = None,
+    limit: int = 50
+) -> List[Dict]:
+    """
+    Retorna histórico de operações de filtragem.
+    
+    Args:
+        analysis_id: Filtra por ID de análise
+        cards_id: Filtra por ID de cards
+        filter_type: Filtra por tipo de filtro
+        limit: Máximo de resultados
+    
+    Returns:
+        Lista de registros de filter_results
+    """
+    conn = _get_connection()
+    
+    query = "SELECT * FROM filter_results WHERE 1=1"
+    params = []
+    
+    if analysis_id:
+        query += " AND analysis_id = ?"
+        params.append(analysis_id)
+    if cards_id:
+        query += " AND cards_id = ?"
+        params.append(cards_id)
+    if filter_type:
+        query += " AND filter_type = ?"
+        params.append(filter_type)
+    
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    
+    result = conn.execute(query, params).fetchall()
+    conn.close()
+    
+    columns = ['id', 'timestamp', 'cards_id', 'analysis_id', 'filter_type', 
+               'cards_before', 'cards_after', 'kept_cards', 'removed_cards', 'filter_metadata']
+    
+    return [
+        {
+            **dict(zip(columns, r)),
+            'timestamp': r[1].isoformat() if hasattr(r[1], 'isoformat') else str(r[1]),
+            'kept_cards': json.loads(r[7]) if r[7] else [],
+            'removed_cards': json.loads(r[8]) if r[8] else [],
+            'filter_metadata': json.loads(r[9]) if r[9] else {}
+        }
+        for r in result
+    ]
+
+
+def get_llm_responses(
+    analysis_id: Optional[str] = None,
+    cards_id: Optional[str] = None,
+    limit: int = 20
+) -> List[Dict]:
+    """Retorna respostas do LLM armazenadas."""
+    conn = _get_connection()
+    
+    query = "SELECT * FROM llm_responses WHERE 1=1"
+    params = []
+    
+    if analysis_id:
+        query += " AND analysis_id = ?"
+        params.append(analysis_id)
+    if cards_id:
+        query += " AND cards_id = ?"
+        params.append(cards_id)
+    
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    
+    result = conn.execute(query, params).fetchall()
+    conn.close()
+    
+    columns = ['id', 'timestamp', 'provider', 'model', 'prompt', 'response', 'cards_id', 'analysis_id']
+    
+    return [
+        {
+            **dict(zip(columns, r)),
+            'timestamp': r[1].isoformat() if hasattr(r[1], 'isoformat') else str(r[1])
+        }
+        for r in result
+    ]
