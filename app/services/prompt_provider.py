@@ -1,8 +1,8 @@
 # app/services/prompt_provider.py
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from string import Template
-from typing import Literal, Optional
+from typing import Literal, Optional, Dict
 
 from app.api.prompts import PROMPTS
 
@@ -14,9 +14,28 @@ def _render(key: str, **kwargs) -> str:
     return tmpl.safe_substitute(**kwargs).strip()
 
 
-@dataclass(frozen=True)
+def _render_custom(template_str: str, **kwargs) -> str:
+    """Renderiza um template customizado."""
+    tmpl = Template(template_str)
+    return tmpl.safe_substitute(**kwargs).strip()
+
+
+@dataclass
 class PromptProvider:
+    """
+    Provedor de prompts com suporte a customização.
+    
+    Uso:
+        provider = PromptProvider()  # Usa prompts padrão
+        provider = PromptProvider(custom_prompts={"system": "...", "guidelines": "..."})  # Customizado
+    """
+    custom_prompts: Dict[str, str] = field(default_factory=dict)
+    
     def flashcards_system(self, card_type: CardType) -> str:
+        # Se há prompt customizado, usa ele
+        if self.custom_prompts.get("system"):
+            return self.custom_prompts["system"]
+        
         if card_type == "cloze":
             return PROMPTS["FLASHCARDS_SYSTEM_CLOZE"]
         return PROMPTS["FLASHCARDS_SYSTEM_PTBR"]
@@ -35,6 +54,12 @@ class PromptProvider:
             "both": PROMPTS["FLASHCARDS_FORMAT_BOTH"],
         }[card_type]
 
+    def flashcards_guidelines(self) -> str:
+        """Retorna as diretrizes de criação de cards (customizável)."""
+        if self.custom_prompts.get("guidelines"):
+            return self.custom_prompts["guidelines"]
+        return PROMPTS["FLASHCARDS_GUIDELINES"].strip()
+
     def build_flashcards_generation_prompt(
         self,
         *,
@@ -49,9 +74,23 @@ class PromptProvider:
         if (ctx or "").strip():
             ctx_block = f"CONTEXTO GERAL (apenas para entender o assunto - NÃO crie cards sobre informações que estão APENAS aqui):\n{ctx.strip()}"
 
+        # Se há prompt de geração customizado, usa ele
+        if self.custom_prompts.get("generation"):
+            return _render_custom(
+                self.custom_prompts["generation"],
+                guidelines=self.flashcards_guidelines(),
+                src=src,
+                ctx_block=ctx_block,
+                checklist_block=(checklist_block or "").strip(),
+                target_min=str(target_min),
+                target_max=str(target_max),
+                type_instruction=self.flashcards_type_instruction(card_type),
+                format_block=self.flashcards_format_block(card_type),
+            )
+
         return _render(
             "FLASHCARDS_GENERATION",
-            guidelines=PROMPTS["FLASHCARDS_GUIDELINES"].strip(),
+            guidelines=self.flashcards_guidelines(),
             src=src,
             ctx_block=ctx_block,
             checklist_block=(checklist_block or "").strip(),
@@ -77,7 +116,7 @@ class PromptProvider:
 
         return _render(
             "FLASHCARDS_REPAIR",
-            guidelines=PROMPTS["FLASHCARDS_GUIDELINES"].strip(),
+            guidelines=self.flashcards_guidelines(),
             src=src,
             ctx_block=ctx_block,
             checklist_block=(checklist_block or "").strip(),
@@ -112,7 +151,59 @@ class PromptProvider:
 
     def text_analysis_system(self) -> str:
         return PROMPTS["TEXT_ANALYSIS_SYSTEM"]
+    
+    def with_custom_prompts(
+        self,
+        system: Optional[str] = None,
+        generation: Optional[str] = None,
+        guidelines: Optional[str] = None,
+    ) -> "PromptProvider":
+        """
+        Retorna um novo PromptProvider com prompts customizados.
+        
+        Args:
+            system: Prompt de sistema customizado (opcional)
+            generation: Template de geração customizado (opcional)
+            guidelines: Diretrizes customizadas (opcional)
+            
+        Returns:
+            Novo PromptProvider com os prompts customizados
+        """
+        custom = {}
+        if system:
+            custom["system"] = system
+        if generation:
+            custom["generation"] = generation
+        if guidelines:
+            custom["guidelines"] = guidelines
+        
+        return PromptProvider(custom_prompts=custom)
 
 
-def get_prompt_provider() -> PromptProvider:
+def get_prompt_provider(
+    custom_system: Optional[str] = None,
+    custom_generation: Optional[str] = None,
+    custom_guidelines: Optional[str] = None,
+) -> PromptProvider:
+    """
+    Factory para criar PromptProvider com suporte a customização.
+    
+    Args:
+        custom_system: Prompt de sistema customizado (opcional)
+        custom_generation: Template de geração customizado (opcional)
+        custom_guidelines: Diretrizes customizadas (opcional)
+        
+    Returns:
+        PromptProvider configurado
+    """
+    if custom_system or custom_generation or custom_guidelines:
+        custom = {}
+        if custom_system:
+            custom["system"] = custom_system
+        if custom_generation:
+            custom["generation"] = custom_generation
+        if custom_guidelines:
+            custom["guidelines"] = custom_guidelines
+        return PromptProvider(custom_prompts=custom)
+    
     return PromptProvider()

@@ -366,11 +366,17 @@ async function generateCards(text, deckOptions = "", textContext = "") {
 }
 
 /**
- * Streaming version: requests the server streaming endpoint and invokes onProgress for stage events.
- * @param {string} text
- * @param {string} deckOptions
- * @param {string} textContext
- * @param {(event: {stage:string, data:object})=>void} onProgress
+ * Gera flashcards usando streaming SSE
+ * @param {string} text - Texto fonte para gerar cards
+ * @param {string} deckOptions - Deck de destino
+ * @param {string} textContext - Contexto adicional
+ * @param {string} cardType - Tipo de card (basic, cloze, both)
+ * @param {string} model - Modelo LLM para geração
+ * @param {(event: {stage:string, data:object})=>void} onProgress - Callback de progresso
+ * @param {string} analysisId - ID da análise
+ * @param {string} validationModel - Modelo para validação
+ * @param {string} analysisModel - Modelo para análise
+ * @param {Object} customPrompts - Prompts personalizados (opcional)
  * @returns {Promise<Array>} cards
  */
 async function generateCardsWithStream(
@@ -382,28 +388,45 @@ async function generateCardsWithStream(
   onProgress = null,
   analysisId = null,
   validationModel = null,
-  analysisModel = null
+  analysisModel = null,
+  customPrompts = null
 ) {
   const keys = getStoredApiKeys();
+
+  // Monta o body com campos opcionais de prompts customizados
+  const requestBody = {
+    text: truncateText(text),
+    textContext,
+    deckOptions,
+    cardType,
+    model,
+    validationModel: validationModel || model,
+    analysisModel: analysisModel || model,
+    analysisId,
+    anthropicApiKey: keys.anthropicApiKey || null,
+    openaiApiKey: keys.openaiApiKey || null,
+    perplexityApiKey: keys.perplexityApiKey || null,
+  };
+
+  // Adiciona prompts customizados se fornecidos
+  if (customPrompts) {
+    if (customPrompts.systemPrompt) {
+      requestBody.customSystemPrompt = customPrompts.systemPrompt;
+    }
+    if (customPrompts.generationPrompt) {
+      requestBody.customGenerationPrompt = customPrompts.generationPrompt;
+    }
+    if (customPrompts.guidelines) {
+      requestBody.customGuidelines = customPrompts.guidelines;
+    }
+  }
 
   let response;
   try {
     response = await fetch("/api/generate-cards-stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: truncateText(text),
-        textContext,
-        deckOptions,
-        cardType,
-        model,
-        validationModel: validationModel || model,  // Usa modelo de geração como fallback
-        analysisModel: analysisModel || model,       // Usa modelo de geração como fallback
-        analysisId,
-        anthropicApiKey: keys.anthropicApiKey || null,
-        openaiApiKey: keys.openaiApiKey || null,
-        perplexityApiKey: keys.perplexityApiKey || null,
-      }),
+      body: JSON.stringify(requestBody),
     });
   } catch (err) {
     throw new Error("Network error: " + err.message);
@@ -651,6 +674,23 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned") {
   }
 }
 
+/**
+ * Busca os prompts padrão do servidor para exibição/edição no frontend
+ * @returns {Promise<Object>} Objeto com prompts organizados por categoria
+ */
+async function getDefaultPrompts() {
+  try {
+    const response = await fetch("/api/prompts/defaults");
+    if (!response.ok) {
+      throw new Error("Failed to fetch default prompts");
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Error fetching default prompts:", error);
+    throw error;
+  }
+}
+
 export {
   generateCards,
   generateCardsWithStream,
@@ -664,4 +704,5 @@ export {
   extractDocumentPreview,
   getPdfPagesPreview,
   extractSelectedPages,
+  getDefaultPrompts,
 };

@@ -29,6 +29,7 @@ import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import PdfUpload from '@/components/PdfUpload.vue'
+import PromptEditor from '@/components/PromptEditor.vue'
 import { useRouter } from 'vue-router'
 
 // Services
@@ -1207,6 +1208,14 @@ const cardTypeOptions = ref([
   { label: 'Básicos + Cloze', value: 'both', description: 'Gerar ambos os tipos' }
 ])
 
+// Prompt Editor
+const promptEditorVisible = ref(false)
+const customPrompts = ref(null)
+
+function onCustomPromptsUpdate(prompts) {
+  customPrompts.value = prompts
+}
+
 // Model selection
 const selectedModel = ref('qwen-flashcard')           // Modelo para geração de cards
 const selectedValidationModel = ref('qwen-flashcard') // Modelo para validação de qualidade
@@ -1833,7 +1842,8 @@ async function generateCardsFromSelection() {
       },
       currentAnalysisId.value,
       selectedValidationModel.value,
-      selectedAnalysisModel.value
+      selectedAnalysisModel.value,
+      customPrompts.value
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')
@@ -2021,7 +2031,8 @@ async function editGenerateCardConfirm() {
       },
       currentAnalysisId.value,
       selectedValidationModel.value,
-      selectedAnalysisModel.value
+      selectedAnalysisModel.value,
+      customPrompts.value
     )
     
     newCards.forEach(card => {
@@ -3053,6 +3064,16 @@ onBeforeUnmount(() => {
                 </template>
               </Select>
 
+              <!-- Prompt Editor Button -->
+              <Button
+                icon="pi pi-sliders-h"
+                class="p-button-text"
+                :disabled="generating || isAnalyzing"
+                :class="{ 'p-button-warning': customPrompts !== null }"
+                title="Editar prompts personalizados"
+                @click="promptEditorVisible = true"
+              />
+
               <Button
                 icon="pi pi-bolt"
                 label="Create Cards"
@@ -3639,6 +3660,22 @@ onBeforeUnmount(() => {
         </SplitterPanel>
       </Splitter>
     </div>
+
+    <!-- PROMPT EDITOR DIALOG -->
+    <Dialog
+      v-model:visible="promptEditorVisible"
+      header="Personalizar Prompts"
+      modal
+      appendTo="body"
+      :draggable="false"
+      class="modern-dialog"
+      :style="{ width: 'min(900px, 96vw)', maxHeight: '90vh' }"
+    >
+      <PromptEditor
+        :cardType="cardType"
+        @update:customPrompts="onCustomPromptsUpdate"
+      />
+    </Dialog>
 
     <!-- EDIT DIALOG -->
     <Dialog
