@@ -49,7 +49,7 @@ def _get_connection():
         )
     """)
     
-    # Tabela de respostas brutas do LLM
+    # Tabela de respostas brutas do LLM (com campos expandidos para debug)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS llm_responses (
             id VARCHAR PRIMARY KEY,
@@ -59,7 +59,57 @@ def _get_connection():
             prompt TEXT,
             response TEXT,
             cards_id VARCHAR,
-            analysis_id VARCHAR
+            analysis_id VARCHAR,
+            system_prompt TEXT,
+            card_type VARCHAR,
+            prompt_length INTEGER,
+            response_length INTEGER,
+            source_text_length INTEGER,
+            options TEXT
+        )
+    """)
+    
+    # Adiciona novas colunas se não existirem (para DBs existentes)
+    try:
+        conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS system_prompt TEXT")
+        conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS card_type VARCHAR")
+        conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS prompt_length INTEGER")
+        conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS response_length INTEGER")
+        conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS source_text_length INTEGER")
+        conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS options TEXT")
+    except:
+        pass  # Colunas já existem
+    
+    # Tabela de requests de geração (entrada do usuário)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS generation_requests (
+            id VARCHAR PRIMARY KEY,
+            timestamp TIMESTAMP,
+            analysis_id VARCHAR,
+            source_text TEXT,
+            context_text TEXT,
+            card_type VARCHAR,
+            model VARCHAR,
+            provider VARCHAR,
+            source_type VARCHAR,
+            word_count INTEGER,
+            target_min INTEGER,
+            target_max INTEGER
+        )
+    """)
+    
+    # Tabela de pipeline de geração (rastreia cada etapa)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS generation_pipeline (
+            id VARCHAR PRIMARY KEY,
+            timestamp TIMESTAMP,
+            request_id VARCHAR,
+            analysis_id VARCHAR,
+            stage VARCHAR,
+            cards_in INTEGER,
+            cards_out INTEGER,
+            duration_ms INTEGER,
+            details TEXT
         )
     """)
     
@@ -158,20 +208,93 @@ def save_llm_response(
     prompt: str, 
     response: str, 
     cards_id: Optional[str] = None, 
-    analysis_id: Optional[str] = None
+    analysis_id: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    card_type: Optional[str] = None,
+    source_text_length: Optional[int] = None,
+    options: Optional[Dict] = None
 ) -> str:
-    """Salva resposta bruta do LLM no DuckDB."""
+    """Salva resposta bruta do LLM no DuckDB com campos expandidos para debug."""
     response_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     timestamp = datetime.now()
     
     conn = _get_connection()
     conn.execute("""
-        INSERT INTO llm_responses (id, timestamp, provider, model, prompt, response, cards_id, analysis_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, [response_id, timestamp, provider, model, prompt, response, cards_id or "", analysis_id or ""])
+        INSERT INTO llm_responses (
+            id, timestamp, provider, model, prompt, response, cards_id, analysis_id,
+            system_prompt, card_type, prompt_length, response_length, source_text_length, options
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        response_id, timestamp, provider, model, prompt, response, 
+        cards_id or "", analysis_id or "",
+        system_prompt or "", card_type or "",
+        len(prompt), len(response), source_text_length or 0,
+        json.dumps(options or {})
+    ])
     conn.close()
     
     return response_id
+
+
+def save_generation_request(
+    source_text: str,
+    context_text: str,
+    card_type: str,
+    model: str,
+    provider: str,
+    source_type: str,
+    word_count: int,
+    target_min: int,
+    target_max: int,
+    analysis_id: Optional[str] = None
+) -> str:
+    """Salva request de geração de cards (entrada do usuário)."""
+    request_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = datetime.now()
+    
+    conn = _get_connection()
+    conn.execute("""
+        INSERT INTO generation_requests (
+            id, timestamp, analysis_id, source_text, context_text, card_type,
+            model, provider, source_type, word_count, target_min, target_max
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        request_id, timestamp, analysis_id or "", source_text, context_text,
+        card_type, model, provider, source_type, word_count, target_min, target_max
+    ])
+    conn.close()
+    
+    return request_id
+
+
+def save_pipeline_stage(
+    request_id: str,
+    stage: str,
+    cards_in: int,
+    cards_out: int,
+    duration_ms: int = 0,
+    details: Optional[Dict] = None,
+    analysis_id: Optional[str] = None
+) -> str:
+    """Salva uma etapa do pipeline de geração para rastreamento."""
+    stage_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = datetime.now()
+    
+    conn = _get_connection()
+    conn.execute("""
+        INSERT INTO generation_pipeline (
+            id, timestamp, request_id, analysis_id, stage, cards_in, cards_out, duration_ms, details
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        stage_id, timestamp, request_id, analysis_id or "", stage,
+        cards_in, cards_out, duration_ms, json.dumps(details or {})
+    ])
+    conn.close()
+    
+    return stage_id
 
 
 def save_filter_result(
