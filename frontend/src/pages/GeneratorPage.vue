@@ -2395,7 +2395,8 @@ onBeforeUnmount(() => {
       'reader-kindle': immersiveReader && readerTheme === 'kindle',
       'reader-sepia': immersiveReader && readerTheme === 'sepia',
       'reader-dark': immersiveReader && readerTheme === 'dark',
-      'controls-hidden': immersiveReader && !readerControlsVisible
+      'controls-hidden': immersiveReader && !readerControlsVisible,
+      'sidebar-expanded': sidebarRef?.sidebarExpanded
     }"
     @mousemove="resetControlsTimer"
   >
@@ -3496,7 +3497,7 @@ onBeforeUnmount(() => {
     0 0 0 1px rgba(255, 255, 255, 0.03) inset;
 }
 
-:deep(.sidebar.expanded) ~ .app-shell {
+.app-shell.sidebar-expanded {
   margin-left: 324px;
 }
 
