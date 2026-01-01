@@ -1,12 +1,14 @@
 <!-- frontend/src/components/PdfUpload.vue -->
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import ProgressBar from 'primevue/progressbar'
 import Tag from 'primevue/tag'
 import Checkbox from 'primevue/checkbox'
+import Skeleton from 'primevue/skeleton'
 import { useToast } from 'primevue/usetoast'
+import { VuePDF, usePDF } from '@tato30/vue-pdf'
 import { 
   getDocumentExtractionStatus, 
   getPdfPagesPreview,
@@ -34,15 +36,33 @@ const dragOver = ref(false)
 // File input ref
 const fileInputRef = ref(null)
 
+// PDF visual rendering
+const pdfSource = ref(null)
+const pdfData = ref(null)
+const totalPdfPages = ref(0)
+const loadedThumbnails = ref(new Set())
+const thumbnailScale = ref(0.5)
+
+// Lazy loading with Intersection Observer
+const visiblePages = ref(new Set())
+const pagesGridRef = ref(null)
+let intersectionObserver = null
+
 // ============================================================
 // Computed
 // ============================================================
 const hasFile = computed(() => !!selectedFile.value)
-const hasPages = computed(() => pagesPreview.value?.pages?.length > 0)
+const hasPages = computed(() => totalPdfPages.value > 0)
 const hasResult = computed(() => !!extractedResult.value?.text)
+
+// Array de números de páginas para iterar
+const pageNumbers = computed(() => {
+  if (!totalPdfPages.value) return []
+  return Array.from({ length: totalPdfPages.value }, (_, i) => i + 1)
+})
 const allPagesSelected = computed(() => {
-  if (!pagesPreview.value?.pages?.length) return false
-  return selectedPages.value.length === pagesPreview.value.pages.length
+  if (!totalPdfPages.value) return false
+  return selectedPages.value.length === totalPdfPages.value
 })
 
 const fileInfo = computed(() => {
@@ -58,12 +78,6 @@ const fileInfo = computed(() => {
 })
 
 const selectedPagesCount = computed(() => selectedPages.value.length)
-const totalWordsSelected = computed(() => {
-  if (!pagesPreview.value?.pages) return 0
-  return pagesPreview.value.pages
-    .filter(p => selectedPages.value.includes(p.page_number))
-    .reduce((sum, p) => sum + p.word_count, 0)
-})
 
 // ============================================================
 // Methods
@@ -94,6 +108,12 @@ function openDialog() {
   selectedFile.value = null
   pagesPreview.value = null
   selectedPages.value = []
+  pdfSource.value = null
+  pdfData.value = null
+  totalPdfPages.value = 0
+  loadedThumbnails.value = new Set()
+  visiblePages.value = new Set()
+  cleanupIntersectionObserver()
   checkServiceStatus()
 }
 
@@ -105,6 +125,12 @@ function closeDialog() {
   extractedResult.value = null
   extractionError.value = null
   currentStep.value = 'upload'
+  pdfSource.value = null
+  pdfData.value = null
+  totalPdfPages.value = 0
+  loadedThumbnails.value = new Set()
+  visiblePages.value = new Set()
+  cleanupIntersectionObserver()
 }
 
 function triggerFileInput() {
@@ -172,25 +198,53 @@ async function loadPagesPreview() {
   if (!selectedFile.value) return
 
   isLoading.value = true
-  loadingMessage.value = 'Analisando páginas do PDF...'
+  loadingMessage.value = 'Carregando preview do PDF...'
   extractionError.value = null
 
   try {
-    const result = await getPdfPagesPreview(selectedFile.value)
+    // Converter File para ArrayBuffer para o vue-pdf
+    const arrayBuffer = await selectedFile.value.arrayBuffer()
+    
+    // Criar URL do blob para o PDF
+    const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
+    const blobUrl = URL.createObjectURL(blob)
+    pdfSource.value = blobUrl
+    
+    // Usar usePDF para obter informações do PDF
+    const { pdf, pages } = usePDF(blobUrl)
+    
+    // Aguardar o PDF carregar
+    await new Promise((resolve, reject) => {
+      const checkLoaded = setInterval(() => {
+        if (pages.value && pdf.value) {
+          clearInterval(checkLoaded)
+          pdfData.value = pdf.value
+          totalPdfPages.value = pages.value
+          // Seleciona todas as páginas por padrão
+          selectedPages.value = Array.from({ length: pages.value }, (_, i) => i + 1)
+          resolve()
+        }
+      }, 100)
+      
+      // Timeout após 30 segundos
+      setTimeout(() => {
+        clearInterval(checkLoaded)
+        if (!pages.value) {
+          reject(new Error('Timeout ao carregar PDF'))
+        }
+      }, 30000)
+    })
 
-    if (!result.success) {
-      throw new Error(result.error || 'Falha ao obter preview')
-    }
-
-    pagesPreview.value = result
-    // Seleciona todas as páginas por padrão
-    selectedPages.value = result.pages.map(p => p.page_number)
     currentStep.value = 'pages'
+    
+    // Inicializar lazy loading após o DOM atualizar
+    await nextTick()
+    setupIntersectionObserver()
 
     toast.add({
       severity: 'info',
-      summary: 'PDF analisado',
-      detail: `${result.total_pages} páginas encontradas`,
+      summary: 'PDF carregado',
+      detail: `${totalPdfPages.value} páginas encontradas`,
       life: 3000
     })
   } catch (error) {
@@ -198,7 +252,7 @@ async function loadPagesPreview() {
     extractionError.value = error.message
     toast.add({
       severity: 'error',
-      summary: 'Erro ao analisar PDF',
+      summary: 'Erro ao carregar PDF',
       detail: error.message,
       life: 5000
     })
@@ -207,6 +261,67 @@ async function loadPagesPreview() {
     isLoading.value = false
     loadingMessage.value = ''
   }
+}
+
+// ============================================================
+// Lazy Loading com Intersection Observer
+// ============================================================
+function setupIntersectionObserver() {
+  // Limpar observer anterior se existir
+  cleanupIntersectionObserver()
+  
+  // Carregar as primeiras páginas imediatamente (viewport inicial)
+  const initialVisibleCount = Math.min(8, totalPdfPages.value)
+  for (let i = 1; i <= initialVisibleCount; i++) {
+    visiblePages.value.add(i)
+  }
+  
+  // Criar observer para lazy loading das demais
+  intersectionObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const pageNum = parseInt(entry.target.dataset.page, 10)
+        if (entry.isIntersecting && !visiblePages.value.has(pageNum)) {
+          visiblePages.value.add(pageNum)
+        }
+      })
+    },
+    {
+      root: pagesGridRef.value,
+      rootMargin: '100px', // Pre-load 100px antes de entrar na viewport
+      threshold: 0.1
+    }
+  )
+  
+  // Observar todos os placeholders de página
+  nextTick(() => {
+    const pageCards = document.querySelectorAll('.page-card[data-page]')
+    pageCards.forEach((card) => {
+      intersectionObserver.observe(card)
+    })
+  })
+}
+
+function cleanupIntersectionObserver() {
+  if (intersectionObserver) {
+    intersectionObserver.disconnect()
+    intersectionObserver = null
+  }
+}
+
+// Limpar observer ao desmontar componente
+onBeforeUnmount(() => {
+  cleanupIntersectionObserver()
+})
+
+// Handler para quando thumbnail carrega
+function onThumbnailLoaded(pageNum) {
+  loadedThumbnails.value.add(pageNum)
+}
+
+// Handler para erro no thumbnail
+function onThumbnailError(pageNum, error) {
+  console.error(`Erro ao carregar thumbnail da página ${pageNum}:`, error)
 }
 
 function togglePageSelection(pageNumber) {
@@ -222,7 +337,7 @@ function toggleAllPages() {
   if (allPagesSelected.value) {
     selectedPages.value = []
   } else {
-    selectedPages.value = pagesPreview.value.pages.map(p => p.page_number)
+    selectedPages.value = Array.from({ length: totalPdfPages.value }, (_, i) => i + 1)
   }
 }
 
@@ -294,6 +409,12 @@ function goBackToUpload() {
   currentStep.value = 'upload'
   pagesPreview.value = null
   selectedPages.value = []
+  pdfSource.value = null
+  pdfData.value = null
+  totalPdfPages.value = 0
+  loadedThumbnails.value = new Set()
+  visiblePages.value = new Set()
+  cleanupIntersectionObserver()
 }
 
 function clearFile() {
@@ -302,6 +423,12 @@ function clearFile() {
   extractionError.value = null
   pagesPreview.value = null
   selectedPages.value = []
+  pdfSource.value = null
+  pdfData.value = null
+  totalPdfPages.value = 0
+  loadedThumbnails.value = new Set()
+  visiblePages.value = new Set()
+  cleanupIntersectionObserver()
 }
 
 // Expose methods for parent component
@@ -329,7 +456,7 @@ defineExpose({
     :header="currentStep === 'upload' ? 'Importar PDF' : currentStep === 'pages' ? 'Selecionar Páginas' : 'Resultado'"
     :modal="true"
     :closable="!isLoading"
-    :style="{ width: currentStep === 'pages' ? '700px' : '550px' }"
+    :style="{ width: currentStep === 'pages' ? '90vw' : '550px', maxWidth: currentStep === 'pages' ? '1200px' : '550px' }"
     class="pdf-upload-dialog"
   >
     <!-- Service Status Warning -->
@@ -409,7 +536,7 @@ defineExpose({
     </template>
 
     <!-- ============================================== -->
-    <!-- STEP 2: Select Pages -->
+    <!-- STEP 2: Select Pages (Visual Thumbnails) -->
     <!-- ============================================== -->
     <template v-if="currentStep === 'pages' && hasPages">
       <div class="pages-selection">
@@ -417,13 +544,10 @@ defineExpose({
         <div class="pages-header">
           <div class="pages-info">
             <Tag severity="info">
-              <i class="pi pi-file mr-1" /> {{ pagesPreview.total_pages }} páginas
+              <i class="pi pi-file mr-1" /> {{ totalPdfPages }} páginas
             </Tag>
             <Tag :severity="selectedPagesCount > 0 ? 'success' : 'secondary'">
               <i class="pi pi-check-square mr-1" /> {{ selectedPagesCount }} selecionadas
-            </Tag>
-            <Tag v-if="totalWordsSelected > 0" severity="secondary">
-              <i class="pi pi-align-left mr-1" /> ~{{ totalWordsSelected }} palavras
             </Tag>
           </div>
           <Button
@@ -436,29 +560,50 @@ defineExpose({
           />
         </div>
 
-        <!-- Pages Grid -->
-        <div class="pages-grid">
+        <!-- Pages Grid with Visual Thumbnails -->
+        <div ref="pagesGridRef" class="pages-grid">
           <div
-            v-for="page in pagesPreview.pages"
-            :key="page.page_number"
+            v-for="pageNum in pageNumbers"
+            :key="pageNum"
+            :data-page="pageNum"
             class="page-card"
-            :class="{ 'selected': selectedPages.includes(page.page_number) }"
-            @click="togglePageSelection(page.page_number)"
+            :class="{ 'selected': selectedPages.includes(pageNum) }"
+            @click="togglePageSelection(pageNum)"
           >
-            <div class="page-header">
+            <!-- Checkbox overlay -->
+            <div class="page-checkbox-overlay">
               <Checkbox
-                :modelValue="selectedPages.includes(page.page_number)"
+                :modelValue="selectedPages.includes(pageNum)"
                 :binary="true"
                 @click.stop
-                @update:modelValue="togglePageSelection(page.page_number)"
+                @update:modelValue="togglePageSelection(pageNum)"
               />
-              <span class="page-number">Página {{ page.page_number }}</span>
-              <Tag severity="secondary" class="page-words">
-                {{ page.word_count }} palavras
-              </Tag>
             </div>
-            <div class="page-preview">
-              {{ page.preview || 'Sem conteúdo de texto' }}
+            
+            <!-- Visual PDF Thumbnail (Lazy Loaded) -->
+            <div class="thumbnail-container">
+              <!-- Skeleton placeholder enquanto não carregou -->
+              <Skeleton 
+                v-if="!loadedThumbnails.has(pageNum)" 
+                width="100%" 
+                height="180px" 
+                class="thumbnail-skeleton"
+              />
+              <!-- Renderizar VuePDF apenas quando visível (lazy loading) -->
+              <VuePDF
+                v-if="pdfData && visiblePages.has(pageNum)"
+                :pdf="pdfData"
+                :page="pageNum"
+                :scale="thumbnailScale"
+                class="pdf-thumbnail"
+                @loaded="onThumbnailLoaded(pageNum)"
+                @error="(e) => onThumbnailError(pageNum, e)"
+              />
+            </div>
+            
+            <!-- Page number badge -->
+            <div class="page-number-badge">
+              {{ pageNum }}
             </div>
           </div>
         </div>
@@ -757,64 +902,103 @@ defineExpose({
   flex-wrap: wrap;
 }
 
+/* Pages Grid - Visual Thumbnails */
 .pages-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 0.75rem;
-  max-height: 400px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+  max-height: 60vh;
   overflow-y: auto;
-  padding: 0.25rem;
+  padding: 0.5rem;
 }
 
 .page-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border: 2px solid var(--surface-200);
+  border: 3px solid var(--surface-200);
   border-radius: 8px;
-  background: var(--surface-50);
+  background: var(--surface-0);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 .page-card:hover {
   border-color: var(--primary-300);
-  background: var(--surface-100);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
 }
 
 .page-card.selected {
   border-color: var(--primary-500);
-  background: var(--primary-50);
+  box-shadow: 0 0 0 3px var(--primary-100), 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
-.page-header {
+.page-card.selected .page-checkbox-overlay {
+  opacity: 1;
+}
+
+/* Checkbox overlay */
+.page-checkbox-overlay {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 4px;
+  padding: 2px;
+}
+
+.page-card:hover .page-checkbox-overlay {
+  opacity: 1;
+}
+
+/* Thumbnail container */
+.thumbnail-container {
+  position: relative;
+  width: 100%;
+  min-height: 180px;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-}
-
-.page-number {
-  font-weight: 600;
-  font-size: 0.875rem;
-  color: var(--text-color);
-}
-
-.page-words {
-  margin-left: auto;
-  font-size: 0.7rem;
-}
-
-.page-preview {
-  font-size: 0.75rem;
-  color: var(--text-color-secondary);
-  line-height: 1.4;
-  max-height: 60px;
+  justify-content: center;
+  background: var(--surface-100);
   overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+}
+
+.thumbnail-skeleton {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.pdf-thumbnail {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.pdf-thumbnail :deep(canvas) {
+  width: 100% !important;
+  height: auto !important;
+  display: block;
+}
+
+/* Page number badge */
+.page-number-badge {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  background: rgba(0, 0, 0, 0.75);
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  z-index: 5;
 }
 
 /* Result */

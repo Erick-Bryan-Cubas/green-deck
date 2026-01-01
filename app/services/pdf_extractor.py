@@ -92,8 +92,10 @@ class PDFExtractor:
     
     def __init__(self):
         self._docling_available = False
+        self._pypdf_available = False
         self._converter = None
         self._check_docling()
+        self._check_pypdf()
     
     def _check_docling(self):
         """Verifica se Docling está disponível."""
@@ -107,12 +109,76 @@ class PDFExtractor:
                 "Docling não instalado. Instale com: pip install docling"
             )
     
+    def _check_pypdf(self):
+        """Verifica se pypdf está disponível para manipulação de páginas."""
+        try:
+            from pypdf import PdfReader, PdfWriter  # noqa: F401
+            self._pypdf_available = True
+            logger.info("pypdf disponível para manipulação de páginas")
+        except ImportError:
+            self._pypdf_available = False
+            logger.warning(
+                "pypdf não instalado. Instale com: pip install pypdf"
+            )
+    
     def _get_converter(self):
         """Lazy initialization do converter Docling."""
         if self._converter is None and self._docling_available:
             from docling.document_converter import DocumentConverter  # noqa: F811
             self._converter = DocumentConverter()
         return self._converter
+    
+    def _extract_pages_from_pdf(
+        self, 
+        pdf_bytes: bytes, 
+        page_numbers: List[int]
+    ) -> bytes:
+        """
+        Cria um novo PDF contendo apenas as páginas selecionadas.
+        
+        Args:
+            pdf_bytes: Bytes do PDF original
+            page_numbers: Lista de números de páginas (1-indexed)
+        
+        Returns:
+            Bytes do novo PDF com apenas as páginas selecionadas
+        """
+        from pypdf import PdfReader, PdfWriter
+        from io import BytesIO
+        
+        # Lê o PDF original
+        reader = PdfReader(BytesIO(pdf_bytes))
+        writer = PdfWriter()
+        
+        total_pages = len(reader.pages)
+        
+        # Adiciona apenas as páginas selecionadas (convertendo para 0-indexed)
+        for page_num in sorted(page_numbers):
+            if 1 <= page_num <= total_pages:
+                writer.add_page(reader.pages[page_num - 1])
+        
+        # Escreve o novo PDF em memória
+        output = BytesIO()
+        writer.write(output)
+        output.seek(0)
+        
+        return output.read()
+    
+    def _get_pdf_page_count(self, pdf_bytes: bytes) -> int:
+        """
+        Obtém o número total de páginas do PDF.
+        
+        Args:
+            pdf_bytes: Bytes do PDF
+        
+        Returns:
+            Número total de páginas
+        """
+        from pypdf import PdfReader
+        from io import BytesIO
+        
+        reader = PdfReader(BytesIO(pdf_bytes))
+        return len(reader.pages)
     
     def is_available(self) -> bool:
         """Retorna True se Docling está disponível."""
@@ -347,6 +413,9 @@ class PDFExtractor:
         """
         Obtém preview do PDF mostrando informações de cada página.
         
+        Usa pypdf para obter contagem de páginas e preview de texto rápido,
+        sem precisar processar com Docling (que é mais lento).
+        
         Args:
             pdf_bytes: Conteúdo binário do PDF
             filename: Nome do arquivo
@@ -355,74 +424,44 @@ class PDFExtractor:
         Returns:
             PdfPreviewResult com informações de cada página
         """
-        if not self._docling_available:
+        if not self._pypdf_available:
             return PdfPreviewResult(
                 total_pages=0,
                 pages=[],
                 filename=filename,
                 file_size=len(pdf_bytes),
-                error="Docling não está instalado. Execute: pip install docling"
+                error="pypdf não está instalado. Execute: pip install pypdf"
             )
         
-        # Salva bytes em arquivo temporário
-        with tempfile.NamedTemporaryFile(
-            suffix=".pdf", 
-            delete=False,
-            prefix="spaced_rep_preview_"
-        ) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
-        
         try:
-            # Usa pypdfium2 para obter preview rápido por página
-            try:
-                import pypdfium2 as pdfium
+            from pypdf import PdfReader
+            from io import BytesIO
+            
+            reader = PdfReader(BytesIO(pdf_bytes))
+            total_pages = len(reader.pages)
+            
+            pages_info = []
+            for i, page in enumerate(reader.pages):
+                # Extrai texto da página
+                page_text = page.extract_text() or ""
                 
-                pdf = pdfium.PdfDocument(tmp_path)
-                total_pages = len(pdf)
+                word_count = len(page_text.split()) if page_text else 0
+                preview = page_text[:preview_chars].strip() if page_text else ""
+                if len(page_text) > preview_chars:
+                    preview += "..."
                 
-                pages_info = []
-                for i in range(total_pages):
-                    page = pdf[i]
-                    text_page = page.get_textpage()
-                    page_text = text_page.get_text_range()
-                    
-                    word_count = len(page_text.split()) if page_text else 0
-                    preview = page_text[:preview_chars].strip() if page_text else ""
-                    if len(page_text) > preview_chars:
-                        preview += "..."
-                    
-                    pages_info.append(PageInfo(
-                        page_number=i + 1,
-                        word_count=word_count,
-                        preview=preview,
-                    ))
-                
-                pdf.close()
-                
-                return PdfPreviewResult(
-                    total_pages=total_pages,
-                    pages=pages_info,
-                    filename=filename,
-                    file_size=len(pdf_bytes),
-                )
-                
-            except ImportError:
-                # Fallback: usar Docling para contagem de páginas
-                converter = self._get_converter()
-                result = converter.convert(tmp_path)
-                
-                total_pages = 0
-                if hasattr(result.document, 'pages'):
-                    total_pages = len(result.document.pages)
-                
-                # Sem pypdfium2, retorna apenas contagem sem preview detalhado
-                return PdfPreviewResult(
-                    total_pages=total_pages,
-                    pages=[PageInfo(page_number=i+1, word_count=0, preview="") for i in range(total_pages)],
-                    filename=filename,
-                    file_size=len(pdf_bytes),
-                )
+                pages_info.append(PageInfo(
+                    page_number=i + 1,
+                    word_count=word_count,
+                    preview=preview,
+                ))
+            
+            return PdfPreviewResult(
+                total_pages=total_pages,
+                pages=pages_info,
+                filename=filename,
+                file_size=len(pdf_bytes),
+            )
                 
         except Exception as e:
             logger.exception("Erro ao obter preview do PDF: %s", e)
@@ -433,11 +472,6 @@ class PDFExtractor:
                 file_size=len(pdf_bytes),
                 error=f"Erro ao obter preview: {str(e)}"
             )
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
     
     async def extract_pages(
         self,
@@ -447,7 +481,11 @@ class PDFExtractor:
         quality: ExtractionQuality = ExtractionQuality.CLEANED,
     ) -> ExtractionResult:
         """
-        Extrai texto apenas das páginas selecionadas.
+        Extrai texto apenas das páginas selecionadas usando Docling.
+        
+        Cria um novo PDF contendo apenas as páginas selecionadas antes
+        de enviar ao Docling, garantindo que apenas o conteúdo desejado
+        seja extraído.
         
         Args:
             pdf_bytes: Conteúdo binário do PDF
@@ -456,12 +494,18 @@ class PDFExtractor:
             quality: Nível de qualidade da extração
         
         Returns:
-            ExtractionResult com o texto das páginas selecionadas
+            ExtractionResult com o texto extraído das páginas selecionadas
         """
         if not self._docling_available:
             return ExtractionResult(
                 text="",
                 error="Docling não está instalado. Execute: pip install docling"
+            )
+        
+        if not self._pypdf_available:
+            return ExtractionResult(
+                text="",
+                error="pypdf não está instalado. Execute: pip install pypdf"
             )
         
         if not page_numbers:
@@ -470,74 +514,77 @@ class PDFExtractor:
                 error="Nenhuma página selecionada"
             )
         
-        # Salva bytes em arquivo temporário
-        with tempfile.NamedTemporaryFile(
-            suffix=".pdf", 
-            delete=False,
-            prefix="spaced_rep_pages_"
-        ) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
-        
         try:
-            # Usa pypdfium2 para extração rápida por página
+            # Obtém o número total de páginas do PDF original
+            total_pages = self._get_pdf_page_count(pdf_bytes)
+            
+            # Valida números de páginas
+            valid_pages = sorted([p for p in page_numbers if 1 <= p <= total_pages])
+            
+            if not valid_pages:
+                return ExtractionResult(
+                    text="",
+                    error=f"Páginas inválidas. O documento tem {total_pages} páginas."
+                )
+            
+            # Se todas as páginas foram selecionadas, usa o PDF original
+            if len(valid_pages) == total_pages:
+                pdf_to_extract = pdf_bytes
+                logger.info("Todas as %d páginas selecionadas, usando PDF original", total_pages)
+            else:
+                # Cria um novo PDF contendo apenas as páginas selecionadas
+                logger.info("Extraindo páginas %s de %d totais", valid_pages, total_pages)
+                pdf_to_extract = self._extract_pages_from_pdf(pdf_bytes, valid_pages)
+            
+            # Salva bytes em arquivo temporário para o Docling
+            with tempfile.NamedTemporaryFile(
+                suffix=".pdf", 
+                delete=False,
+                prefix="spaced_rep_pages_"
+            ) as tmp:
+                tmp.write(pdf_to_extract)
+                tmp_path = tmp.name
+            
             try:
-                import pypdfium2 as pdfium
+                # Usa Docling para extração com estrutura preservada
+                converter = self._get_converter()
                 
-                pdf = pdfium.PdfDocument(tmp_path)
-                total_pages = len(pdf)
+                logger.info("Iniciando extração com Docling (apenas páginas selecionadas)")
+                result = converter.convert(tmp_path)
                 
-                # Valida números de páginas
-                valid_pages = [p for p in page_numbers if 1 <= p <= total_pages]
-                if not valid_pages:
-                    pdf.close()
-                    return ExtractionResult(
-                        text="",
-                        error=f"Páginas inválidas. O documento tem {total_pages} páginas."
-                    )
+                # Extrai o documento em Markdown (preserva estrutura)
+                full_markdown = result.document.export_to_markdown()
                 
-                pages_content = []
-                all_text_parts = []
+                # Aplica limpeza se solicitado
+                if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
+                    text = self._clean_text(full_markdown)
+                else:
+                    text = full_markdown
                 
-                for page_num in sorted(valid_pages):
-                    page = pdf[page_num - 1]  # pypdfium2 é 0-indexed
-                    text_page = page.get_textpage()
-                    page_text = text_page.get_text_range()
-                    
-                    if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
-                        page_text = self._clean_text(page_text)
-                    
-                    pages_content.append({
-                        "page_number": page_num,
-                        "text": page_text,
-                        "word_count": len(page_text.split()) if page_text else 0,
-                    })
-                    
-                    if page_text:
-                        all_text_parts.append(f"## Página {page_num}\n\n{page_text}")
-                
-                pdf.close()
-                
-                combined_text = "\n\n".join(all_text_parts)
+                logger.info(
+                    "Extração Docling concluída: %d páginas selecionadas, %d palavras", 
+                    len(valid_pages), 
+                    len(text.split())
+                )
                 
                 return ExtractionResult(
-                    text=combined_text,
+                    text=text,
                     pages=len(valid_pages),
-                    word_count=len(combined_text.split()),
+                    word_count=len(text.split()),
                     quality=quality,
                     metadata={
                         "filename": filename,
                         "file_size": len(pdf_bytes),
                         "selected_pages": valid_pages,
                         "total_pages": total_pages,
+                        "extraction_method": "docling",
                     },
-                    pages_content=pages_content,
                 )
-                
-            except ImportError:
-                # Fallback: extrai tudo e não filtra por página
-                logger.warning("pypdfium2 não disponível, extraindo documento completo")
-                return await self.extract_from_bytes(pdf_bytes, filename, quality)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
                 
         except Exception as e:
             logger.exception("Erro na extração de páginas: %s", e)
@@ -545,11 +592,6 @@ class PDFExtractor:
                 text="",
                 error=f"Erro na extração: {str(e)}"
             )
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
 
 
 # Instância singleton para uso em toda a aplicação
