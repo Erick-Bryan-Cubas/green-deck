@@ -474,7 +474,24 @@ defineExpose({
     }
     quill.setContents(delta, 'api')
     normalizeHighlightTextColors()
-  }
+  },
+  setContent: (text) => {
+    if (!quill) return
+    if (!text) {
+      quill.setText('')
+      return
+    }
+    // Se for HTML, usa clipboard para preservar formatação
+    if (typeof text === 'string' && text.includes('<')) {
+      quill.clipboard.dangerouslyPasteHTML(text, 'api')
+    } else {
+      // Texto simples
+      quill.setText(text, 'api')
+    }
+  },
+  getHtml: () => (quill ? quill.root.innerHTML : ''),
+  getText: () => (quill ? quill.getText().trim() : ''),
+  focus: () => quill?.focus()
 })
 
 </script>
