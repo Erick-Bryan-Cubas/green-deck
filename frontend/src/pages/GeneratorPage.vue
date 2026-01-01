@@ -3235,12 +3235,14 @@ onBeforeUnmount(() => {
 
 /* Empty */
 .empty-state {
-  height: 100%;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
-  padding: 28px;
+  padding: 48px 28px;
   opacity: 0.92;
+  min-height: 200px;
 }
 .empty-icon {
   font-size: 44px;
