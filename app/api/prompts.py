@@ -140,9 +140,9 @@ COMECE (sem explicar):
 """,
 
     # =========================
-    # Validação SRC (LLM) — enxuto, mantendo o essencial e o formato de resposta
+    # Validação SRC (LLM) — valida ancoragem no texto selecionado
     # =========================
-    "SRC_VALIDATION_PROMPT": """Valide rigorosamente se cada card está ancorado no TEXTO SELECIONADO.
+    "SRC_VALIDATION_PROMPT": """Valide se cada card está ancorado no TEXTO SELECIONADO.
 
 TEXTO SELECIONADO (fonte única):
 ---BEGIN_SELECTED_TEXT---
@@ -152,10 +152,15 @@ ${src_text}
 CARDS:
 ${cards_text}
 
-REGRAS:
-- Todo card precisa de SRC não-vazio.
-- SRC deve aparecer LITERALMENTE no texto selecionado (aceite pequenas variações de pontuação/espaços/caixa).
-- FRONT/BACK deve ser derivável do texto selecionado; se introduzir conceito fora do texto = NÃO.
+REGRAS DE APROVAÇÃO (SIM):
+- SRC não-vazio e corresponde a trecho do texto (aceite variações de pontuação/espaços/caixa).
+- O conceito principal do FRONT está presente ou é claramente derivável do texto.
+- Reformulações e sinônimos são aceitos se o significado está no texto.
+
+REGRAS DE REJEIÇÃO (NÃO):
+- SRC vazio ou não encontrado no texto.
+- Card introduz conceito/termo técnico que NÃO aparece no texto (ex: menciona "SGBD" mas texto não menciona).
+- Card faz afirmação factual não suportada pelo texto.
 
 RESPONDA 1 linha por card:
 CARD_N: SIM|NÃO | motivo (máx 10 palavras)
@@ -164,15 +169,16 @@ INICIE:
 """,
 
     "SRC_VALIDATION_SYSTEM": (
-        "Você é um validador rigoroso.\n"
+        "Você é um validador de flashcards.\n"
+        "Aprove cards bem ancorados no texto.\n"
+        "Rejeite apenas se o conceito claramente não está no texto.\n"
         "Responda APENAS no formato pedido.\n"
-        "Na dúvida, rejeite (NÃO).\n"
     ),
 
     # =========================
-    # Relevance filter (LLM) — já curto, só ajustei levemente
+    # Relevance filter (LLM) — valida se informação está no texto
     # =========================
-    "RELEVANCE_FILTER_PROMPT": """Decida se cada card depende EXCLUSIVAMENTE do TEXTO-FONTE.
+    "RELEVANCE_FILTER_PROMPT": """Verifique se cada card contém informação presente no TEXTO-FONTE.
 
 TEXTO-FONTE:
 ${src_text}
@@ -180,16 +186,20 @@ ${src_text}
 CARDS:
 ${cards_text}
 
-Responda 1 linha por card:
-N: SIM|NÃO
+APROVAR (SIM): informação do card está explícita ou claramente implícita no texto.
+REJEITAR (NÃO): card adiciona fatos externos, faz extrapolação ou menciona conceitos não presentes.
 
-SIM = informação explícita no texto-fonte.
-NÃO = extrapolação, contexto externo ou inferência não justificada.
+Responda 1 linha por card:
+N: SIM|NÃO | motivo breve (se NÃO)
 
 RESPONDA:
 """,
 
-    "RELEVANCE_FILTER_SYSTEM": "Você é rigoroso. Responda só no formato N: SIM|NÃO.",
+    "RELEVANCE_FILTER_SYSTEM": (
+        "Você valida a relevância de flashcards.\n"
+        "Aprove cards com informação presente no texto.\n"
+        "Responda no formato: N: SIM|NÃO | motivo\n"
+    ),
 
     # =========================
     # Text analysis — compacto
@@ -213,3 +223,40 @@ Return a short structured summary (3–7 bullets).
     "TEXT_ANALYSIS_SYSTEM": "Você é um assistente de análise de texto educacional.",
 
 }
+
+
+def get_default_prompts_for_ui() -> dict:
+    """
+    Retorna os prompts padrão formatados para exibição no frontend.
+    O usuário pode editar esses prompts antes de enviar a requisição.
+    
+    Returns:
+        Dict com os prompts padrão organizados por categoria
+    """
+    return {
+        "system": {
+            "basic": PROMPTS["FLASHCARDS_SYSTEM_PTBR"],
+            "cloze": PROMPTS["FLASHCARDS_SYSTEM_CLOZE"],
+            "description": "Prompt de sistema que define o comportamento base do modelo",
+        },
+        "guidelines": {
+            "default": PROMPTS["FLASHCARDS_GUIDELINES"],
+            "description": "Diretrizes de qualidade para criação de flashcards (SuperMemo + Justin Sung)",
+        },
+        "generation": {
+            "default": PROMPTS["FLASHCARDS_GENERATION"],
+            "description": "Template principal de geração. Variáveis: ${src}, ${ctx_block}, ${guidelines}, ${target_min}, ${target_max}, ${type_instruction}, ${format_block}, ${checklist_block}",
+        },
+        "format": {
+            "basic": PROMPTS["FLASHCARDS_FORMAT_BASIC"],
+            "cloze": PROMPTS["FLASHCARDS_FORMAT_CLOZE"],
+            "both": PROMPTS["FLASHCARDS_FORMAT_BOTH"],
+            "description": "Formatos de saída esperados por tipo de card",
+        },
+        "type_instruction": {
+            "basic": PROMPTS["FLASHCARDS_TYPE_BASIC"],
+            "cloze": PROMPTS["FLASHCARDS_TYPE_CLOZE"],
+            "both": PROMPTS["FLASHCARDS_TYPE_BOTH"],
+            "description": "Instruções específicas por tipo de card",
+        },
+    }

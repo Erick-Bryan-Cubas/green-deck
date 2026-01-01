@@ -303,7 +303,8 @@ def save_filter_result(
     cards_after: List[Dict],
     cards_id: Optional[str] = None,
     analysis_id: Optional[str] = None,
-    metadata: Optional[Dict] = None
+    metadata: Optional[Dict] = None,
+    removed_cards_with_reasons: Optional[List[Dict]] = None
 ) -> str:
     """
     Salva resultado de uma operação de filtragem no DuckDB.
@@ -315,6 +316,7 @@ def save_filter_result(
         cards_id: ID do registro de cards final (opcional)
         analysis_id: ID da análise associada (opcional)
         metadata: Metadados adicionais (ex: threshold usado, scores, etc.)
+        removed_cards_with_reasons: Lista de cards removidos com motivos de rejeição (opcional)
     
     Returns:
         ID do registro de filter_result
@@ -322,9 +324,12 @@ def save_filter_result(
     filter_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     timestamp = datetime.now()
     
-    # Identifica cards removidos
-    kept_keys = {_card_key(c) for c in cards_after}
-    removed_cards = [c for c in cards_before if _card_key(c) not in kept_keys]
+    # Usa cards removidos com motivos se fornecido, senão calcula a diferença
+    if removed_cards_with_reasons is not None:
+        removed_cards = removed_cards_with_reasons
+    else:
+        kept_keys = {_card_key(c) for c in cards_after}
+        removed_cards = [c for c in cards_before if _card_key(c) not in kept_keys]
     
     conn = _get_connection()
     conn.execute("""

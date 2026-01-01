@@ -33,6 +33,7 @@ from app.services.storage import (
 )
 
 from app.services.prompt_provider import PromptProvider, get_prompt_provider
+from app.api.prompts import get_default_prompts_for_ui
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ class CardsRequest(BaseModel):
     anthropicApiKey: Optional[str] = None
     openaiApiKey: Optional[str] = None
     perplexityApiKey: Optional[str] = None
+    # Prompts personalizados (opcional - se vazio, usa o padrão)
+    customSystemPrompt: Optional[str] = None
+    customGenerationPrompt: Optional[str] = None
+    customGuidelines: Optional[str] = None
 
 
 def _norm_ws(s: str) -> str:
@@ -227,18 +232,24 @@ async def _validate_src_with_llm(
         logger.warning("LLM SRC validation returned no parseable results. Returning all cards without SRC filter.")
         return cards_input
 
+    removed_with_reasons = []  # Armazena cards removidos com motivos
     for i, c in enumerate(cards_input):
         if i in approved_indices:
             c["_src_validated_by"] = "llm"
             kept.append(c)
         else:
-            reason = rejection_reasons.get(i, "não passou na validação")
+            reason = rejection_reasons.get(i, "SRC não encontrado no texto selecionado")
             logger.info(
                 "SRC rejected by LLM [card %d]: %s | Motivo: %s",
                 i + 1,
-                (c.get("src") or "")[:50],
+                (c.get("front") or c.get("src") or "")[:50],
                 reason,
             )
+            # Adiciona o motivo ao card removido para rastreabilidade
+            removed_card = c.copy()
+            removed_card["rejection_reason"] = reason
+            removed_card["rejection_filter"] = "src_validation_llm"
+            removed_with_reasons.append(removed_card)
 
     logger.info("SRC validation complete: %d/%d cards approved", len(kept), len(cards_input))
 
@@ -256,6 +267,7 @@ async def _validate_src_with_llm(
                 "rejection_reasons": rejection_reasons,
                 "method": "llm_validation",
             },
+            removed_cards_with_reasons=removed_with_reasons,
         )
     except Exception as e:
         logger.warning("Failed to save LLM SRC filter result: %s", e)
@@ -319,6 +331,7 @@ async def _filter_cards_by_content_relevance_llm(
 
     kept = []
     approved_indices = set()
+    rejection_reasons = {}  # Captura motivos de rejeição
 
     for line in raw.strip().split("\n"):
         line = line.strip()
@@ -331,17 +344,29 @@ async def _filter_cards_by_content_relevance_llm(
             verdict = match.group(2).upper()
             if verdict in ("SIM", "YES"):
                 approved_indices.add(idx)
+            else:
+                # Tenta capturar motivo após o veredicto
+                reason_match = re.search(r"\|\s*(.+)$", line)
+                if reason_match:
+                    rejection_reasons[idx] = reason_match.group(1).strip()
 
     if not approved_indices and cards_input:
         logger.warning("LLM relevance filter returned no parseable results. Keeping all cards.")
         return cards_input
 
+    removed_with_reasons = []  # Cards removidos com motivos
     for i, c in enumerate(cards_input):
         if i in approved_indices:
             c["_llm_relevance"] = True
             kept.append(c)
         else:
-            logger.debug("Card rejected by LLM relevance: %s", (c.get("front") or "")[:50])
+            reason = rejection_reasons.get(i, "Informação não presente no texto-fonte")
+            logger.debug("Card rejected by LLM relevance [%d]: %s | Motivo: %s", i+1, (c.get("front") or "")[:50], reason)
+            # Adiciona o motivo ao card removido para rastreabilidade
+            removed_card = c.copy()
+            removed_card["rejection_reason"] = reason
+            removed_card["rejection_filter"] = "llm_relevance"
+            removed_with_reasons.append(removed_card)
 
     if len(kept) < len(cards_input) * 0.2 and len(cards_input) >= 3:
         logger.warning("LLM relevance filter too aggressive (kept %d/%d). Keeping all.", len(kept), len(cards_input))
@@ -358,7 +383,9 @@ async def _filter_cards_by_content_relevance_llm(
                 "model": model,
                 "llm_raw_response": raw[:1000],
                 "approved_indices": list(approved_indices),
+                "rejection_reasons": rejection_reasons,
             },
+            removed_cards_with_reasons=removed_with_reasons,
         )
     except Exception as e:
         logger.warning("Failed to save llm relevance filter result: %s", e)
@@ -849,10 +876,23 @@ async def analyze_text_stream(
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+@router.get("/prompts/defaults")
+async def get_default_prompts():
+    """
+    Retorna os prompts padrão para o frontend.
+    
+    O usuário pode visualizar e editar esses prompts antes de gerar cards.
+    Se não enviar prompts customizados, o sistema usa esses padrões.
+    
+    Returns:
+        Dict com prompts organizados por categoria (system, guidelines, generation, format)
+    """
+    return get_default_prompts_for_ui()
+
+
 @router.post("/generate-cards-stream")
 async def generate_cards_stream(
     request: CardsRequest,
-    prompt_provider: PromptProvider = Depends(get_prompt_provider),
 ):
     async def generate():
         try:
@@ -865,6 +905,21 @@ async def generate_cards_stream(
 
             provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
             logger.info("Using provider: %s", provider)
+            
+            # Cria PromptProvider com prompts customizados (se fornecidos)
+            prompt_provider = get_prompt_provider(
+                custom_system=request.customSystemPrompt,
+                custom_generation=request.customGenerationPrompt,
+                custom_guidelines=request.customGuidelines,
+            )
+            
+            using_custom = any([
+                request.customSystemPrompt,
+                request.customGenerationPrompt,
+                request.customGuidelines,
+            ])
+            if using_custom:
+                logger.info("Using custom prompts from request")
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'generation_started'})}\n\n"
 
