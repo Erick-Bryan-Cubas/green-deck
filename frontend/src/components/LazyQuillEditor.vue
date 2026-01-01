@@ -48,6 +48,14 @@ function getText() {
   return editorRef.value?.getText?.() || ''
 }
 
+function getFullText() {
+  return editorRef.value?.getFullText?.() || ''
+}
+
+function getSelectedText() {
+  return editorRef.value?.getSelectedText?.() || ''
+}
+
 function clearContent() {
   return editorRef.value?.clearContent?.()
 }
@@ -68,14 +76,32 @@ function setDelta(delta) {
   return editorRef.value?.setDelta?.(delta)
 }
 
+// Métodos de formatação/marcação de texto
+function formatBackground(color) {
+  return editorRef.value?.formatBackground?.(color)
+}
+
+function clearHighlight() {
+  return editorRef.value?.clearHighlight?.()
+}
+
+function clearSelection() {
+  return editorRef.value?.clearSelection?.()
+}
+
 defineExpose({
   getHtml,
   getText,
+  getFullText,
+  getSelectedText,
   clearContent,
   setContent,
   focus,
   getDelta,
-  setDelta
+  setDelta,
+  formatBackground,
+  clearHighlight,
+  clearSelection
 })
 </script>
 
