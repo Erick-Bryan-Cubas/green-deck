@@ -214,7 +214,7 @@ function parseClaudeResponse(responseData) {
  */
 async function analyzeText(text, analysisModel = null, onProgress = null) {
   try {
-    const { anthropicApiKey } = getStoredApiKeys();
+    const keys = getStoredApiKeys();
 
     const response = await fetch("/api/analyze-text-stream", {
       method: "POST",
@@ -222,7 +222,8 @@ async function analyzeText(text, analysisModel = null, onProgress = null) {
       body: JSON.stringify({
         text: truncateText(text, 10000),
         analysisModel: analysisModel,
-        userApiKey: anthropicApiKey || null,
+        openaiApiKey: keys.openaiApiKey || null,
+        perplexityApiKey: keys.perplexityApiKey || null,
       }),
     });
 
