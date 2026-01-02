@@ -124,6 +124,7 @@ const readerProgress = ref(0) // 0-100 para barra de progresso
 const readerShowProgress = ref(true) // mostrar barra de progresso
 const readerAutoHideControls = ref(false) // auto-hide após inatividade
 const readerControlsVisible = ref(true)
+const showLineNumbers = ref(true) // mostrar números de linha no editor
 
 // Flag para ignorar onContentChanged durante navegação de página PDF
 let isNavigatingPdfPage = false
@@ -568,7 +569,7 @@ function requestReaderLayout({ preserveProgress = false, explicitProgress = null
   })
 }
 
-watch([immersiveReader, readerTwoPage, readerFontScale, readerTheme, readerShowProgress, readerAutoHideControls], () => {
+watch([immersiveReader, readerTwoPage, readerFontScale, readerTheme, readerShowProgress, readerAutoHideControls, showLineNumbers], () => {
   try {
     localStorage.setItem(
       LS_READER_KEY,
@@ -579,7 +580,8 @@ watch([immersiveReader, readerTwoPage, readerFontScale, readerTheme, readerShowP
         readerTheme: readerTheme.value,
         readerDark: readerTheme.value === 'dark',
         readerShowProgress: readerShowProgress.value,
-        readerAutoHideControls: readerAutoHideControls.value
+        readerAutoHideControls: readerAutoHideControls.value,
+        showLineNumbers: showLineNumbers.value
       })
     )
   } catch {}
@@ -983,27 +985,44 @@ function scanHighlights() {
     highlightPositions.value = []
     return
   }
-  
+
   const delta = editorRef.value.getDelta?.()
   if (!delta || !delta.ops) {
     highlightPositions.value = []
     return
   }
-  
+
   const positions = []
   let idx = 0
-  
+  let lastHighlight = null
+
   delta.ops.forEach((op) => {
     const ins = op.insert
     const len = typeof ins === 'string' ? ins.length : 1
     const bg = op.attributes?.background
-    
+
     if (bg && typeof bg === 'string' && bg.startsWith('#')) {
-      positions.push({ index: idx, length: len, color: bg })
+      // Check if we should merge with previous highlight (same color)
+      if (lastHighlight && lastHighlight.color === bg) {
+        // Extend to include current segment
+        lastHighlight.length = (idx + len) - lastHighlight.index
+      } else {
+        // New highlight group
+        lastHighlight = { index: idx, length: len, color: bg }
+        positions.push(lastHighlight)
+      }
+    } else {
+      // Check if this is just whitespace/newlines between highlights
+      const isWhitespaceOnly = typeof ins === 'string' && /^[\s\n]+$/.test(ins)
+      if (!isWhitespaceOnly || !lastHighlight) {
+        // Non-whitespace content breaks the highlight chain
+        lastHighlight = null
+      }
+      // If whitespace, keep lastHighlight active for potential merge
     }
     idx += len
   })
-  
+
   highlightPositions.value = positions
 }
 
@@ -2674,6 +2693,7 @@ onMounted(async () => {
     readerDark.value = saved.readerDark ?? false
     readerShowProgress.value = saved.readerShowProgress ?? true
     readerAutoHideControls.value = saved.readerAutoHideControls ?? false
+    showLineNumbers.value = saved.showLineNumbers ?? true
   } catch {}
 
   // carrega modelo selecionado
@@ -3034,6 +3054,16 @@ onBeforeUnmount(() => {
                 title="Ativar modo leitura"
               />
 
+              <Button
+                :icon="showLineNumbers ? 'pi pi-list' : 'pi pi-align-left'"
+                severity="secondary"
+                :outlined="showLineNumbers"
+                :text="!showLineNumbers"
+                rounded
+                @click="showLineNumbers = !showLineNumbers"
+                :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
+              />
+
               <!-- PDF Upload Button -->
               <PdfUpload 
                 ref="pdfUploadRef"
@@ -3299,6 +3329,7 @@ onBeforeUnmount(() => {
               >
                 <LazyQuillEditor
                   ref="editorRef"
+                  :show-line-numbers="showLineNumbers && !immersiveReader"
                   @selection-changed="onSelectionChanged"
                   @content-changed="onContentChanged"
                   @context-menu="onEditorContextMenu"

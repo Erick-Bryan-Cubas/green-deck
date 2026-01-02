@@ -7,6 +7,10 @@ const props = defineProps({
   placeholder: {
     type: String,
     default: 'Cole ou digite o texto aqui, selecione trechos e gere cards...'
+  },
+  showLineNumbers: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -120,6 +124,7 @@ defineExpose({
   <QuillEditor
     ref="editorRef"
     :placeholder="placeholder"
+    :show-line-numbers="showLineNumbers"
     @selection-changed="emit('selection-changed', $event)"
     @content-changed="emit('content-changed', $event)"
     @editor-ready="emit('editor-ready', $event)"
