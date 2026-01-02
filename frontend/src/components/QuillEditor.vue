@@ -573,12 +573,27 @@ defineExpose({
       quill.setText('')
       return
     }
-    // Se for HTML, usa clipboard para preservar formatação
-    if (typeof text === 'string' && text.includes('<')) {
-      quill.clipboard.dangerouslyPasteHTML(text, 'api')
+    
+    // Processa o texto para preservar formatação
+    if (typeof text === 'string') {
+      // Remove marcadores de PAGE_BREAK do backend e substitui por quebras de parágrafo
+      let processedText = text.replace(/<!-- PAGE_BREAK -->/g, '\n\n---\n\n')
+      
+      // Se o texto contém tags HTML reais (não apenas comentários), usa dangerouslyPasteHTML
+      const hasRealHtmlTags = /<(?!--)[a-z][\s\S]*?>/i.test(processedText)
+      
+      if (hasRealHtmlTags) {
+        quill.clipboard.dangerouslyPasteHTML(processedText, 'api')
+      } else {
+        // Converte quebras de linha para HTML para preservar formatação
+        const htmlContent = processedText
+          .split('\n')
+          .map(line => line.trim() === '' ? '<p><br></p>' : `<p>${line}</p>`)
+          .join('')
+        quill.clipboard.dangerouslyPasteHTML(htmlContent, 'api')
+      }
     } else {
-      // Texto simples
-      quill.setText(text, 'api')
+      quill.setText(String(text), 'api')
     }
   },
   getHtml: () => (quill ? quill.root.innerHTML : ''),
