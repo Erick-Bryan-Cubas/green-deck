@@ -43,6 +43,8 @@ class TextRequest(BaseModel):
     text: str
     analysisModel: Optional[str] = None  # Modelo para embeddings/análise
     analysisMode: Optional[str] = "auto"  # "embedding", "llm", ou "auto"
+    openaiApiKey: Optional[str] = None
+    perplexityApiKey: Optional[str] = None
 
 
 class CardsRequest(BaseModel):
@@ -761,10 +763,21 @@ async def analyze_text_stream(
             analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
             analysis_mode = request.analysisMode or "auto"
 
-            if analysis_mode == "auto":
-                analysis_mode = "embedding" if _is_embedding_model(analysis_model) else "llm"
+            # Detecta provider baseado no modelo e chaves API
+            use_openai = request.openaiApiKey and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
+            use_perplexity = request.perplexityApiKey and "sonar" in analysis_model.lower()
+            use_ollama = not use_openai and not use_perplexity
+            
+            provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
 
-            logger.info("Analysis model: %s, mode: %s", analysis_model, analysis_mode)
+            if analysis_mode == "auto":
+                # APIs externas sempre usam modo LLM
+                if use_openai or use_perplexity:
+                    analysis_mode = "llm"
+                else:
+                    analysis_mode = "embedding" if _is_embedding_model(analysis_model) else "llm"
+
+            logger.info("Analysis model: %s, mode: %s, provider: %s", analysis_model, analysis_mode, provider)
 
             from app.services.ollama import (
                 ollama_embed,
@@ -846,8 +859,15 @@ async def analyze_text_stream(
 
                 raw = ""
                 try:
-                    async for piece in ollama_generate_stream(analysis_model, prompt, system=system, options=options):
-                        raw += piece
+                    if use_openai:
+                        async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
+                            raw += piece
+                    elif use_perplexity:
+                        async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
+                            raw += piece
+                    else:
+                        async for piece in ollama_generate_stream(analysis_model, prompt, system=system, options=options):
+                            raw += piece
                 except Exception as llm_error:
                     logger.warning("LLM analysis failed: %s", llm_error)
                     yield f"event: error\ndata: {json.dumps({'error': f'LLM analysis failed: {str(llm_error)}'})}\n\n"
