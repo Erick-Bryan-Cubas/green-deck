@@ -253,14 +253,21 @@ async function analyzeText(text, analysisModel = null, onProgress = null) {
 
         try {
           const parsed = data ? JSON.parse(data) : null;
-          if (event === "progress" && onProgress) {
+          if (event === "error" && parsed) {
+            throw new Error(parsed.error || "Analysis failed");
+          } else if (event === "progress" && onProgress) {
             onProgress(parsed.percent || 0);
             if (parsed.analysis_id) analysisId = parsed.analysis_id;
           } else if (event === "result") {
             result = parsed;
             if (parsed.analysis_id) analysisId = parsed.analysis_id;
           }
-        } catch (e) {}
+        } catch (e) {
+          if (event === "error") {
+            throw e;
+          }
+          // Ignore JSON parse errors for intermediate events
+        }
       }
     }
 
