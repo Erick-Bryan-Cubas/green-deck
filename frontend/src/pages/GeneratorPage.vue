@@ -1456,24 +1456,27 @@ const progressVisible = ref(false)
 const progressTitle = ref('Processing...')
 const progressValue = ref(0)
 const progressStage = ref('')
+const progressIcon = ref('')
 const progressDetails = ref({})
 
 function showProgress(title = 'Processing...') {
   progressTitle.value = title
   progressValue.value = 0
   progressStage.value = ''
+  progressIcon.value = ''
   progressDetails.value = {}
   progressVisible.value = true
 }
 
-function setProgress(v, stage = null, details = null) {
+function setProgress(v, stage = null, details = null, icon = null) {
   progressValue.value = Math.max(0, Math.min(100, Math.floor(v)))
   if (stage) progressStage.value = stage
+  if (icon) progressIcon.value = icon
   if (details) progressDetails.value = { ...progressDetails.value, ...details }
 }
 
 function completeProgress() {
-  setProgress(100, 'Concluído!')
+  setProgress(100, 'Concluído!', null, 'pi pi-check-circle')
   setTimeout(() => (progressVisible.value = false), 650)
 }
 
@@ -1738,7 +1741,7 @@ async function generateCardsFromSelection() {
     addLog(`Starting card generation (${cardType.value}) from: ${sourceLabel}`, 'info')
     console.log('Card type being sent:', cardType.value, '| Source:', resolved.source)
     showProgress('Gerando cards...')
-    setProgress(10, 'Preparando prompt...')
+    setProgress(10, 'Preparando prompt...', null, 'pi pi-spinner pi-spin')
 
     const deckNames = Object.keys(decks.value || {}).join(', ')
     const newCards = await generateCardsWithStream(
@@ -1752,84 +1755,84 @@ async function generateCardsFromSelection() {
           if (stage === 'stage' && data?.stage) {
             const s = data.stage
             
-            // Mapeamento de estágios para UI amigável
+            // Mapeamento de estágios para UI amigável (usando ícones PrimeVue)
             const stageMap = {
-              'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: '🚀' },
+              'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: 'pi pi-send' },
               'parsed': { 
                 progress: 45, 
-                label: `Parseados ${data.count || 0} cards (modo: ${data.mode || 'unknown'})`, 
-                icon: '📝',
+                label: `Parseados ${data.count || 0} cards`, 
+                icon: 'pi pi-file-edit',
                 details: { parsed: data.count, mode: data.mode, beforeFilter: data.before_type_filter }
               },
               'src_filtered': { 
                 progress: 55, 
                 label: `Validação SRC: ${data.kept || 0} aprovados, ${data.dropped || 0} removidos`, 
-                icon: '🔍',
+                icon: 'pi pi-search',
                 details: { srcKept: data.kept, srcDropped: data.dropped }
               },
               'llm_relevance_filtered': { 
                 progress: 62, 
                 label: `Filtro relevância: ${data.kept || 0} mantidos, ${data.dropped || 0} removidos`, 
-                icon: '🎯',
+                icon: 'pi pi-bullseye',
                 details: { relevanceKept: data.kept, relevanceDropped: data.dropped }
               },
               'src_bypassed': { 
                 progress: 58, 
                 label: `SRC bypass: ${data.count || 0} cards mantidos`, 
-                icon: '⚡' 
+                icon: 'pi pi-bolt' 
               },
               'src_relaxed': { 
                 progress: 65, 
                 label: `SRC relaxado: ${data.total_after_relax || 0} cards (min: ${data.target_min || 0})`, 
-                icon: '♻️' 
+                icon: 'pi pi-sync' 
               },
               'lang_check': { 
                 progress: 70, 
                 label: `Idioma: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
-                icon: '🌐' 
+                icon: 'pi pi-globe' 
               },
               'repair_pass': { 
                 progress: 72, 
                 label: `Iniciando reparo... (${data.reason || ''})`, 
-                icon: '🔧' 
+                icon: 'pi pi-wrench' 
               },
               'repair_parsed': { 
                 progress: 80, 
                 label: `Reparo: ${data.count || 0} cards adicionais`, 
-                icon: '🔧' 
+                icon: 'pi pi-wrench' 
               },
               'repair_src_filtered': { 
                 progress: 85, 
                 label: `Reparo SRC: ${data.kept || 0} aprovados`, 
-                icon: '🔍',
+                icon: 'pi pi-search',
                 details: { srcKept: data.kept, srcDropped: data.dropped }
               },
               'repair_llm_relevance_filtered': { 
                 progress: 88, 
                 label: `Reparo relevância: ${data.kept || 0} mantidos`, 
-                icon: '🎯' 
+                icon: 'pi pi-bullseye' 
               },
               'repair_src_bypassed': { 
                 progress: 86, 
                 label: `Reparo SRC bypass: ${data.count || 0} cards`, 
-                icon: '⚡' 
+                icon: 'pi pi-bolt' 
               },
               'lang_check_after_repair': { 
                 progress: 92, 
                 label: `Idioma pós-reparo: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
-                icon: '🌐' 
+                icon: 'pi pi-globe' 
               },
               'done': { 
                 progress: 98, 
                 label: `Concluído: ${data.total_cards || 0} cards finais`, 
-                icon: '🎉',
+                icon: 'pi pi-check-circle',
                 details: { totalCards: data.total_cards }
               }
             }
             
             const stageInfo = stageMap[s]
             if (stageInfo) {
-              setProgress(stageInfo.progress, `${stageInfo.icon} ${stageInfo.label}`, stageInfo.details)
+              setProgress(stageInfo.progress, stageInfo.label, stageInfo.details, stageInfo.icon)
               addLog(`Stage: ${stageInfo.label}`, s === 'done' ? 'success' : 'info')
             } else {
               // Estágios não mapeados
@@ -1850,7 +1853,7 @@ async function generateCardsFromSelection() {
     cards.value = [...cards.value, ...newCards]
     notify(`${newCards.length} cards criados`, 'success')
 
-    setProgress(100, '✅ Concluído!')
+    setProgress(100, 'Concluído!', null, 'pi pi-check-circle')
     completeProgress()
     schedulePersistActiveSession()
   } catch (error) {
@@ -3822,6 +3825,7 @@ onBeforeUnmount(() => {
         
         <div class="progress-info mt-3">
           <div class="progress-stage" v-if="progressStage">
+            <i v-if="progressIcon" :class="progressIcon" class="progress-stage-icon"></i>
             {{ progressStage }}
           </div>
           <div class="progress-percent">{{ progressValue }}%</div>
@@ -3836,13 +3840,13 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="progressDetails.srcKept !== undefined" class="stat-item">
               <span class="stat-label">Validação SRC:</span>
-              <span class="stat-value success">{{ progressDetails.srcKept }} ✓</span>
-              <span class="stat-value danger" v-if="progressDetails.srcDropped">{{ progressDetails.srcDropped }} ✗</span>
+              <span class="stat-value success"><i class="pi pi-check"></i> {{ progressDetails.srcKept }}</span>
+              <span class="stat-value danger" v-if="progressDetails.srcDropped"><i class="pi pi-times"></i> {{ progressDetails.srcDropped }}</span>
             </div>
             <div v-if="progressDetails.relevanceKept !== undefined" class="stat-item">
               <span class="stat-label">Relevância:</span>
-              <span class="stat-value success">{{ progressDetails.relevanceKept }} ✓</span>
-              <span class="stat-value danger" v-if="progressDetails.relevanceDropped">{{ progressDetails.relevanceDropped }} ✗</span>
+              <span class="stat-value success"><i class="pi pi-check"></i> {{ progressDetails.relevanceKept }}</span>
+              <span class="stat-value danger" v-if="progressDetails.relevanceDropped"><i class="pi pi-times"></i> {{ progressDetails.relevanceDropped }}</span>
             </div>
             <div v-if="progressDetails.totalCards" class="stat-item total">
               <span class="stat-label">Total Final:</span>
@@ -4979,27 +4983,36 @@ onBeforeUnmount(() => {
 /* =========================
    Progress Dialog Styles
 ========================= */
-.progress-dialog .progress-content {
+:deep(.progress-dialog .progress-content) {
   padding: 0.5rem 0;
 }
 
-.progress-dialog .progress-info {
+:deep(.progress-dialog .progress-info) {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
 }
 
-.progress-dialog .progress-stage {
+:deep(.progress-dialog .progress-stage) {
   font-size: 0.95rem;
   color: var(--p-text-color);
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.progress-dialog .progress-percent {
+:deep(.progress-dialog .progress-stage-icon) {
+  font-size: 1rem;
+  color: var(--p-primary-color);
+  flex-shrink: 0;
+}
+
+:deep(.progress-dialog .progress-percent) {
   font-size: 0.9rem;
   font-weight: 600;
   color: var(--p-primary-color);
@@ -5007,60 +5020,58 @@ onBeforeUnmount(() => {
   text-align: right;
 }
 
-.progress-dialog .progress-pipeline {
-  background: var(--p-surface-100);
+/* Force dark theme on progress pipeline */
+:deep(.progress-dialog .progress-pipeline) {
+  background: rgba(30, 41, 59, 0.95) !important;
   border-radius: 8px;
   padding: 0.75rem 1rem;
-  border: 1px solid var(--p-surface-200);
+  border: 1px solid rgba(148, 163, 184, 0.15) !important;
 }
 
-.progress-dialog .pipeline-stats {
+:deep(.progress-dialog .pipeline-stats) {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
 }
 
-.progress-dialog .stat-item {
+:deep(.progress-dialog .stat-item) {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85rem;
 }
 
-.progress-dialog .stat-item.total {
+:deep(.progress-dialog .stat-item.total) {
   margin-top: 0.5rem;
   padding-top: 0.5rem;
-  border-top: 1px solid var(--p-surface-300);
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
   font-weight: 600;
 }
 
-.progress-dialog .stat-label {
-  color: var(--p-text-muted-color);
+:deep(.progress-dialog .stat-label) {
+  color: rgba(148, 163, 184, 0.8) !important;
   min-width: 100px;
 }
 
-.progress-dialog .stat-value {
-  color: var(--p-text-color);
+:deep(.progress-dialog .stat-value) {
+  color: rgba(241, 245, 249, 0.95) !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
-.progress-dialog .stat-value.success {
-  color: var(--p-green-500);
+:deep(.progress-dialog .stat-value.success) {
+  color: #22c55e !important;
   font-weight: 500;
 }
 
-.progress-dialog .stat-value.danger {
-  color: var(--p-red-400);
+:deep(.progress-dialog .stat-value.danger) {
+  color: #f87171 !important;
   font-weight: 500;
 }
 
-/* Dark mode adjustments */
-:root[data-theme="dark"] .progress-dialog .progress-pipeline {
-  background: var(--p-surface-800);
-  border-color: var(--p-surface-700);
-}
-
-:root[data-theme="dark"] .progress-dialog .stat-item.total {
-  border-color: var(--p-surface-600);
+:deep(.progress-dialog .stat-value i) {
+  font-size: 0.75rem;
 }
 
 /* =========================
