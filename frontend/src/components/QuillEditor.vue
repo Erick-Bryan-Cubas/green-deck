@@ -8,6 +8,10 @@ const props = defineProps({
   placeholder: {
     type: String,
     default: 'Cole ou digite o texto aqui, selecione trechos e gere cards...'
+  },
+  showLineNumbers: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -19,11 +23,30 @@ const emit = defineEmits([
 ])
 
 const editorRef = ref(null)
+const lineNumbersRef = ref(null)
+const lineCount = ref(1)
 
 let quill = null
 let textChangeTimeout = null
 
 let savedRange = null
+
+// ------------------------------------------------------------
+// Line numbers
+// ------------------------------------------------------------
+function updateLineCount() {
+  if (!quill) return
+  const text = quill.getText()
+  lineCount.value = Math.max(1, (text.match(/\n/g) || []).length + 1)
+}
+
+function syncLineNumbersScroll() {
+  if (!lineNumbersRef.value || !quill) return
+  const editorEl = quill.root
+  if (editorEl) {
+    lineNumbersRef.value.scrollTop = editorEl.scrollTop
+  }
+}
 
 // ------------------------------------------------------------
 // Contraste automático: dado um HEX, retorna #111.. ou #fff
@@ -169,12 +192,23 @@ function showBackgroundPicker(buttonEl) {
   }
 
   const colors = [
+    // Cores claras (marca-texto)
     { color: '#fef08a', label: 'Amarelo' },
-    { color: '#bbf7d0', label: 'Verde' },
-    { color: '#bfdbfe', label: 'Azul' },
+    { color: '#bbf7d0', label: 'Verde claro' },
+    { color: '#bfdbfe', label: 'Azul claro' },
     { color: '#fbcfe8', label: 'Rosa' },
-    { color: '#ddd6fe', label: 'Roxo' },
+    { color: '#ddd6fe', label: 'Roxo claro' },
     { color: '#fed7aa', label: 'Laranja' },
+    // Cores médias
+    { color: '#fcd34d', label: 'Amarelo forte' },
+    { color: '#4ade80', label: 'Verde' },
+    { color: '#60a5fa', label: 'Azul' },
+    { color: '#f472b6', label: 'Rosa forte' },
+    { color: '#a78bfa', label: 'Roxo' },
+    { color: '#fb923c', label: 'Laranja forte' },
+    // Cores extras
+    { color: '#f87171', label: 'Vermelho' },
+    { color: '#22d3d8', label: 'Ciano' },
     { color: 'transparent', label: 'Remover' }
   ]
 
@@ -185,19 +219,19 @@ function showBackgroundPicker(buttonEl) {
     background: #111827;
     border: 1px solid #374151;
     border-radius: 10px;
-    padding: 8px;
+    padding: 10px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.55);
     z-index: 99999;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 6px;
-    width: 156px;
+    width: 230px;
   `
 
   const rect = buttonEl.getBoundingClientRect()
-  // tamanho aproximado do picker (altura depende do grid, mas aqui é estável)
-  const pickerW = 156
-  const pickerH = 8 + (3 * 36) + (2 * 6) + 8
+  // tamanho aproximado do picker (5 colunas, 3 linhas)
+  const pickerW = 230
+  const pickerH = 10 + (3 * 38) + (2 * 6) + 10
   const pos = clampPosition(rect.left, rect.bottom + 8, pickerW, pickerH)
 
   picker.style.left = `${pos.x}px`
@@ -422,10 +456,35 @@ onMounted(() => {
     ]
   })
 
-  // Customiza o botão de background com emoji depois que o Quill renderizar
+  // Adiciona botão customizado de marca-texto na toolbar
   const toolbar = quill.getModule('toolbar')
-  const bgBtn = toolbar?.container?.querySelector('.ql-background .ql-picker-label')
-  // Não precisamos mais customizar o botão de background pois o Quill já tem um picker próprio
+  if (toolbar?.container) {
+    // Cria um grupo separado para o botão de marca-texto
+    const highlightGroup = document.createElement('span')
+    highlightGroup.className = 'ql-formats ql-highlight-group'
+
+    const highlightBtn = document.createElement('button')
+    highlightBtn.type = 'button'
+    highlightBtn.className = 'ql-highlight-custom'
+    highlightBtn.title = 'Marca-texto'
+    highlightBtn.innerHTML = '<i class="pi pi-pencil" style="font-size: 14px;"></i>'
+
+    highlightBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      showBackgroundPicker(highlightBtn)
+    })
+
+    highlightGroup.appendChild(highlightBtn)
+
+    // Insere após o grupo de cores existente
+    const colorsGroup = toolbar.container.querySelector('.ql-color')?.closest('.ql-formats')
+    if (colorsGroup) {
+      colorsGroup.after(highlightGroup)
+    } else {
+      toolbar.container.appendChild(highlightGroup)
+    }
+  }
 
   quill.on('selection-change', (range) => {
     savedRange = range
@@ -450,6 +509,9 @@ onMounted(() => {
       ? delta.ops.some(op => op.insert != null || op.delete != null)
       : false
 
+    // Update line count immediately for responsive UI
+    updateLineCount()
+
     textChangeTimeout = setTimeout(() => {
       const fullText = quill.getText()
       const html = editorRef.value?.querySelector('.ql-editor')?.innerHTML || ''
@@ -468,8 +530,10 @@ onMounted(() => {
   const editorEl = editorRef.value.querySelector('.ql-editor')
   editorEl.addEventListener('contextmenu', onContextMenu)
   editorEl.addEventListener('wheel', preventWheelLeak, { passive: false })
+  editorEl.addEventListener('scroll', syncLineNumbersScroll)
 
   normalizeHighlightTextColors()
+  updateLineCount()
   emit('editor-ready', quill)
 })
 
@@ -482,6 +546,7 @@ onBeforeUnmount(() => {
     if (editorEl) {
       editorEl.removeEventListener('contextmenu', onContextMenu)
       editorEl.removeEventListener('wheel', preventWheelLeak)
+      editorEl.removeEventListener('scroll', syncLineNumbersScroll)
     }
   } catch {}
 })
@@ -521,31 +586,62 @@ defineExpose({
   focus: () => quill?.focus(),
   /**
    * Get all highlighted (background-colored) content from the editor
+   * Merges consecutive highlights of the same color into single groups
    * @returns {object} { texts: string[], combined: string, count: number }
    */
   getHighlightedContent: () => {
     if (!quill) return { texts: [], combined: '', count: 0 }
-    
+
     const delta = quill.getContents()
     if (!delta || !delta.ops) return { texts: [], combined: '', count: 0 }
 
-    const highlightedParts = []
-    
+    const highlightGroups = [] // Each group = one user selection
+    let currentGroup = null
+    let currentColor = null
+
     delta.ops.forEach((op) => {
       const ins = op.insert
       const bg = op.attributes?.background
-      
-      // Check if this segment has a background color (highlight)
+
       if (bg && typeof bg === 'string' && bg.startsWith('#') && typeof ins === 'string') {
-        const text = ins.trim()
-        if (text) highlightedParts.push(text)
+        if (currentColor === bg && currentGroup !== null) {
+          // Continue same highlight group
+          currentGroup.parts.push(ins)
+        } else {
+          // Start new group (different color)
+          if (currentGroup && currentGroup.parts.length > 0) {
+            highlightGroups.push(currentGroup)
+          }
+          currentGroup = { color: bg, parts: [ins] }
+          currentColor = bg
+        }
+      } else {
+        // Check if just whitespace between same-color highlights
+        const isWhitespaceOnly = typeof ins === 'string' && /^[\s\n]+$/.test(ins)
+        if (isWhitespaceOnly && currentGroup) {
+          currentGroup.parts.push(ins) // Include whitespace in group
+        } else {
+          // End current group (non-whitespace breaks chain)
+          if (currentGroup && currentGroup.parts.length > 0) {
+            highlightGroups.push(currentGroup)
+          }
+          currentGroup = null
+          currentColor = null
+        }
       }
     })
 
+    // Don't forget last group
+    if (currentGroup && currentGroup.parts.length > 0) {
+      highlightGroups.push(currentGroup)
+    }
+
+    const texts = highlightGroups.map(g => g.parts.join('').trim()).filter(t => t)
+
     return {
-      texts: highlightedParts,
-      combined: highlightedParts.join('\n\n'),
-      count: highlightedParts.length
+      texts,
+      combined: texts.join('\n\n'),
+      count: texts.length
     }
   },
   /**
@@ -568,9 +664,17 @@ defineExpose({
 </script>
 
 <template>
-  <div class="qe-wrap">
+  <div class="qe-wrap" :class="{ 'with-line-numbers': showLineNumbers }">
     <!-- O Quill cria a toolbar automaticamente baseado em toolbarOptions -->
     <div ref="editorRef" class="qe-editor"></div>
+    <!-- Line numbers posicionados absolutamente ao lado do conteúdo -->
+    <div
+      v-if="showLineNumbers"
+      ref="lineNumbersRef"
+      class="qe-line-numbers"
+    >
+      <div v-for="n in lineCount" :key="n" class="qe-line-number">{{ n }}</div>
+    </div>
   </div>
 </template>
 
@@ -580,12 +684,52 @@ defineExpose({
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
 
 .qe-editor {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Line numbers - posicionados absolutamente ao lado do conteúdo */
+.qe-line-numbers {
+  position: absolute;
+  left: 0;
+  top: 42px; /* Altura da toolbar */
+  bottom: 0;
+  width: 44px;
+  padding-top: 12px;
+  padding-right: 6px;
+  background: var(--surface-ground, #1e293b);
+  border-right: 1px solid rgba(148, 163, 184, 0.15);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  border-left: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0 0 0 14px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
+  font-size: 0.75em;
+  color: var(--text-color-secondary, #64748b);
+  user-select: none;
+  overflow-y: hidden;
+  overflow-x: hidden;
+  z-index: 1;
+}
+
+.qe-line-number {
+  line-height: 1.42;
+  height: 1.42em;
+  padding-right: 4px;
+}
+
+/* Quando line numbers estão ativos, adiciona padding ao container e placeholder */
+.with-line-numbers :deep(.ql-container.ql-snow) {
+  padding-left: 44px;
+}
+
+.with-line-numbers :deep(.ql-editor.ql-blank::before) {
+  left: 59px; /* 44px (line numbers) + 15px (default left) */
 }
 
 /* Toolbar gerada automaticamente pelo Quill */
@@ -630,6 +774,34 @@ defineExpose({
 
 :deep(.ql-toolbar.ql-snow button.ql-active) {
   background-color: rgba(59, 130, 246, 0.25);
+}
+
+/* Botão customizado de marca-texto */
+:deep(.ql-toolbar.ql-snow .ql-highlight-custom) {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: none;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #fef08a 0%, #fcd34d 100%);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s, box-shadow 0.15s;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-highlight-custom:hover) {
+  transform: scale(1.08);
+  box-shadow: 0 2px 8px rgba(252, 211, 77, 0.4);
+}
+
+:deep(.ql-toolbar.ql-snow .ql-highlight-custom i) {
+  color: #78350f;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-highlight-group) {
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
 }
 
 /* Estilo dos selects na toolbar */
