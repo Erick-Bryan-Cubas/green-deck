@@ -2562,7 +2562,8 @@ function onContentChanged(payload) {
   if (normalized === lastNormalizedTextOnChange.value) return
   lastNormalizedTextOnChange.value = normalized
 
-  if (normalized.length > 100) scheduleAnalyze(fullText)
+  // Análise automática removida - agora é feita apenas inicialmente ou sob demanda
+  // O usuário pode usar o botão "Analisar" ou o menu de contexto
 
   // se estiver lendo, recalcula o layout/páginas (mantendo progresso)
   // Mas não se estiver usando paginação do PDF (a navegação é controlada manualmente)
@@ -3105,6 +3106,17 @@ onBeforeUnmount(() => {
                 :class="{ 'p-button-warning': customPrompts !== null }"
                 title="Editar prompts personalizados"
                 @click="promptEditorVisible = true"
+              />
+
+              <!-- Analyze Button -->
+              <Button
+                icon="pi pi-search-plus"
+                label="Analisar"
+                class="p-button-outlined"
+                :disabled="!canGenerate || generating || isAnalyzing"
+                :loading="isAnalyzing"
+                title="Analisar texto para melhorar a qualidade dos cards gerados"
+                @click="contextAnalyze"
               />
 
               <Button
