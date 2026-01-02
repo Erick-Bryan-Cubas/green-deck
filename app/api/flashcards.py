@@ -850,7 +850,8 @@ async def analyze_text_stream(
                         raw += piece
                 except Exception as llm_error:
                     logger.warning("LLM analysis failed: %s", llm_error)
-                    raw = "\n\n".join(chunks[:3])
+                    yield f"event: error\ndata: {json.dumps({'error': f'LLM analysis failed: {str(llm_error)}'})}\n\n"
+                    return
 
                 yield f"event: progress\ndata: {json.dumps({'percent': 80, 'stage': 'llm_complete'})}\n\n"
 
