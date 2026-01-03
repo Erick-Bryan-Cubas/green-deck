@@ -22,6 +22,7 @@ from app.utils.text import (
     truncate_source,
     detect_language_pt_en_es,
 )
+from app.utils.validation import validate_content_sufficiency
 from app.services.storage import (
     save_analysis,
     save_cards,
@@ -54,17 +55,19 @@ class CardsRequest(BaseModel):
     useRAG: Optional[bool] = False
     topK: Optional[int] = 0
     cardType: Optional[str] = "both"
-    model: Optional[str] = None  # Modelo de geração
-    validationModel: Optional[str] = None  # Modelo de validação de qualidade
-    analysisModel: Optional[str] = None  # Modelo de análise de texto
+    model: Optional[str] = None  # Modelo de geracao
+    validationModel: Optional[str] = None  # Modelo de validacao de qualidade
+    analysisModel: Optional[str] = None  # Modelo de analise de texto
     analysisId: Optional[str] = None
     anthropicApiKey: Optional[str] = None
     openaiApiKey: Optional[str] = None
     perplexityApiKey: Optional[str] = None
-    # Prompts personalizados (opcional - se vazio, usa o padrão)
+    # Prompts personalizados (opcional - se vazio, usa o padrao)
     customSystemPrompt: Optional[str] = None
     customGenerationPrompt: Optional[str] = None
     customGuidelines: Optional[str] = None
+    # Quantidade de cards desejada (opcional - se vazio, calcula automaticamente)
+    numCards: Optional[int] = None
 
 
 def _norm_ws(s: str) -> str:
@@ -952,14 +955,30 @@ async def generate_cards_stream(
                 card_type = "both"
 
             word_count = len(src.split())
-            if word_count < 140:
-                target_min, target_max = 3, 8
-            elif word_count < 320:
-                target_min, target_max = 5, 12
-            elif word_count < 700:
-                target_min, target_max = 8, 18
+
+            # Se o usuario especificou numCards, usa com range de +-20%
+            if request.numCards and request.numCards > 0:
+                # Validacao de escassez de conteudo
+                validation = validate_content_sufficiency(src, request.numCards)
+                if not validation.is_valid:
+                    yield f"event: error\ndata: {json.dumps({'error': validation.message, 'type': 'content_scarcity', 'recommended_max': validation.recommended_max_cards, 'token_count': validation.token_count})}\n\n"
+                    return
+                elif validation.message:
+                    # Aviso (permite continuar)
+                    yield f"event: warning\ndata: {json.dumps({'message': validation.message, 'recommended_max': validation.recommended_max_cards})}\n\n"
+
+                target_min = max(1, int(request.numCards * 0.8))
+                target_max = int(request.numCards * 1.2)
             else:
-                target_min, target_max = 10, 30
+                # Calculo automatico baseado em word count
+                if word_count < 140:
+                    target_min, target_max = 3, 8
+                elif word_count < 320:
+                    target_min, target_max = 5, 12
+                elif word_count < 700:
+                    target_min, target_max = 8, 18
+                else:
+                    target_min, target_max = 10, 30
 
             request_id = save_generation_request(
                 source_text=src,
@@ -1254,3 +1273,106 @@ async def generate_cards_stream(
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# =============================================================================
+# Card Rewrite Endpoint
+# =============================================================================
+
+class CardRewriteRequest(BaseModel):
+    """Request para reescrever um card usando LLM."""
+    front: str
+    back: str
+    action: str  # "densify" | "split_cloze" | "simplify"
+    model: Optional[str] = None
+    openaiApiKey: Optional[str] = None
+    perplexityApiKey: Optional[str] = None
+
+
+def _parse_rewrite_response(raw: str) -> dict:
+    """
+    Parseia a resposta do LLM de reescrita.
+    Espera formato:
+        Front: ...
+        Back: ...
+    """
+    lines = raw.strip().split("\n")
+    front = ""
+    back = ""
+    mode = None
+
+    for line in lines:
+        line = line.strip()
+        if line.lower().startswith("front:"):
+            mode = "front"
+            front = line[6:].strip()
+        elif line.lower().startswith("back:"):
+            mode = "back"
+            back = line[5:].strip()
+        elif mode == "front" and line:
+            front += " " + line
+        elif mode == "back" and line:
+            back += " " + line
+
+    return {"front": front.strip(), "back": back.strip()}
+
+
+@router.post("/rewrite-card")
+async def rewrite_card(request: CardRewriteRequest):
+    """
+    Reescreve um card usando LLM.
+
+    Actions:
+    - densify: Adiciona mais cloze deletions
+    - split_cloze: Divide em multiplos cloze
+    - simplify: Simplifica o card
+    """
+    try:
+        model = request.model or OLLAMA_MODEL or "qwen-flashcard"
+
+        # Detecta provider
+        use_openai = request.openaiApiKey and ("gpt" in model.lower() or model.startswith("o1-"))
+        use_perplexity = request.perplexityApiKey and "sonar" in model.lower()
+
+        prompt_provider = PromptProvider()
+        prompt = prompt_provider.build_card_rewrite_prompt(
+            front=request.front,
+            back=request.back,
+            action=request.action,
+        )
+        system_prompt = prompt_provider.card_rewrite_system()
+
+        options = {"num_predict": 1024, "temperature": 0.0}
+
+        raw = ""
+        if use_openai:
+            async for piece in openai_generate_stream(
+                request.openaiApiKey, model, prompt, system=system_prompt, options=options
+            ):
+                raw += piece
+        elif use_perplexity:
+            async for piece in perplexity_generate_stream(
+                request.perplexityApiKey, model, prompt, system=system_prompt, options=options
+            ):
+                raw += piece
+        else:
+            async for piece in ollama_generate_stream(
+                model, prompt, system=system_prompt, options=options
+            ):
+                raw += piece
+
+        result = _parse_rewrite_response(raw)
+
+        if not result["front"]:
+            return {"success": False, "error": "Falha ao parsear resposta do LLM", "raw": raw}
+
+        return {
+            "success": True,
+            "front": result["front"],
+            "back": result["back"],
+            "action": request.action,
+        }
+
+    except Exception as e:
+        logger.exception("Error rewriting card")
+        return {"success": False, "error": str(e)}

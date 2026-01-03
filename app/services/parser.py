@@ -214,13 +214,45 @@ def _dedup_by_front(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return out
 
 
+def renumber_cloze_markers(text: str) -> str:
+    """
+    Renumera cloze markers para serem sequenciais comecando em 1.
+
+    Exemplo:
+        Input:  "A {{c3::mitocondria}} produz {{c1::ATP}}"
+        Output: "A {{c1::mitocondria}} produz {{c2::ATP}}"
+
+    Preserva a ordem de aparicao no texto.
+    """
+    if not text:
+        return text
+
+    # Encontra todos os marcadores cloze na ordem em que aparecem
+    pattern = r"\{\{c\d+::([^}]+)\}\}"
+    matches = list(re.finditer(pattern, text))
+
+    if not matches:
+        return text
+
+    # Reconstroi o texto com numeracao sequencial
+    result = text
+    # Processa de tras pra frente para nao baguncar os indices
+    for i, match in enumerate(reversed(matches)):
+        new_num = len(matches) - i
+        content = match.group(1)
+        new_marker = f"{{{{c{new_num}::{content}}}}}"
+        result = result[:match.start()] + new_marker + result[match.end():]
+
+    return result
+
+
 def normalize_cards(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Normaliza:
-    - valida/ajusta cloze inválido
+    - valida/ajusta cloze invalido (tenta renumerar antes de converter)
     - limpa resposta
     - preserva `src` (quando existir)
-    - NÃO adiciona prefixos [BASIC]/[CLOZE]
+    - NAO adiciona prefixos [BASIC]/[CLOZE]
     """
     normalized: List[Dict[str, str]] = []
     for c in cards or []:
@@ -232,9 +264,20 @@ def normalize_cards(cards: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
         if card_type == "cloze":
             if not is_valid_cloze(q):
-                # Se cloze inválido, converte pra BASIC removendo {{c1::...}}
-                q = re.sub(r"\{\{c\d+::([^}]+)\}\}", r"\1", q).strip()
-                a = normalize_basic_answer(a)
+                # Tenta renumerar os cloze markers primeiro
+                if "{{c" in q:
+                    q = renumber_cloze_markers(q)
+                    if is_valid_cloze(q):
+                        # Renumeracao funcionou
+                        a = normalize_cloze_answer(a)
+                    else:
+                        # Ainda invalido - converte pra BASIC
+                        q = re.sub(r"\{\{c\d+::([^}]+)\}\}", r"\1", q).strip()
+                        a = normalize_basic_answer(a)
+                else:
+                    # Nao tem marcadores cloze - converte pra BASIC
+                    q = re.sub(r"\{\{c\d+::([^}]+)\}\}", r"\1", q).strip()
+                    a = normalize_basic_answer(a)
             else:
                 a = normalize_cloze_answer(a)
         else:

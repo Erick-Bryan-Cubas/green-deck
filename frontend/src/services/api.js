@@ -379,12 +379,13 @@ async function generateCards(text, deckOptions = "", textContext = "") {
  * @param {string} deckOptions - Deck de destino
  * @param {string} textContext - Contexto adicional
  * @param {string} cardType - Tipo de card (basic, cloze, both)
- * @param {string} model - Modelo LLM para geração
+ * @param {string} model - Modelo LLM para geracao
  * @param {(event: {stage:string, data:object})=>void} onProgress - Callback de progresso
- * @param {string} analysisId - ID da análise
- * @param {string} validationModel - Modelo para validação
- * @param {string} analysisModel - Modelo para análise
+ * @param {string} analysisId - ID da analise
+ * @param {string} validationModel - Modelo para validacao
+ * @param {string} analysisModel - Modelo para analise
  * @param {Object} customPrompts - Prompts personalizados (opcional)
+ * @param {number|null} numCards - Quantidade desejada de cards (opcional)
  * @returns {Promise<Array>} cards
  */
 async function generateCardsWithStream(
@@ -397,7 +398,8 @@ async function generateCardsWithStream(
   analysisId = null,
   validationModel = null,
   analysisModel = null,
-  customPrompts = null
+  customPrompts = null,
+  numCards = null
 ) {
   const keys = getStoredApiKeys();
 
@@ -415,6 +417,11 @@ async function generateCardsWithStream(
     openaiApiKey: keys.openaiApiKey || null,
     perplexityApiKey: keys.perplexityApiKey || null,
   };
+
+  // Adiciona quantidade de cards se especificada
+  if (numCards && numCards > 0) {
+    requestBody.numCards = numCards;
+  }
 
   // Adiciona prompts customizados se fornecidos
   if (customPrompts) {
@@ -683,7 +690,7 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned") {
 }
 
 /**
- * Busca os prompts padrão do servidor para exibição/edição no frontend
+ * Busca os prompts padrao do servidor para exibicao/edicao no frontend
  * @returns {Promise<Object>} Objeto com prompts organizados por categoria
  */
 async function getDefaultPrompts() {
@@ -695,6 +702,42 @@ async function getDefaultPrompts() {
     return await response.json();
   } catch (error) {
     console.error("Error fetching default prompts:", error);
+    throw error;
+  }
+}
+
+/**
+ * Reescreve um card usando LLM
+ * @param {Object} card - Card a ser reescrito {front, back}
+ * @param {string} action - Acao: "densify" | "split_cloze" | "simplify"
+ * @param {string} model - Modelo LLM para reescrita
+ * @returns {Promise<Object>} Card reescrito {success, front, back, action}
+ */
+async function rewriteCard(card, action, model = null) {
+  const keys = getStoredApiKeys();
+
+  try {
+    const response = await fetch("/api/rewrite-card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        front: card.front || "",
+        back: card.back || "",
+        action: action,
+        model: model,
+        openaiApiKey: keys.openaiApiKey || null,
+        perplexityApiKey: keys.perplexityApiKey || null,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error("API Error: " + errorText.substring(0, 200));
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error rewriting card:", error);
     throw error;
   }
 }
@@ -713,4 +756,5 @@ export {
   getPdfPagesPreview,
   extractSelectedPages,
   getDefaultPrompts,
+  rewriteCard,
 };
