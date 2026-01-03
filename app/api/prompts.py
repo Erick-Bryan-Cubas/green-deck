@@ -12,9 +12,9 @@ PROMPTS = {
     ),
 
     "FLASHCARDS_SYSTEM_CLOZE": (
-        "Você gera flashcards CLOZE para Anki.\n"
-        "REGRA: toda linha CLOZE deve ter EXATAMENTE uma ocorrência de {{c1::termo}}.\n"
-        "Fora do SRC: pt-BR. No SRC: citação literal.\n"
+        "Voce gera flashcards CLOZE para Anki.\n"
+        "REGRA: cada CLOZE pode ter uma ou multiplas lacunas: {{c1::termo}}, {{c2::termo}}, etc.\n"
+        "Fora do SRC: pt-BR. No SRC: citacao literal de <SOURCE>.\n"
         "Cloze usa apenas CLOZE:/EXTRA:/SRC: (sem Q:/A:).\n"
         "NUNCA responda em espanhol.\n"
     ),
@@ -42,8 +42,8 @@ ANCORAGEM:
     # =========================
     "FLASHCARDS_TYPE_BASIC": "Gere APENAS cards básicos (Q/A). NÃO gere cloze.",
     "FLASHCARDS_TYPE_CLOZE": (
-        "Gere APENAS cards cloze: frase afirmativa + UMA lacuna {{c1::termo}}.\n"
-        "Use prefixo CLOZE: (não Q:)."
+        "Gere APENAS cards cloze: frase afirmativa com uma ou mais lacunas {{c1::termo}}, {{c2::termo}}, etc.\n"
+        "Use prefixo CLOZE: (nao Q:). Numere as lacunas sequencialmente."
     ),
     "FLASHCARDS_TYPE_BOTH": "Para cada conceito importante: 1 básico (Q/A) + 1 cloze (CLOZE/EXTRA).",
 
@@ -61,12 +61,12 @@ REGRAS:
 """,
 
     "FLASHCARDS_FORMAT_CLOZE": """FORMATO:
-CLOZE: <frase afirmativa em pt-BR com UMA lacuna {{c1::termo}}>
+CLOZE: <frase afirmativa em pt-BR com uma ou mais lacunas {{c1::termo}}, {{c2::termo}}, etc.>
 EXTRA: <1 frase curta de contexto>
-SRC: "<trecho literal do CONTEÚDO-FONTE>"
+SRC: "<trecho literal de <SOURCE>>"
 
 REGRAS:
-- CLOZE deve conter EXATAMENTE uma ocorrência de {{c1::}}.
+- CLOZE pode ter multiplas lacunas numeradas sequencialmente: {{c1::}}, {{c2::}}, etc.
 - Nunca use Q:/A:.
 """,
 
@@ -84,57 +84,80 @@ SRC: "<literal do CONTEÚDO-FONTE>"
 """,
 
     # =========================
-    # Flashcards: prompt principal de geração (curto, sem redundância)
+    # Flashcards: prompt principal de geracao (com delimitadores XML)
     # =========================
     "FLASHCARDS_GENERATION": """${guidelines}
 
-FONTE (única base válida):
+<SOURCE>
 ${src}
+</SOURCE>
 
+<CONTEXT purpose="understanding_only">
 ${ctx_block}
+</CONTEXT>
 
+<CHECKLIST>
 ${checklist_block}
+</CHECKLIST>
 
-TAREFA:
+<INSTRUCTIONS>
 - Gere entre ${target_min} e ${target_max} cards.
-- Se a fonte estiver em inglês: traduza o card para pt-BR sem adicionar fatos.
-- SRC sempre literal da fonte.
+- APENAS use informacoes presentes em <SOURCE>.
+- <CONTEXT> serve APENAS para compreensao do assunto - NAO crie cards baseados apenas em <CONTEXT>.
+- Se a fonte estiver em ingles: traduza o card para pt-BR sem adicionar fatos.
+- SRC deve ser citacao literal de <SOURCE>.
+</INSTRUCTIONS>
 
-TIPO:
+<TYPE>
 ${type_instruction}
+</TYPE>
 
+<OUTPUT_FORMAT>
 ${format_block}
+</OUTPUT_FORMAT>
 
-SAÍDA:
-- Sem markdown/listas/numeração.
+<OUTPUT_RULES>
+- Sem markdown/listas/numeracao.
 - Uma linha em branco entre cards.
+</OUTPUT_RULES>
 
 COMECE:
 """,
 
     # =========================
-    # Flashcards: prompt de repair (curto e assertivo)
+    # Flashcards: prompt de repair (com delimitadores XML)
     # =========================
     "FLASHCARDS_REPAIR": """${guidelines}
 
-FONTE (única base válida):
+<SOURCE>
 ${src}
+</SOURCE>
 
+<CONTEXT purpose="understanding_only">
 ${ctx_block}
+</CONTEXT>
 
+<CHECKLIST>
 ${checklist_block}
+</CHECKLIST>
 
-REFAÇA os cards obedecendo 100% ao FORMATO e às REGRAS:
-- Cada card deve ser derivável da FONTE.
-- SRC literal copiado da FONTE.
+<INSTRUCTIONS>
+REFACA os cards obedecendo 100% ao FORMATO e as REGRAS:
+- Cada card deve ser derivavel de <SOURCE>.
+- SRC deve ser citacao literal de <SOURCE>.
 - Entre ${target_min} e ${target_max} cards.
+- <CONTEXT> serve APENAS para compreensao - NAO crie cards baseados apenas em <CONTEXT>.
+</INSTRUCTIONS>
 
+<OUTPUT_FORMAT>
 ${format_block}
+</OUTPUT_FORMAT>
 
-SAÍDA:
+<OUTPUT_RULES>
 - Apenas pt-BR fora do SRC.
-- Sem markdown/listas/numeração.
+- Sem markdown/listas/numeracao.
 - Uma linha em branco entre cards.
+</OUTPUT_RULES>
 
 COMECE (sem explicar):
 """,
@@ -220,7 +243,85 @@ ${text}
 Return a short structured summary (3–7 bullets).
 """,
 
-    "TEXT_ANALYSIS_SYSTEM": "Você é um assistente de análise de texto educacional.",
+    "TEXT_ANALYSIS_SYSTEM": "Voce e um assistente de analise de texto educacional.",
+
+    # =========================
+    # Prompts de reescrita de cards com LLM
+    # =========================
+    "CARD_REWRITE_DENSIFY": """Reescreva este flashcard adicionando mais cloze deletions para tornar o aprendizado mais ativo.
+
+<ORIGINAL_CARD>
+Front: ${front}
+Back: ${back}
+</ORIGINAL_CARD>
+
+<RULES>
+- Identifique 2-4 termos-chave adicionais que podem virar cloze
+- Use {{c1::...}}, {{c2::...}}, {{c3::...}} etc. para os termos
+- Se ja existe {{c1::...}}, mantenha e adicione {{c2::...}}, {{c3::...}}
+- Preserve o significado e a estrutura da frase
+- NAO adicione informacoes que nao estao no card original
+</RULES>
+
+<OUTPUT_FORMAT>
+Front: [frase com multiplos cloze]
+Back: [contexto expandido se necessario]
+</OUTPUT_FORMAT>
+
+Responda APENAS no formato acima, sem explicacoes:
+""",
+
+    "CARD_REWRITE_SPLIT": """Divida este flashcard em multiplas lacunas cloze independentes na mesma frase.
+
+<ORIGINAL_CARD>
+Front: ${front}
+Back: ${back}
+</ORIGINAL_CARD>
+
+<RULES>
+- Cada conceito importante deve virar um cloze separado: {{c1::...}}, {{c2::...}}, {{c3::...}}
+- Mantenha tudo na mesma frase
+- Maximo 4 cloze por card
+- Se o card original tem apenas 1 cloze, adicione mais 1-3 lacunas
+- Numere sequencialmente: c1, c2, c3, c4
+</RULES>
+
+<OUTPUT_FORMAT>
+Front: [frase com cloze separados]
+Back: [breve contexto]
+</OUTPUT_FORMAT>
+
+Responda APENAS no formato acima, sem explicacoes:
+""",
+
+    "CARD_REWRITE_SIMPLIFY": """Simplifique este flashcard para focar no essencial.
+
+<ORIGINAL_CARD>
+Front: ${front}
+Back: ${back}
+</ORIGINAL_CARD>
+
+<RULES>
+- Reduza a complexidade da pergunta/resposta
+- Mantenha apenas a informacao essencial
+- Se for cloze com multiplas lacunas, reduza para apenas 1 ou 2
+- Use linguagem clara e direta
+</RULES>
+
+<OUTPUT_FORMAT>
+Front: [versao simplificada]
+Back: [resposta curta]
+</OUTPUT_FORMAT>
+
+Responda APENAS no formato acima, sem explicacoes:
+""",
+
+    "CARD_REWRITE_SYSTEM": (
+        "Voce e um assistente especializado em reescrever flashcards.\n"
+        "Siga EXATAMENTE o formato de saida pedido.\n"
+        "Responda em pt-BR.\n"
+        "NAO adicione explicacoes ou comentarios.\n"
+    ),
 
 }
 

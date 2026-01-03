@@ -70,11 +70,10 @@ class PromptProvider:
         target_max: int,
         card_type: CardType,
     ) -> str:
-        ctx_block = ""
-        if (ctx or "").strip():
-            ctx_block = f"CONTEXTO GERAL (apenas para entender o assunto - NÃO crie cards sobre informações que estão APENAS aqui):\n{ctx.strip()}"
+        # Agora o contexto vai dentro do XML, entao nao precisa do prefixo antigo
+        ctx_block = (ctx or "").strip() or "Nenhum contexto adicional fornecido."
 
-        # Se há prompt de geração customizado, usa ele
+        # Se ha prompt de geracao customizado, usa ele
         if self.custom_prompts.get("generation"):
             return _render_custom(
                 self.custom_prompts["generation"],
@@ -110,9 +109,8 @@ class PromptProvider:
         target_max: int,
         card_type: CardType,
     ) -> str:
-        ctx_block = ""
-        if (ctx or "").strip():
-            ctx_block = f"CONTEXTO GERAL (apenas para entender o assunto - NÃO crie cards sobre informações que estão APENAS aqui):\n{ctx.strip()}"
+        # Contexto vai dentro do XML
+        ctx_block = (ctx or "").strip() or "Nenhum contexto adicional fornecido."
 
         return _render(
             "FLASHCARDS_REPAIR",
@@ -151,7 +149,38 @@ class PromptProvider:
 
     def text_analysis_system(self) -> str:
         return PROMPTS["TEXT_ANALYSIS_SYSTEM"]
-    
+
+    # ========================================
+    # Metodos para reescrita de cards com LLM
+    # ========================================
+
+    def build_card_rewrite_prompt(
+        self, *, front: str, back: str, action: str
+    ) -> str:
+        """
+        Constroi prompt para reescrever um card.
+
+        Args:
+            front: Front do card original
+            back: Back do card original
+            action: "densify" | "split" | "simplify"
+
+        Returns:
+            Prompt renderizado
+        """
+        key_map = {
+            "densify": "CARD_REWRITE_DENSIFY",
+            "split": "CARD_REWRITE_SPLIT",
+            "split_cloze": "CARD_REWRITE_SPLIT",
+            "simplify": "CARD_REWRITE_SIMPLIFY",
+        }
+        key = key_map.get(action, "CARD_REWRITE_SIMPLIFY")
+        return _render(key, front=front, back=back)
+
+    def card_rewrite_system(self) -> str:
+        """Retorna o system prompt para reescrita de cards."""
+        return PROMPTS["CARD_REWRITE_SYSTEM"]
+
     def with_custom_prompts(
         self,
         system: Optional[str] = None,

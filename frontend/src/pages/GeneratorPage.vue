@@ -11,6 +11,7 @@ import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
+import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
@@ -38,7 +39,8 @@ import {
   analyzeText,
   getStoredApiKeys,
   storeApiKeys,
-  validateAnthropicApiKey
+  validateAnthropicApiKey,
+  rewriteCard
 } from '@/services/api.js'
 
 const toast = useToast()
@@ -1222,10 +1224,14 @@ function refreshStoredKeys() {
 // Card type
 const cardType = ref('basic')
 const cardTypeOptions = ref([
-  { label: 'Básicos', value: 'basic', description: 'Gerar cartões do tipo básico' },
-  { label: 'Cloze', value: 'cloze', description: 'Gerar cartões Cloze (preenchimento)' },
-  { label: 'Básicos + Cloze', value: 'both', description: 'Gerar ambos os tipos' }
+  { label: 'Basicos', value: 'basic', description: 'Gerar cartoes do tipo basico' },
+  { label: 'Cloze', value: 'cloze', description: 'Gerar cartoes Cloze (preenchimento)' },
+  { label: 'Basicos + Cloze', value: 'both', description: 'Gerar ambos os tipos' }
 ])
+
+// Card quantity slider
+const numCardsEnabled = ref(false)
+const numCardsSlider = ref(10)
 
 // Prompt Editor
 const promptEditorVisible = ref(false)
@@ -1771,10 +1777,27 @@ async function generateCardsFromSelection() {
       selectedModel.value,
       ({ stage, data }) => {
         try {
+          // Tratamento de erro de escassez de conteudo
+          if (stage === 'error' && data?.type === 'content_scarcity') {
+            const msg = `${data.error} (Recomendado: ${data.recommended_max} cards)`
+            notify(msg, 'warn', 8000)
+            addLog(msg, 'error')
+            generating.value = false
+            progressVisible.value = false
+            stopTimer()
+            throw new Error(msg)
+          }
+
+          // Tratamento de warning
+          if (stage === 'warning' && data?.message) {
+            notify(data.message, 'warn', 5000)
+            addLog(data.message, 'warn')
+          }
+
           if (stage === 'stage' && data?.stage) {
             const s = data.stage
-            
-            // Mapeamento de estágios para UI amigável (usando ícones PrimeVue)
+
+            // Mapeamento de estagios para UI amigavel (usando icones PrimeVue)
             const stageMap = {
               'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: 'pi pi-send' },
               'parsed': { 
@@ -1865,7 +1888,8 @@ async function generateCardsFromSelection() {
       currentAnalysisId.value,
       selectedValidationModel.value,
       selectedAnalysisModel.value,
-      customPrompts.value
+      customPrompts.value,
+      numCardsEnabled.value ? numCardsSlider.value : null
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')
@@ -2006,6 +2030,39 @@ function deleteEditCard() {
   cards.value.splice(idx, 1)
   editVisible.value = false
   notify('Card removido', 'info', 2000)
+}
+
+// Estado e funcao para reescrita de cards com LLM
+const isRewriting = ref(false)
+
+async function handleRewriteCard(action) {
+  if (editIndex.value < 0) return
+  if (isRewriting.value) return
+
+  isRewriting.value = true
+  try {
+    const result = await rewriteCard(
+      {
+        front: editDraft.value.front,
+        back: editDraft.value.back,
+      },
+      action,
+      selectedModel.value
+    )
+
+    if (result.success) {
+      editDraft.value.front = result.front
+      editDraft.value.back = result.back
+      notify(`Card reescrito: ${action}`, 'success', 3000)
+    } else {
+      notify('Erro ao reescrever: ' + (result.error || 'Erro desconhecido'), 'error', 5000)
+    }
+  } catch (error) {
+    console.error('Rewrite error:', error)
+    notify('Erro ao reescrever: ' + (error?.message || String(error)), 'error', 5000)
+  } finally {
+    isRewriting.value = false
+  }
 }
 
 function onEditTextSelect(event) {
@@ -3098,6 +3155,29 @@ onBeforeUnmount(() => {
                 </template>
               </Select>
 
+              <!-- Card Quantity Slider -->
+              <div class="num-cards-control flex align-items-center gap-2">
+                <Checkbox
+                  v-model="numCardsEnabled"
+                  :binary="true"
+                  inputId="numCardsCheck"
+                  :disabled="generating || isAnalyzing"
+                />
+                <label for="numCardsCheck" class="text-sm cursor-pointer">Qtd:</label>
+                <InputNumber
+                  v-if="numCardsEnabled"
+                  v-model="numCardsSlider"
+                  :min="1"
+                  :max="50"
+                  :showButtons="true"
+                  buttonLayout="horizontal"
+                  :inputStyle="{ width: '3rem', textAlign: 'center' }"
+                  decrementButtonClass="p-button-text p-button-sm"
+                  incrementButtonClass="p-button-text p-button-sm"
+                  :disabled="generating || isAnalyzing"
+                />
+              </div>
+
               <!-- Prompt Editor Button -->
               <Button
                 icon="pi pi-sliders-h"
@@ -3796,6 +3876,48 @@ onBeforeUnmount(() => {
         <div class="col-12 md:col-6">
           <div class="field-title">Preview Back</div>
           <div class="md-preview" v-html="renderMarkdownSafe(editDraft.back)"></div>
+        </div>
+      </div>
+
+      <Divider />
+
+      <!-- Rewrite with LLM Actions -->
+      <div class="rewrite-actions">
+        <span class="rewrite-label text-sm text-color-secondary mr-3">Reescrever com IA:</span>
+        <div class="flex flex-wrap gap-2">
+          <Button
+            label="Tornar mais denso"
+            icon="pi pi-plus"
+            severity="secondary"
+            outlined
+            size="small"
+            :loading="isRewriting"
+            :disabled="isRewriting"
+            @click="handleRewriteCard('densify')"
+            title="Adiciona mais lacunas cloze ao card"
+          />
+          <Button
+            label="Dividir em multiplos cloze"
+            icon="pi pi-clone"
+            severity="secondary"
+            outlined
+            size="small"
+            :loading="isRewriting"
+            :disabled="isRewriting"
+            @click="handleRewriteCard('split_cloze')"
+            title="Divide o conteudo em varias lacunas"
+          />
+          <Button
+            label="Simplificar"
+            icon="pi pi-minus"
+            severity="secondary"
+            outlined
+            size="small"
+            :loading="isRewriting"
+            :disabled="isRewriting"
+            @click="handleRewriteCard('simplify')"
+            title="Reduz complexidade do card"
+          />
         </div>
       </div>
 
