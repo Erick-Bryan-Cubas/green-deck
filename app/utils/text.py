@@ -160,4 +160,23 @@ def get_card_type(q: str) -> str:
 
 
 def is_valid_cloze(q: str) -> bool:
-    return q.count("{{c1::") == 1
+    """
+    Valida formato de card cloze.
+    Aceita um ou multiplos cloze deletions: {{c1::...}}, {{c2::...}}, etc.
+    Requer numeracao sequencial comecando em 1.
+    """
+    if not q:
+        return False
+
+    # Encontra todos os marcadores cloze
+    cloze_pattern = r"\{\{c(\d+)::[^}]+\}\}"
+    matches = re.findall(cloze_pattern, q)
+
+    if not matches:
+        return False
+
+    # Valida que os numeros sao sequenciais comecando em 1
+    numbers = sorted(set(int(n) for n in matches))
+    expected = list(range(1, len(numbers) + 1))
+
+    return numbers == expected
