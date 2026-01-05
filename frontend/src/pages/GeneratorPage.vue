@@ -12,6 +12,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import InputNumber from 'primevue/inputnumber'
+import Slider from 'primevue/slider'
 import Textarea from 'primevue/textarea'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
@@ -1233,12 +1234,21 @@ const cardTypeOptions = ref([
 const numCardsEnabled = ref(false)
 const numCardsSlider = ref(10)
 
-// Prompt Editor
-const promptEditorVisible = ref(false)
+// Generate Modal (unified modal for generation settings)
+const generateModalVisible = ref(false)
 const customPrompts = ref(null)
 
 function onCustomPromptsUpdate(prompts) {
   customPrompts.value = prompts
+}
+
+function openGenerateModal() {
+  generateModalVisible.value = true
+}
+
+function confirmGenerate() {
+  generateModalVisible.value = false
+  generateCardsFromSelection()
 }
 
 // Model selection
@@ -3155,39 +3165,6 @@ onBeforeUnmount(() => {
                 </template>
               </Select>
 
-              <!-- Card Quantity Slider -->
-              <div class="num-cards-control flex align-items-center gap-2">
-                <Checkbox
-                  v-model="numCardsEnabled"
-                  :binary="true"
-                  inputId="numCardsCheck"
-                  :disabled="generating || isAnalyzing"
-                />
-                <label for="numCardsCheck" class="text-sm cursor-pointer">Qtd:</label>
-                <InputNumber
-                  v-if="numCardsEnabled"
-                  v-model="numCardsSlider"
-                  :min="1"
-                  :max="50"
-                  :showButtons="true"
-                  buttonLayout="horizontal"
-                  :inputStyle="{ width: '3rem', textAlign: 'center' }"
-                  decrementButtonClass="p-button-text p-button-sm"
-                  incrementButtonClass="p-button-text p-button-sm"
-                  :disabled="generating || isAnalyzing"
-                />
-              </div>
-
-              <!-- Prompt Editor Button -->
-              <Button
-                icon="pi pi-sliders-h"
-                class="p-button-text"
-                :disabled="generating || isAnalyzing"
-                :class="{ 'p-button-warning': customPrompts !== null }"
-                title="Editar prompts personalizados"
-                @click="promptEditorVisible = true"
-              />
-
               <!-- Analyze Button -->
               <Button
                 icon="pi pi-search-plus"
@@ -3206,7 +3183,7 @@ onBeforeUnmount(() => {
                 :disabled="!canGenerate || generating || isAnalyzing"
                 :loading="generating"
                 :title="generationSourceLabel + ' (Ctrl+Enter)'"
-                @click="generateCardsFromSelection"
+                @click="openGenerateModal"
               />
 
 
@@ -3787,20 +3764,104 @@ onBeforeUnmount(() => {
       </Splitter>
     </div>
 
-    <!-- PROMPT EDITOR DIALOG -->
+    <!-- GENERATE MODAL -->
     <Dialog
-      v-model:visible="promptEditorVisible"
-      header="Personalizar Prompts"
+      v-model:visible="generateModalVisible"
       modal
       appendTo="body"
       :draggable="false"
-      class="modern-dialog"
-      :style="{ width: 'min(900px, 96vw)', maxHeight: '90vh' }"
+      :dismissableMask="true"
+      class="modern-dialog generate-modal"
+      :style="{ width: 'min(720px, 96vw)', maxHeight: '90vh' }"
     >
-      <PromptEditor
-        :cardType="cardType"
-        @update:customPrompts="onCustomPromptsUpdate"
-      />
+      <template #header>
+        <div class="generate-modal-header">
+          <div class="header-text">
+            <h3><i class="pi pi-bolt" style="margin-right: 8px;" />Configurar Geração</h3>
+            <p>Ajuste as opções antes de criar os flashcards</p>
+          </div>
+        </div>
+      </template>
+
+      <div class="generate-modal-content">
+        <!-- Card Quantity Section -->
+        <div class="generate-section">
+          <div class="section-header">
+            <div class="section-title">
+              <span class="title"><i class="pi pi-objects-column" /> Quantidade de Cards</span>
+              <span class="subtitle">Defina quantos flashcards serão gerados</span>
+            </div>
+          </div>
+          <div class="quantity-control">
+            <div class="quantity-toggle">
+              <Checkbox
+                v-model="numCardsEnabled"
+                :binary="true"
+                inputId="numCardsModalCheck"
+              />
+              <label for="numCardsModalCheck" class="cursor-pointer">
+                Definir quantidade específica
+              </label>
+            </div>
+            <Transition name="slide-fade">
+              <div v-if="numCardsEnabled" class="quantity-slider-wrapper">
+                <div class="quantity-display">
+                  <span class="quantity-value">{{ numCardsSlider }}</span>
+                  <span class="quantity-label">cards</span>
+                </div>
+                <Slider
+                  v-model="numCardsSlider"
+                  :min="1"
+                  :max="50"
+                  class="quantity-slider"
+                />
+                <div class="quantity-range-labels">
+                  <span>1</span>
+                  <span>25</span>
+                  <span>50</span>
+                </div>
+              </div>
+            </Transition>
+            <p v-if="!numCardsEnabled" class="quantity-auto-hint">
+              <i class="pi pi-info-circle" />
+              A quantidade será calculada automaticamente baseada no tamanho do texto selecionado.
+            </p>
+          </div>
+        </div>
+
+        <!-- Prompt Editor Section -->
+        <div class="generate-section">
+          <div class="section-header">
+            <div class="section-title">
+              <span class="title"><i class="pi pi-sliders-h" /> Prompts de Geração</span>
+              <span class="subtitle">Personalize as instruções do modelo de IA</span>
+            </div>
+            <Tag v-if="customPrompts" severity="warning" value="customizado" class="ml-auto" />
+          </div>
+          <PromptEditor
+            :cardType="cardType"
+            @update:customPrompts="onCustomPromptsUpdate"
+          />
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="generate-modal-footer">
+          <Button
+            label="Cancelar"
+            severity="secondary"
+            text
+            @click="generateModalVisible = false"
+          />
+          <Button
+            label="Gerar Cards"
+            icon="pi pi-bolt"
+            class="cta"
+            :loading="generating"
+            @click="confirmGenerate"
+          />
+        </div>
+      </template>
     </Dialog>
 
     <!-- EDIT DIALOG -->
@@ -5143,6 +5204,431 @@ onBeforeUnmount(() => {
 :deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
   border-color: rgba(99, 102, 241, 0.55);
+}
+
+/* =========================
+   Generate Modal Styles (Modern)
+========================= */
+:deep(.generate-modal) {
+  background: var(--p-content-background);
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.25),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+  animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+:deep(.generate-modal .p-dialog-header) {
+  padding: 1.5rem 1.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.05) 100%);
+  backdrop-filter: blur(20px);
+  position: relative;
+  overflow: hidden;
+}
+
+:deep(.generate-modal .p-dialog-header::before) {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+}
+
+:deep(.generate-modal .p-dialog-content) {
+  padding: 1.5rem 1.75rem;
+  background: var(--p-surface-ground);
+}
+
+:deep(.generate-modal .p-dialog-footer) {
+  padding: 1.25rem 1.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, var(--p-content-background) 0%, rgba(99, 102, 241, 0.02) 100%);
+}
+
+:deep(.generate-modal .generate-modal-header) {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+:deep(.generate-modal .generate-modal-header .header-icon) {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow:
+    0 8px 16px -4px rgba(99, 102, 241, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  position: relative;
+  animation: iconPulse 2s ease-in-out infinite;
+}
+
+@keyframes iconPulse {
+  0%, 100% {
+    box-shadow:
+      0 8px 16px -4px rgba(99, 102, 241, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+  50% {
+    box-shadow:
+      0 8px 24px -4px rgba(99, 102, 241, 0.6),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+}
+
+:deep(.generate-modal .generate-modal-header .header-icon::after) {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+:deep(.generate-modal .generate-modal-header .header-icon i) {
+  font-size: 1.6rem;
+  color: white;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+:deep(.generate-modal .generate-modal-header .header-text h3) {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--p-text-color);
+  letter-spacing: -0.02em;
+}
+
+:deep(.generate-modal .generate-modal-header .header-text p) {
+  margin: 0.35rem 0 0 0;
+  font-size: 0.9rem;
+  color: var(--p-text-muted-color);
+  opacity: 0.85;
+}
+
+:deep(.generate-modal .generate-modal-content) {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+:deep(.generate-modal .generate-section) {
+  background: var(--p-content-background);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1.25rem;
+  position: relative;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+:deep(.generate-modal .generate-section::before) {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+:deep(.generate-modal .generate-section:hover) {
+  border-color: rgba(99, 102, 241, 0.2);
+  box-shadow: 0 4px 24px -8px rgba(99, 102, 241, 0.15);
+}
+
+:deep(.generate-modal .generate-section:hover::before) {
+  opacity: 1;
+}
+
+:deep(.generate-modal .section-header) {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+:deep(.generate-modal .section-icon) {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px -2px rgba(99, 102, 241, 0.35);
+  position: relative;
+}
+
+:deep(.generate-modal .section-icon::after) {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, transparent 50%);
+}
+
+:deep(.generate-modal .section-icon.prompt-icon) {
+  background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+  box-shadow: 0 4px 12px -2px rgba(16, 185, 129, 0.35);
+}
+
+:deep(.generate-modal .section-icon i) {
+  color: white;
+  font-size: 1.15rem;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+}
+
+:deep(.generate-modal .section-title) {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.35rem;
+  flex: 1;
+}
+
+:deep(.generate-modal .section-title .title) {
+  display: block !important;
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--p-text-color);
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+:deep(.generate-modal .section-title .subtitle) {
+  display: block !important;
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+  line-height: 1.4;
+  opacity: 0.7;
+}
+
+:deep(.generate-modal .quantity-control) {
+  padding: 0;
+}
+
+:deep(.generate-modal .quantity-toggle) {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+:deep(.generate-modal .quantity-toggle label) {
+  color: var(--p-text-color);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+:deep(.generate-modal .quantity-toggle label:hover) {
+  color: var(--p-primary-color);
+}
+
+:deep(.generate-modal .quantity-slider-wrapper) {
+  margin-top: 1.25rem;
+  padding: 1.5rem;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, rgba(139, 92, 246, 0.02) 100%);
+  border-radius: 14px;
+  border: 1px solid rgba(99, 102, 241, 0.12);
+  position: relative;
+  overflow: hidden;
+}
+
+:deep(.generate-modal .quantity-slider-wrapper::before) {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.2), transparent);
+}
+
+:deep(.generate-modal .quantity-display) {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.625rem;
+  margin-bottom: 1.5rem;
+}
+
+:deep(.generate-modal .quantity-value) {
+  display: inline-block;
+  font-size: 3.5rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+:deep(.generate-modal .quantity-label) {
+  display: inline-block;
+  font-size: 1.15rem;
+  color: var(--p-text-muted-color);
+  font-weight: 500;
+  opacity: 0.75;
+  margin-left: 0.25rem;
+}
+
+:deep(.generate-modal .quantity-slider) {
+  width: 100%;
+}
+
+:deep(.generate-modal .quantity-slider .p-slider-range) {
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
+}
+
+:deep(.generate-modal .quantity-slider .p-slider-handle) {
+  width: 28px;
+  height: 28px;
+  margin-top: -13px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  border: 3px solid white;
+  box-shadow:
+    0 4px 12px rgba(99, 102, 241, 0.4),
+    0 0 0 4px rgba(99, 102, 241, 0.1);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:deep(.generate-modal .quantity-slider .p-slider-handle:hover) {
+  transform: scale(1.15);
+  box-shadow:
+    0 6px 20px rgba(99, 102, 241, 0.5),
+    0 0 0 6px rgba(99, 102, 241, 0.15);
+}
+
+:deep(.generate-modal .quantity-slider .p-slider-handle:active) {
+  transform: scale(1.1);
+}
+
+:deep(.generate-modal .quantity-range-labels) {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.875rem;
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  font-weight: 500;
+  opacity: 0.6;
+}
+
+:deep(.generate-modal .quantity-auto-hint) {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 1rem 0 0 0;
+  padding: 0.875rem 1rem;
+  font-size: 0.85rem;
+  color: var(--p-text-muted-color);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.03) 100%);
+  border-radius: 12px;
+  border: 1px dashed rgba(99, 102, 241, 0.2);
+}
+
+:deep(.generate-modal .quantity-auto-hint i) {
+  color: var(--p-primary-color);
+  font-size: 1rem;
+}
+
+:deep(.generate-modal .generate-modal-footer) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.875rem;
+}
+
+:deep(.generate-modal .generate-modal-footer .p-button-secondary) {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--p-text-muted-color);
+  transition: all 0.2s ease;
+}
+
+:deep(.generate-modal .generate-modal-footer .p-button-secondary:hover) {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--p-text-color);
+}
+
+:deep(.generate-modal .generate-modal-footer .cta) {
+  min-width: 150px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  border: none;
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  box-shadow:
+    0 4px 16px -2px rgba(99, 102, 241, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+:deep(.generate-modal .generate-modal-footer .cta::before) {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transition: left 0.5s ease;
+}
+
+:deep(.generate-modal .generate-modal-footer .cta:hover) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 8px 24px -4px rgba(99, 102, 241, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+:deep(.generate-modal .generate-modal-footer .cta:hover::before) {
+  left: 100%;
+}
+
+:deep(.generate-modal .generate-modal-footer .cta:active) {
+  transform: translateY(0);
+}
+
+:deep(.generate-modal .generate-modal-footer .cta .p-button-icon) {
+  font-size: 1rem;
+}
+
+/* Transition for slider */
+.slide-fade-enter-active,
+.slide-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.slide-fade-enter-from,
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
 }
 
 /* =========================

@@ -174,11 +174,37 @@ async function loadDefaultPrompts() {
   }
 }
 
-// Reseta para os padrões
+// Reseta para os padrões (carrega os valores padrão nos campos)
 function resetToDefaults() {
-  customSystemPrompt.value = ''
-  customGuidelines.value = ''
-  customGenerationPrompt.value = ''
+  if (!defaultPrompts.value) return
+
+  const systemDefault = defaultPrompts.value.system?.[props.cardType] || defaultPrompts.value.system?.basic || ''
+  const guidelinesDefault = defaultPrompts.value.guidelines?.default || ''
+  const generationDefault = defaultPrompts.value.generation?.default || ''
+
+  customSystemPrompt.value = systemDefault
+  customGuidelines.value = guidelinesDefault
+  customGenerationPrompt.value = generationDefault
+}
+
+// Preenche os campos com os valores padrão quando ativa a edição
+function fillWithDefaults() {
+  if (!defaultPrompts.value) return
+
+  const systemDefault = defaultPrompts.value.system?.[props.cardType] || defaultPrompts.value.system?.basic || ''
+  const guidelinesDefault = defaultPrompts.value.guidelines?.default || ''
+  const generationDefault = defaultPrompts.value.generation?.default || ''
+
+  // Só preenche se estiver vazio
+  if (!customSystemPrompt.value.trim()) {
+    customSystemPrompt.value = systemDefault
+  }
+  if (!customGuidelines.value.trim()) {
+    customGuidelines.value = guidelinesDefault
+  }
+  if (!customGenerationPrompt.value.trim()) {
+    customGenerationPrompt.value = generationDefault
+  }
 }
 
 // Emite os prompts customizados quando mudam
@@ -187,20 +213,27 @@ watch([useCustomPrompts, customSystemPrompt, customGuidelines, customGenerationP
     emit('update:customPrompts', null)
     return
   }
-  
+
+  if (!defaultPrompts.value) return
+
   const prompts = {}
-  
-  if (customSystemPrompt.value.trim()) {
+
+  // Compara com os padrões - só envia se for diferente
+  const systemDefault = defaultPrompts.value.system?.[props.cardType] || defaultPrompts.value.system?.basic || ''
+  const guidelinesDefault = defaultPrompts.value.guidelines?.default || ''
+  const generationDefault = defaultPrompts.value.generation?.default || ''
+
+  if (customSystemPrompt.value.trim() && customSystemPrompt.value.trim() !== systemDefault.trim()) {
     prompts.systemPrompt = customSystemPrompt.value.trim()
   }
-  if (customGuidelines.value.trim()) {
+  if (customGuidelines.value.trim() && customGuidelines.value.trim() !== guidelinesDefault.trim()) {
     prompts.guidelines = customGuidelines.value.trim()
   }
-  if (customGenerationPrompt.value.trim()) {
+  if (customGenerationPrompt.value.trim() && customGenerationPrompt.value.trim() !== generationDefault.trim()) {
     prompts.generationPrompt = customGenerationPrompt.value.trim()
   }
-  
-  // Só emite se houver algo customizado
+
+  // Só emite se houver algo customizado (diferente do padrão)
   if (Object.keys(prompts).length > 0) {
     emit('update:customPrompts', prompts)
   } else {
@@ -209,9 +242,11 @@ watch([useCustomPrompts, customSystemPrompt, customGuidelines, customGenerationP
 }, { deep: true })
 
 // Carrega prompts quando ativar customização
-watch(useCustomPrompts, (val) => {
+watch(useCustomPrompts, async (val) => {
   if (val) {
-    loadDefaultPrompts()
+    await loadDefaultPrompts()
+    // Preenche os campos com os valores padrão
+    fillWithDefaults()
   }
 })
 
@@ -234,22 +269,63 @@ onMounted(() => {
   font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
 }
 
+:deep(.p-accordion) {
+  border: none;
+}
+
+:deep(.p-accordion-panel) {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+:deep(.p-accordion-header) {
+  background: var(--p-content-background);
+}
+
 :deep(.p-accordion-header-link) {
   padding: 0.75rem 1rem;
+  background: transparent;
+  border: none;
+}
+
+:deep(.p-accordion-header-link:hover) {
+  background: var(--p-surface-hover);
 }
 
 :deep(.p-accordion-content) {
-  padding: 0.75rem 1rem;
+  padding: 1rem;
+  background: var(--p-surface-ground);
+  border-top: 1px solid var(--p-content-border-color);
 }
 
 :deep(.p-textarea) {
   line-height: 1.5;
+  font-size: 0.875rem;
+  background: var(--p-content-background);
+  border-color: var(--p-content-border-color);
+}
+
+:deep(.p-textarea:focus) {
+  border-color: var(--p-primary-color);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
 }
 
 code {
-  background: var(--surface-100);
-  padding: 0.1rem 0.3rem;
+  background: var(--p-surface-hover);
+  color: var(--p-primary-color);
+  padding: 0.15rem 0.4rem;
   border-radius: 4px;
-  font-size: 0.85em;
+  font-size: 0.8em;
+  font-family: 'Fira Code', monospace;
+}
+
+.surface-ground {
+  background: var(--p-surface-ground) !important;
+}
+
+.text-color-secondary {
+  color: var(--p-text-muted-color) !important;
 }
 </style>
