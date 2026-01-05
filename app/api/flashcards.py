@@ -35,6 +35,7 @@ from app.services.storage import (
 
 from app.services.prompt_provider import PromptProvider, get_prompt_provider
 from app.api.prompts import get_default_prompts_for_ui
+from app.api.models import get_provider_for_model
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
@@ -1072,14 +1073,20 @@ async def generate_cards_stream(
             yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw), 'before_type_filter': cards_before_type_filter})}\n\n"
 
             validation_model = request.validationModel or model
-            logger.info("Validation model: %s", validation_model)
+            # Detecta o provider correto para o modelo de validação (usa cache)
+            validation_provider = get_provider_for_model(
+                validation_model,
+                openai_key=request.openaiApiKey,
+                perplexity_key=request.perplexityApiKey,
+            )
+            logger.info("Validation model: %s (provider: %s)", validation_model, validation_provider)
 
             cards_before_src = len(cards_raw)
             cards = await _validate_src_with_llm(
                 cards_raw,
                 src,
                 prompt_provider=prompt_provider,
-                provider=provider,
+                provider=validation_provider,
                 model=validation_model,
                 openai_key=request.openaiApiKey,
                 perplexity_key=request.perplexityApiKey,
@@ -1091,7 +1098,7 @@ async def generate_cards_stream(
                 stage="src_filter_llm",
                 cards_in=cards_before_src,
                 cards_out=len(cards),
-                details={"method": "llm_validation", "validation_model": validation_model},
+                details={"method": "llm_validation", "validation_model": validation_model, "validation_provider": validation_provider},
                 analysis_id=request.analysisId,
             )
 
@@ -1102,7 +1109,7 @@ async def generate_cards_stream(
                 cards,
                 src,
                 prompt_provider=prompt_provider,
-                provider=provider,
+                provider=validation_provider,
                 model=validation_model,
                 openai_key=request.openaiApiKey,
                 perplexity_key=request.perplexityApiKey,
@@ -1198,7 +1205,7 @@ async def generate_cards_stream(
                     cards2_raw,
                     src,
                     prompt_provider=prompt_provider,
-                    provider=provider,
+                    provider=validation_provider,
                     model=validation_model,
                     openai_key=request.openaiApiKey,
                     perplexity_key=request.perplexityApiKey,
@@ -1211,7 +1218,7 @@ async def generate_cards_stream(
                     cards2,
                     src,
                     prompt_provider=prompt_provider,
-                    provider=provider,
+                    provider=validation_provider,
                     model=validation_model,
                     openai_key=request.openaiApiKey,
                     perplexity_key=request.perplexityApiKey,
