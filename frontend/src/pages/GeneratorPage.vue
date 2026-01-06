@@ -23,6 +23,12 @@ import ContextMenu from 'primevue/contextmenu'
 import Toast from 'primevue/toast'
 import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
+import Stepper from 'primevue/stepper'
+import StepList from 'primevue/steplist'
+import StepPanels from 'primevue/steppanels'
+import Step from 'primevue/step'
+import StepPanel from 'primevue/steppanel'
+import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
 
 // App components - with lazy loading for performance
@@ -1236,18 +1242,31 @@ const numCardsSlider = ref(10)
 
 // Generate Modal (unified modal for generation settings)
 const generateModalVisible = ref(false)
+const generateStep = ref('1') // '1': Quantidade, '2': Prompts (string for PrimeVue Stepper)
 const customPrompts = ref(null)
+
+// Quantity mode options for SelectButton
+const quantityModeOptions = [
+  { label: 'Automático', value: 'auto', icon: 'pi pi-sparkles' },
+  { label: 'Manual', value: 'manual', icon: 'pi pi-sliders-v' }
+]
+const quantityMode = ref('auto')
+const presetOptions = [5, 10, 15, 20, 30]
 
 function onCustomPromptsUpdate(prompts) {
   customPrompts.value = prompts
 }
 
 function openGenerateModal() {
+  generateStep.value = '1'
+  quantityMode.value = numCardsEnabled.value ? 'manual' : 'auto'
   generateModalVisible.value = true
 }
 
 function confirmGenerate() {
+  numCardsEnabled.value = (quantityMode.value === 'manual')
   generateModalVisible.value = false
+  generateStep.value = '1'
   generateCardsFromSelection()
 }
 
@@ -3764,99 +3783,143 @@ onBeforeUnmount(() => {
       </Splitter>
     </div>
 
-    <!-- GENERATE MODAL -->
+    <!-- GENERATE MODAL (PrimeVue Stepper) -->
     <Dialog
       v-model:visible="generateModalVisible"
       modal
       appendTo="body"
       :draggable="false"
       :dismissableMask="true"
-      class="modern-dialog generate-modal"
-      :style="{ width: 'min(720px, 96vw)', maxHeight: '90vh' }"
+      class="modern-dialog"
+      :style="{ width: 'min(640px, 96vw)' }"
     >
       <template #header>
-        <div class="generate-modal-header">
-          <div class="header-text">
-            <h3><i class="pi pi-bolt" style="margin-right: 8px;" />Configurar Geração</h3>
-            <p>Ajuste as opções antes de criar os flashcards</p>
-          </div>
+        <div class="flex align-items-center gap-2">
+          <i class="pi pi-bolt text-primary" style="font-size: 1.25rem" />
+          <span class="font-semibold text-lg">Configurar Geração</span>
         </div>
       </template>
 
-      <div class="generate-modal-content">
-        <!-- Card Quantity Section -->
-        <div class="generate-section">
-          <div class="section-header">
-            <div class="section-title">
-              <span class="title"><i class="pi pi-objects-column" /> Quantidade de Cards</span>
-              <span class="subtitle">Defina quantos flashcards serão gerados</span>
-            </div>
-          </div>
-          <div class="quantity-control">
-            <div class="quantity-toggle">
-              <Checkbox
-                v-model="numCardsEnabled"
-                :binary="true"
-                inputId="numCardsModalCheck"
-              />
-              <label for="numCardsModalCheck" class="cursor-pointer">
-                Definir quantidade específica
-              </label>
-            </div>
-            <Transition name="slide-fade">
-              <div v-if="numCardsEnabled" class="quantity-slider-wrapper">
-                <div class="quantity-display">
-                  <span class="quantity-value">{{ numCardsSlider }}</span>
-                  <span class="quantity-label">cards</span>
-                </div>
-                <Slider
-                  v-model="numCardsSlider"
-                  :min="1"
-                  :max="50"
-                  class="quantity-slider"
-                />
-                <div class="quantity-range-labels">
-                  <span>1</span>
-                  <span>25</span>
-                  <span>50</span>
-                </div>
+      <Stepper v-model:value="generateStep" class="generate-stepper">
+        <StepList>
+          <Step value="1">Quantidade</Step>
+          <Step value="2">Prompts</Step>
+        </StepList>
+        <StepPanels>
+          <!-- STEP 1: Quantidade -->
+          <StepPanel value="1">
+            <div class="flex flex-column gap-4 p-3">
+              <div class="text-center">
+                <h4 class="m-0 mb-2">Quantos cards criar?</h4>
+                <p class="text-color-secondary m-0 text-sm">
+                  Escolha o modo de definição
+                </p>
               </div>
-            </Transition>
-            <p v-if="!numCardsEnabled" class="quantity-auto-hint">
-              <i class="pi pi-info-circle" />
-              A quantidade será calculada automaticamente baseada no tamanho do texto selecionado.
-            </p>
-          </div>
-        </div>
 
-        <!-- Prompt Editor Section -->
-        <div class="generate-section">
-          <div class="section-header">
-            <div class="section-title">
-              <span class="title"><i class="pi pi-sliders-h" /> Prompts de Geração</span>
-              <span class="subtitle">Personalize as instruções do modelo de IA</span>
+              <SelectButton
+                v-model="quantityMode"
+                :options="quantityModeOptions"
+                optionLabel="label"
+                optionValue="value"
+                class="w-full justify-content-center"
+              />
+
+              <Transition name="slide-fade">
+                <div v-if="quantityMode === 'manual'" class="flex flex-column gap-3">
+                  <div class="flex align-items-center justify-content-center gap-3">
+                    <InputNumber
+                      v-model="numCardsSlider"
+                      :min="1"
+                      :max="50"
+                      showButtons
+                      buttonLayout="horizontal"
+                      :inputStyle="{ width: '4rem', textAlign: 'center', fontWeight: 'bold', fontSize: '1.25rem' }"
+                    >
+                      <template #decrementbuttonicon>
+                        <i class="pi pi-minus" />
+                      </template>
+                      <template #incrementbuttonicon>
+                        <i class="pi pi-plus" />
+                      </template>
+                    </InputNumber>
+                    <span class="text-color-secondary font-medium">cards</span>
+                  </div>
+
+                  <Slider v-model="numCardsSlider" :min="1" :max="50" class="w-full" />
+
+                  <div class="flex justify-content-center gap-2 flex-wrap">
+                    <Button
+                      v-for="preset in presetOptions"
+                      :key="preset"
+                      :label="String(preset)"
+                      :outlined="numCardsSlider !== preset"
+                      :severity="numCardsSlider === preset ? undefined : 'secondary'"
+                      size="small"
+                      @click="numCardsSlider = preset"
+                    />
+                  </div>
+                </div>
+              </Transition>
+
+              <div v-if="quantityMode === 'auto'" class="surface-ground border-round p-3 text-center">
+                <i class="pi pi-info-circle text-primary mr-2" />
+                <span class="text-color-secondary text-sm">
+                  A IA calculará automaticamente baseado no texto
+                </span>
+              </div>
             </div>
-            <Tag v-if="customPrompts" severity="warning" value="customizado" class="ml-auto" />
-          </div>
-          <PromptEditor
-            :cardType="cardType"
-            @update:customPrompts="onCustomPromptsUpdate"
-          />
-        </div>
-      </div>
+          </StepPanel>
+
+          <!-- STEP 2: Prompts -->
+          <StepPanel value="2">
+            <div class="flex flex-column gap-3 p-3">
+              <div class="flex align-items-center justify-content-between mb-2">
+                <span class="font-medium">Instruções de Geração</span>
+                <Tag
+                  :severity="customPrompts ? 'warning' : 'secondary'"
+                  :value="customPrompts ? 'Customizado' : 'Padrão'"
+                  :icon="customPrompts ? 'pi pi-pencil' : 'pi pi-check'"
+                />
+              </div>
+              <PromptEditor
+                :cardType="cardType"
+                @update:customPrompts="onCustomPromptsUpdate"
+              />
+            </div>
+          </StepPanel>
+        </StepPanels>
+      </Stepper>
 
       <template #footer>
-        <div class="generate-modal-footer">
+        <div class="flex justify-content-between w-full">
           <Button
+            v-if="generateStep === '1'"
             label="Cancelar"
             severity="secondary"
             text
             @click="generateModalVisible = false"
           />
           <Button
+            v-else
+            label="Voltar"
+            icon="pi pi-arrow-left"
+            severity="secondary"
+            text
+            @click="generateStep = '1'"
+          />
+
+          <Button
+            v-if="generateStep === '1'"
+            label="Próximo"
+            icon="pi pi-arrow-right"
+            iconPos="right"
+            @click="generateStep = '2'"
+          />
+          <Button
+            v-else
             label="Gerar Cards"
             icon="pi pi-bolt"
-            class="cta"
+            severity="success"
             :loading="generating"
             @click="confirmGenerate"
           />
@@ -5617,6 +5680,23 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .generate-modal-footer .cta .p-button-icon) {
   font-size: 1rem;
+}
+
+/* =========================
+   Generate Stepper Styles
+========================= */
+:deep(.generate-stepper) {
+  margin: -1rem;
+}
+
+:deep(.generate-stepper .p-stepper-list) {
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+:deep(.generate-stepper .p-stepper-panels) {
+  padding: 1rem;
 }
 
 /* Transition for slider */
