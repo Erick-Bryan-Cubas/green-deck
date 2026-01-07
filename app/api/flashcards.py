@@ -901,6 +901,226 @@ async def analyze_text_stream(
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+# =============================================================================
+# Topic Segmentation - Marcação automática por tópico
+# =============================================================================
+
+class SegmentTopicsRequest(BaseModel):
+    text: str
+    analysisModel: Optional[str] = None
+    openaiApiKey: Optional[str] = None
+    perplexityApiKey: Optional[str] = None
+
+
+# Cores para categorias base de tópicos
+TOPIC_COLORS = {
+    "DEFINICAO": {"color": "#fef08a", "name": "Definições"},
+    "EXEMPLO": {"color": "#bbf7d0", "name": "Exemplos"},
+    "CONCEITO": {"color": "#bfdbfe", "name": "Conceitos"},
+    "FORMULA": {"color": "#ddd6fe", "name": "Fórmulas"},
+    "PROCEDIMENTO": {"color": "#fed7aa", "name": "Procedimentos"},
+    "COMPARACAO": {"color": "#fbcfe8", "name": "Comparações"},
+    "ESPECIFICO": {"color": "#e5e7eb", "name": "Específico"},
+}
+
+# Cores extras para tópicos customizados identificados pelo LLM
+CUSTOM_TOPIC_COLORS = ["#fcd34d", "#4ade80", "#60a5fa", "#a78bfa", "#f87171", "#22d3d8"]
+
+
+def _parse_topic_segments(raw_response: str, original_text: str) -> list:
+    """
+    Parseia a resposta JSON do LLM e valida os segmentos.
+    """
+    # Tenta extrair JSON da resposta
+    try:
+        # Remove possíveis markdown code blocks
+        cleaned = re.sub(r"```json\s*", "", raw_response)
+        cleaned = re.sub(r"```\s*", "", cleaned)
+        cleaned = cleaned.strip()
+
+        # Encontra o JSON
+        json_match = re.search(r'\{[\s\S]*\}', cleaned)
+        if json_match:
+            data = json.loads(json_match.group())
+        else:
+            return []
+
+        segments = data.get("segments", [])
+        validated = []
+        text_len = len(original_text)
+
+        for seg in segments:
+            start = seg.get("start", 0)
+            end = seg.get("end", 0)
+            category = seg.get("category", "ESPECIFICO")
+            custom_name = seg.get("custom_name")
+
+            # Valida posições
+            if start < 0 or end <= start or end > text_len:
+                continue
+            if end - start < 20 or end - start > 600:
+                continue
+
+            # Extrai texto do segmento
+            segment_text = original_text[start:end]
+
+            validated.append({
+                "start": start,
+                "end": end,
+                "category": category.upper() if category else "ESPECIFICO",
+                "custom_name": custom_name,
+                "text": segment_text,
+            })
+
+        return validated
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning("Failed to parse topic segments: %s", e)
+        return []
+
+
+def _build_topic_definitions(segments: list) -> list:
+    """
+    Constrói a lista de definições de tópicos com cores atribuídas.
+    """
+    topics = {}
+    custom_color_idx = 0
+
+    for seg in segments:
+        category = seg["category"]
+        custom_name = seg.get("custom_name")
+
+        # Gera ID único para o tópico
+        if category == "ESPECIFICO" and custom_name:
+            topic_id = f"custom_{custom_name.lower().replace(' ', '_')}"
+            topic_name = custom_name
+        else:
+            topic_id = category.lower()
+            topic_name = TOPIC_COLORS.get(category, {}).get("name", category.title())
+
+        if topic_id not in topics:
+            # Atribui cor
+            if category in TOPIC_COLORS:
+                color = TOPIC_COLORS[category]["color"]
+            else:
+                color = CUSTOM_TOPIC_COLORS[custom_color_idx % len(CUSTOM_TOPIC_COLORS)]
+                custom_color_idx += 1
+
+            topics[topic_id] = {
+                "id": topic_id,
+                "name": topic_name,
+                "color": color,
+                "category": "base" if category in TOPIC_COLORS and category != "ESPECIFICO" else "custom",
+                "count": 0,
+            }
+
+        topics[topic_id]["count"] += 1
+        seg["topic_id"] = topic_id
+
+    return list(topics.values())
+
+
+@router.post("/segment-topics")
+async def segment_topics(
+    request: SegmentTopicsRequest,
+    prompt_provider: PromptProvider = Depends(get_prompt_provider),
+):
+    """
+    Segmenta texto por tópicos para highlighting automático.
+    Retorna posições de caracteres para cada segmento identificado.
+    """
+    async def generate():
+        try:
+            analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
+
+            # Detecta provider
+            use_openai = request.openaiApiKey and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
+            use_perplexity = request.perplexityApiKey and "sonar" in analysis_model.lower()
+            use_ollama = not use_openai and not use_perplexity
+
+            provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
+            logger.info("Topic segmentation - model: %s, provider: %s", analysis_model, provider)
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing'})}\n\n"
+
+            # Trunca texto se muito longo
+            src = request.text[:15000] if len(request.text) > 15000 else request.text
+
+            # Detecta idioma
+            detected_lang = detect_language_pt_en_es(src[:500])
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'building_prompt'})}\n\n"
+
+            # Constrói prompt de segmentação
+            from app.api.prompts import PROMPTS
+
+            prompt = PROMPTS["TOPIC_SEGMENTATION_PROMPT"].replace("${text}", src)
+            system = PROMPTS["TOPIC_SEGMENTATION_SYSTEM"]
+            options = {"num_predict": 2048, "temperature": 0.2}
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_llm', 'model': analysis_model})}\n\n"
+
+            raw = ""
+            try:
+                if use_openai:
+                    async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
+                        raw += piece
+                elif use_perplexity:
+                    async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
+                        raw += piece
+                else:
+                    async for piece in ollama_generate_stream(analysis_model, prompt, system=system, options=options):
+                        raw += piece
+            except Exception as llm_error:
+                logger.warning("Topic segmentation LLM failed: %s", llm_error)
+                yield f"event: error\ndata: {json.dumps({'error': f'LLM failed: {str(llm_error)}'})}\n\n"
+                return
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 70, 'stage': 'parsing_response'})}\n\n"
+
+            # Parseia resposta
+            segments = _parse_topic_segments(raw, src)
+
+            if not segments:
+                logger.warning("No valid segments parsed from LLM response")
+                yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done', 'segments': 0})}\n\n"
+                yield f"event: result\ndata: {json.dumps({'success': True, 'segments': [], 'topics': [], 'analysis_id': None})}\n\n"
+                return
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 85, 'stage': 'building_topics', 'segments': len(segments)})}\n\n"
+
+            # Constrói definições de tópicos com cores
+            topics = _build_topic_definitions(segments)
+
+            # Salva no banco
+            analysis_id = save_analysis(
+                src[:1000],  # Salva apenas amostra do texto
+                f"Topic segmentation: {len(segments)} segments, {len(topics)} topics",
+                {
+                    "type": "topic_segmentation",
+                    "segments_count": len(segments),
+                    "topics_count": len(topics),
+                    "model": analysis_model,
+                    "provider": provider,
+                },
+            )
+
+            result = {
+                "success": True,
+                "segments": segments,
+                "topics": topics,
+                "analysis_id": analysis_id,
+            }
+
+            yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done', 'segments': len(segments), 'topics': len(topics)})}\n\n"
+            yield f"event: result\ndata: {json.dumps(result)}\n\n"
+
+        except Exception as e:
+            logger.exception("Error in segment_topics")
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @router.get("/prompts/defaults")
 async def get_default_prompts():
     """
