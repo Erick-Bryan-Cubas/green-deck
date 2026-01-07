@@ -288,6 +288,87 @@ async function analyzeText(text, analysisModel = null, onProgress = null) {
 }
 
 /**
+ * Segments text into topic-based chunks for automatic highlighting
+ * Returns positions for each segment with topic classification
+ *
+ * @param {string} text - The text to segment
+ * @param {string} analysisModel - Model to use for segmentation
+ * @param {(event: {stage:string, data:object})=>void} onProgress - Progress callback
+ * @returns {Promise<{segments: Array, topics: Array, analysis_id: string}>}
+ */
+async function segmentTopics(text, analysisModel = null, onProgress = null) {
+  try {
+    const keys = getStoredApiKeys();
+
+    const response = await fetch("/api/segment-topics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: truncateText(text, 15000),
+        analysisModel: analysisModel,
+        openaiApiKey: keys.openaiApiKey || null,
+        perplexityApiKey: keys.perplexityApiKey || null,
+      }),
+    });
+
+    if (!response.ok) throw new Error("API Error");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let parts = buffer.split("\n\n");
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        const lines = part.split("\n");
+        let event = "message";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.replace("event:", "").trim();
+          else if (line.startsWith("data:")) data += line.replace("data:", "").trim();
+        }
+
+        try {
+          const parsed = data ? JSON.parse(data) : null;
+          if (event === "error" && parsed) {
+            throw new Error(parsed.error || "Segmentation failed");
+          } else if (event === "progress" && onProgress) {
+            onProgress({ stage: parsed.stage, data: parsed });
+          } else if (event === "result") {
+            result = parsed;
+          }
+        } catch (e) {
+          if (event === "error") {
+            throw e;
+          }
+          // Ignore JSON parse errors for intermediate events
+        }
+      }
+    }
+
+    if (result && result.success) {
+      return {
+        segments: result.segments || [],
+        topics: result.topics || [],
+        analysis_id: result.analysis_id,
+      };
+    }
+
+    throw new Error("No result from segmentation");
+  } catch (error) {
+    console.error("Error segmenting topics:", error);
+    throw error;
+  }
+}
+
+/**
  * Calls AI API to generate flashcards from text
  * Uses server-side proxy with user-provided API key
  *
@@ -746,6 +827,7 @@ export {
   generateCards,
   generateCardsWithStream,
   analyzeText,
+  segmentTopics,
   getStoredApiKeys,
   storeApiKeys,
   validateAnthropicApiKey,

@@ -246,6 +246,44 @@ Return a short structured summary (3–7 bullets).
     "TEXT_ANALYSIS_SYSTEM": "Voce e um assistente de analise de texto educacional.",
 
     # =========================
+    # Topic segmentation — marcação automática por tópico
+    # =========================
+    "TOPIC_SEGMENTATION_SYSTEM": (
+        "Você segmenta texto educacional por tipo de conteúdo.\n"
+        "Responda APENAS em JSON válido, sem explicações.\n"
+        "Preserve as posições exatas dos caracteres.\n"
+    ),
+
+    "TOPIC_SEGMENTATION_PROMPT": """Segmente o texto abaixo identificando tópicos e suas posições exatas de caracteres.
+
+CATEGORIAS BASE (use estes IDs exatos):
+- DEFINICAO: conceitos sendo definidos ou explicados
+- EXEMPLO: casos práticos, ilustrações, cenários
+- CONCEITO: ideias-chave, princípios fundamentais, teorias
+- FORMULA: expressões matemáticas, equações, fórmulas
+- PROCEDIMENTO: passos, processos, algoritmos, métodos
+- COMPARACAO: contrastes, similaridades, diferenças entre conceitos
+
+REGRAS:
+1. Segmentos devem ter entre 50-500 caracteres
+2. Preserve posições EXATAS (start/end são índices de caracteres, começando em 0)
+3. Para tópicos específicos do domínio que não se encaixam nas categorias, use "ESPECIFICO" com custom_name
+4. Não sobreponha segmentos significativamente
+5. Priorize trechos com informação densa e relevante
+6. Máximo 15 segmentos por texto
+
+TEXTO:
+${text}
+
+RESPONDA em JSON válido (sem markdown):
+{
+  "segments": [
+    {"start": 0, "end": 150, "category": "DEFINICAO", "custom_name": null},
+    {"start": 200, "end": 350, "category": "ESPECIFICO", "custom_name": "Neuroplasticidade"}
+  ]
+}""",
+
+    # =========================
     # Prompts de reescrita de cards com LLM
     # =========================
     "CARD_REWRITE_DENSIFY": """Reescreva este flashcard adicionando mais cloze deletions para tornar o aprendizado mais ativo.
