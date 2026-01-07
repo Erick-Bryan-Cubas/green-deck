@@ -1,6 +1,6 @@
 <!-- frontend/src/pages/DashBoardPage.vue -->
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 // PrimeVue
@@ -13,16 +13,48 @@ import Column from 'primevue/column'
 import Skeleton from 'primevue/skeleton'
 import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
+import DatePicker from 'primevue/datepicker'
+import MultiSelect from 'primevue/multiselect'
+import Dialog from 'primevue/dialog'
+import Knob from 'primevue/knob'
+import ProgressBar from 'primevue/progressbar'
+import Divider from 'primevue/divider'
 
 // App components - with lazy loading for performance
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import LazyChart from '@/components/LazyChart.vue'
 
+// Composables
+import { useDashboardFilters } from '@/composables/useDashboardFilters'
+import { useAnimatedNumber } from '@/composables/useAnimatedNumber'
+
 const router = useRouter()
 const toast = useToast()
 
+// Filters
+const { dateRange, selectedDecks, hasActiveFilters, queryString, clearFilters } = useDashboardFilters()
+const filtersExpanded = ref(true)
+
+// Deck options for filter (populated from topDecks)
+const deckOptions = computed(() =>
+  topDecks.value.map(d => ({ label: d.deckName, value: d.deckName }))
+)
+
+// Watch filters to refetch data
+watch([dateRange, selectedDecks], () => {
+  if (!loading.value) {
+    fetchDashboard()
+  }
+}, { deep: true })
+
 // Sidebar ref
 const sidebarRef = ref(null)
+
+// Dialog states
+const deckDetailVisible = ref(false)
+const selectedDeck = ref(null)
+const dayDetailVisible = ref(false)
+const selectedDay = ref(null)
 
 function notify(message, severity = 'info', life = 3200) {
   toast.add({ severity, summary: message, life })
@@ -90,13 +122,50 @@ const topDecks = ref([]) // [{deckName, count}]
 const segments = ref([]) // [{segment, count, avgInterval, avgEase, avgLapses, avgReps}]
 
 // ---------- KPIs ----------
-const kpiTotalCards = computed(() => summary.value?.totalCards ?? null)
-const kpiCreated = computed(() => summary.value?.createdTotal ?? summary.value?.totalCards ?? null)
-const kpiDecks = computed(() => summary.value?.totalDecks ?? null)
-const kpiAvg = computed(() => summary.value?.avgPerDay ?? null)
+const kpiTotalCards = computed(() => summary.value?.totalCards ?? 0)
+const kpiCreated = computed(() => summary.value?.createdTotal ?? summary.value?.totalCards ?? 0)
+const kpiDecks = computed(() => summary.value?.totalDecks ?? 0)
+const kpiAvg = computed(() => summary.value?.avgPerDay ?? 0)
+
+// Animated KPI values
+const animatedTotalCards = useAnimatedNumber(kpiTotalCards)
+const animatedCreated = useAnimatedNumber(kpiCreated)
+const animatedDecks = useAnimatedNumber(kpiDecks)
 
 const firstDay = computed(() => (byDay.value?.length ? byDay.value[0]?.day : null))
 const lastDay = computed(() => (byDay.value?.length ? byDay.value[byDay.value.length - 1]?.day : null))
+
+// ---------- Drill-down functions ----------
+function openDeckDetail(deck) {
+  selectedDeck.value = deck
+  deckDetailVisible.value = true
+}
+
+function openDayDetail(dayData) {
+  selectedDay.value = dayData
+  dayDetailVisible.value = true
+}
+
+function navigateToBrowserWithStatus(statusKey) {
+  const queryMap = {
+    'Novos': 'is:new',
+    'Aprendendo': 'is:learn',
+    'Revisão': 'is:review',
+    'Vencidos': 'is:due',
+    'Suspensos': 'is:suspended'
+  }
+  router.push({
+    path: '/browser',
+    query: { filter: queryMap[statusKey] || 'deck:*' }
+  })
+}
+
+function navigateToBrowserWithDeck(deckName) {
+  router.push({
+    path: '/browser',
+    query: { filter: `deck:"${deckName}"` }
+  })
+}
 
 // ---------- Doughnut meta ----------
 const statusItems = computed(() => {
@@ -134,6 +203,16 @@ const lineOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
+  onClick: (event, elements) => {
+    if (elements.length > 0) {
+      const dataIndex = elements[0].index
+      const clickedDay = byDay.value[dataIndex]
+      if (clickedDay) openDayDetail(clickedDay)
+    }
+  },
+  onHover: (event, elements) => {
+    event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
+  },
   plugins: {
     legend: {
       display: true,
@@ -165,6 +244,16 @@ const doughnutOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   cutout: '72%',
+  onClick: (event, elements) => {
+    if (elements.length > 0) {
+      const dataIndex = elements[0].index
+      const status = statusItems.value[dataIndex]
+      if (status) navigateToBrowserWithStatus(status.status)
+    }
+  },
+  onHover: (event, elements) => {
+    event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
+  },
   plugins: {
     legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
     tooltip: {
@@ -174,7 +263,7 @@ const doughnutOptions = computed(() => ({
           const val = ctx.parsed || 0
           const total = statusTotal.value || 0
           const pct = total ? ((100 * val) / total).toFixed(1).replace('.', ',') : '0,0'
-          return `${label}: ${formatInt(val)} (${pct}%)`
+          return `${label}: ${formatInt(val)} (${pct}%) — Clique para filtrar`
         }
       }
     }
@@ -193,11 +282,21 @@ const deckBarOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   indexAxis: 'y',
+  onClick: (event, elements) => {
+    if (elements.length > 0) {
+      const dataIndex = elements[0].index
+      const deck = topDecks.value[dataIndex]
+      if (deck) openDeckDetail(deck)
+    }
+  },
+  onHover: (event, elements) => {
+    event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
+  },
   plugins: {
     legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
     tooltip: {
       callbacks: {
-        label: (ctx) => `${formatInt(ctx.parsed.x)} cards`
+        label: (ctx) => `${formatInt(ctx.parsed.x)} cards — Clique para detalhes`
       }
     }
   },
@@ -240,42 +339,47 @@ async function fetchDashboard() {
   loading.value = true
   errorMsg.value = ''
 
+  // Build query string from filters
+  const qs = queryString.value
+  const qsTopDecks = qs ? `?limit=12&${qs.slice(1)}` : '?limit=12'
+
   try {
-    // summary
-    {
-      const r = await fetch('/api/dashboard/summary')
-      const data = await readJsonSafe(r)
-      if (data?.__nonJson) throw new Error(`summary non-JSON: ${data.__head}`)
-      if (r.status >= 400 || data?.success === false) throw new Error(data?.error || `summary HTTP ${r.status}`)
-      summary.value = data
-    }
+    // Parallel fetch for better performance
+    const [summaryRes, byDayRes, topDecksRes, segmentsRes] = await Promise.all([
+      fetch(`/api/dashboard/summary${qs}`),
+      fetch(`/api/dashboard/by-day${qs}`),
+      fetch(`/api/dashboard/top-decks${qsTopDecks}`),
+      fetch(`/api/dashboard/segments${qs}`)
+    ])
 
-    // by-day
-    {
-      const r = await fetch('/api/dashboard/by-day')
-      const data = await readJsonSafe(r)
-      if (data?.__nonJson) throw new Error(`by-day non-JSON: ${data.__head}`)
-      if (r.status >= 400 || data?.success === false) throw new Error(data?.error || `by-day HTTP ${r.status}`)
-      byDay.value = Array.isArray(data?.items) ? data.items : []
-    }
+    // Parse all responses
+    const [summaryData, byDayData, topDecksData, segmentsData] = await Promise.all([
+      readJsonSafe(summaryRes),
+      readJsonSafe(byDayRes),
+      readJsonSafe(topDecksRes),
+      readJsonSafe(segmentsRes)
+    ])
 
-    // top decks
-    {
-      const r = await fetch('/api/dashboard/top-decks?limit=12')
-      const data = await readJsonSafe(r)
-      if (data?.__nonJson) throw new Error(`top-decks non-JSON: ${data.__head}`)
-      if (r.status >= 400 || data?.success === false) throw new Error(data?.error || `top-decks HTTP ${r.status}`)
-      topDecks.value = Array.isArray(data?.items) ? data.items : []
-    }
+    // Validate and assign summary
+    if (summaryData?.__nonJson) throw new Error(`summary non-JSON: ${summaryData.__head}`)
+    if (summaryRes.status >= 400 || summaryData?.success === false) throw new Error(summaryData?.error || `summary HTTP ${summaryRes.status}`)
+    summary.value = summaryData
 
-    // segments (KMeans)
-    {
-      const r = await fetch('/api/dashboard/segments')
-      const data = await readJsonSafe(r)
-      if (data?.__nonJson) throw new Error(`segments non-JSON: ${data.__head}`)
-      if (r.status >= 400 || data?.success === false) throw new Error(data?.error || `segments HTTP ${r.status}`)
-      segments.value = Array.isArray(data?.items) ? data.items : []
-    }
+    // Validate and assign byDay
+    if (byDayData?.__nonJson) throw new Error(`by-day non-JSON: ${byDayData.__head}`)
+    if (byDayRes.status >= 400 || byDayData?.success === false) throw new Error(byDayData?.error || `by-day HTTP ${byDayRes.status}`)
+    byDay.value = Array.isArray(byDayData?.items) ? byDayData.items : []
+
+    // Validate and assign topDecks
+    if (topDecksData?.__nonJson) throw new Error(`top-decks non-JSON: ${topDecksData.__head}`)
+    if (topDecksRes.status >= 400 || topDecksData?.success === false) throw new Error(topDecksData?.error || `top-decks HTTP ${topDecksRes.status}`)
+    topDecks.value = Array.isArray(topDecksData?.items) ? topDecksData.items : []
+
+    // Validate and assign segments
+    if (segmentsData?.__nonJson) throw new Error(`segments non-JSON: ${segmentsData.__head}`)
+    if (segmentsRes.status >= 400 || segmentsData?.success === false) throw new Error(segmentsData?.error || `segments HTTP ${segmentsRes.status}`)
+    segments.value = Array.isArray(segmentsData?.items) ? segmentsData.items : []
+
   } catch (e) {
     errorMsg.value = e?.message || String(e)
     notify(errorMsg.value, 'error', 7000)
@@ -284,7 +388,37 @@ async function fetchDashboard() {
   }
 }
 
-onMounted(fetchDashboard)
+// ---------- Keyboard shortcuts ----------
+function handleKeyboard(e) {
+  // Ignore if user is typing in an input
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+
+  // R = Refresh
+  if (e.key === 'r' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault()
+    fetchDashboard()
+    notify('Atualizando dados...', 'info', 1500)
+  }
+  // F = Toggle filters
+  if (e.key === 'f' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault()
+    filtersExpanded.value = !filtersExpanded.value
+  }
+  // Escape = Close any open dialog
+  if (e.key === 'Escape') {
+    deckDetailVisible.value = false
+    dayDetailVisible.value = false
+  }
+}
+
+onMounted(() => {
+  fetchDashboard()
+  document.addEventListener('keydown', handleKeyboard)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeyboard)
+})
 </script>
 
 <template>
@@ -328,6 +462,64 @@ onMounted(fetchDashboard)
     </Toolbar>
 
     <div class="main">
+      <!-- Filter Bar -->
+      <Transition name="slide-fade">
+        <div v-if="filtersExpanded" class="filter-bar card-surface">
+          <div class="filter-row">
+            <div class="filter-group">
+              <label class="filter-label muted">Periodo</label>
+              <DatePicker
+                v-model="dateRange"
+                selectionMode="range"
+                placeholder="Selecione o periodo"
+                showIcon
+                dateFormat="dd/mm/yy"
+                class="filter-date"
+                :showButtonBar="true"
+              />
+            </div>
+            <div class="filter-group">
+              <label class="filter-label muted">Decks</label>
+              <MultiSelect
+                v-model="selectedDecks"
+                :options="deckOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="Filtrar por deck"
+                filter
+                display="chip"
+                class="filter-decks"
+                :maxSelectedLabels="2"
+              />
+            </div>
+            <Button
+              v-if="hasActiveFilters"
+              icon="pi pi-filter-slash"
+              label="Limpar"
+              text
+              severity="secondary"
+              @click="clearFilters"
+              class="filter-clear"
+            />
+          </div>
+          <div class="filter-hint muted">
+            <i class="pi pi-info-circle" />
+            Atalhos: <kbd>R</kbd> atualizar · <kbd>F</kbd> filtros · <kbd>Esc</kbd> fechar dialogs
+          </div>
+        </div>
+      </Transition>
+
+      <div class="filter-toggle-row">
+        <Button
+          :icon="filtersExpanded ? 'pi pi-chevron-up' : 'pi pi-filter'"
+          :label="filtersExpanded ? 'Ocultar filtros' : 'Filtros'"
+          text
+          size="small"
+          @click="filtersExpanded = !filtersExpanded"
+        />
+        <Tag v-if="hasActiveFilters" severity="info" class="pill">Filtros ativos</Tag>
+      </div>
+
       <div v-if="errorMsg" class="err card-surface">
         <div class="err-ico"><i class="pi pi-exclamation-triangle"></i></div>
         <div>
@@ -338,7 +530,7 @@ onMounted(fetchDashboard)
 
       <!-- KPIs -->
       <div class="kpis">
-        <Card class="kpi kpi-accent-1">
+        <Card class="kpi kpi-accent-1 kpi-anim-1">
           <template #content>
             <div class="kpi-top">
               <div class="kpi-ico"><i class="pi pi-clone" /></div>
@@ -346,14 +538,14 @@ onMounted(fetchDashboard)
                 <div class="kpi-lbl muted">Total de cards</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ formatInt(kpiTotalCards) }}</span>
+                  <span v-else>{{ formatInt(animatedTotalCards) }}</span>
                 </div>
               </div>
             </div>
           </template>
         </Card>
 
-        <Card class="kpi kpi-accent-2">
+        <Card class="kpi kpi-accent-2 kpi-anim-2">
           <template #content>
             <div class="kpi-top">
               <div class="kpi-ico"><i class="pi pi-plus-circle" /></div>
@@ -361,14 +553,14 @@ onMounted(fetchDashboard)
                 <div class="kpi-lbl muted">Criados (total)</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ formatInt(kpiCreated) }}</span>
+                  <span v-else>{{ formatInt(animatedCreated) }}</span>
                 </div>
               </div>
             </div>
           </template>
         </Card>
 
-        <Card class="kpi kpi-accent-3">
+        <Card class="kpi kpi-accent-3 kpi-anim-3">
           <template #content>
             <div class="kpi-top">
               <div class="kpi-ico"><i class="pi pi-sitemap" /></div>
@@ -376,14 +568,14 @@ onMounted(fetchDashboard)
                 <div class="kpi-lbl muted">Decks no DB</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ formatInt(kpiDecks) }}</span>
+                  <span v-else>{{ formatInt(animatedDecks) }}</span>
                 </div>
               </div>
             </div>
           </template>
         </Card>
 
-        <Card class="kpi kpi-accent-4">
+        <Card class="kpi kpi-accent-4 kpi-anim-4">
           <template #content>
             <div class="kpi-top">
               <div class="kpi-ico"><i class="pi pi-chart-line" /></div>
@@ -560,6 +752,98 @@ onMounted(fetchDashboard)
       <div class="footer-space" />
     </div>
   </div>
+
+  <!-- Deck Detail Dialog -->
+  <Dialog
+    v-model:visible="deckDetailVisible"
+    modal
+    :draggable="false"
+    class="modern-dialog"
+    :style="{ width: 'min(500px, 94vw)' }"
+  >
+    <template #header>
+      <div class="dlg-hdr">
+        <div class="dlg-hdr-left">
+          <div class="dlg-icon"><i class="pi pi-folder"></i></div>
+          <div class="dlg-hdr-txt">
+            <div class="dlg-title">{{ selectedDeck?.deckName || 'Deck' }}</div>
+            <div class="dlg-sub muted">Detalhes do deck</div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <div class="dlg-body">
+      <div class="deck-stats">
+        <div class="deck-stat">
+          <div class="deck-stat-label muted">Total de cards</div>
+          <div class="deck-stat-value">{{ formatInt(selectedDeck?.count) }}</div>
+        </div>
+        <div class="deck-stat">
+          <div class="deck-stat-label muted">Porcentagem</div>
+          <div class="deck-stat-value">
+            {{ ((selectedDeck?.count / kpiTotalCards) * 100).toFixed(1).replace('.', ',') }}%
+          </div>
+        </div>
+      </div>
+
+      <Divider />
+
+      <div class="deck-actions">
+        <Button
+          label="Ver no Browser"
+          icon="pi pi-external-link"
+          @click="navigateToBrowserWithDeck(selectedDeck?.deckName); deckDetailVisible = false"
+        />
+        <Button
+          label="Fechar"
+          icon="pi pi-times"
+          outlined
+          @click="deckDetailVisible = false"
+        />
+      </div>
+    </div>
+  </Dialog>
+
+  <!-- Day Detail Dialog -->
+  <Dialog
+    v-model:visible="dayDetailVisible"
+    modal
+    :draggable="false"
+    class="modern-dialog"
+    :style="{ width: 'min(400px, 94vw)' }"
+  >
+    <template #header>
+      <div class="dlg-hdr">
+        <div class="dlg-hdr-left">
+          <div class="dlg-icon"><i class="pi pi-calendar"></i></div>
+          <div class="dlg-hdr-txt">
+            <div class="dlg-title">{{ selectedDay?.day || 'Data' }}</div>
+            <div class="dlg-sub muted">Cards criados neste dia</div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <div class="dlg-body">
+      <div class="day-stats">
+        <div class="day-stat-big">
+          <div class="day-stat-value">{{ formatInt(selectedDay?.created) }}</div>
+          <div class="day-stat-label muted">cards criados</div>
+        </div>
+      </div>
+
+      <Divider />
+
+      <Button
+        label="Fechar"
+        icon="pi pi-times"
+        outlined
+        @click="dayDetailVisible = false"
+        class="day-close-btn"
+      />
+    </div>
+  </Dialog>
 </template>
 
 <style scoped>
@@ -1005,5 +1289,325 @@ onMounted(fetchDashboard)
 
 .footer-space {
   height: 18px;
+}
+
+/* =========================
+   Filter Bar
+========================= */
+.filter-bar {
+  margin-bottom: 12px;
+  padding: 16px;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.filter-date,
+.filter-decks {
+  width: 100%;
+  min-width: 220px;
+}
+
+:deep(.filter-date .p-datepicker-input),
+:deep(.filter-decks .p-multiselect-label) {
+  background: rgba(0, 0, 0, 0.2);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.filter-clear {
+  margin-left: auto;
+}
+
+.filter-hint {
+  margin-top: 12px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-hint kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  font-family: monospace;
+  font-size: 10px;
+}
+
+.filter-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* Slide-fade transition */
+.slide-fade-enter-active {
+  transition: all 0.3s ease-out;
+}
+.slide-fade-leave-active {
+  transition: all 0.2s ease-in;
+}
+.slide-fade-enter-from,
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+/* =========================
+   KPI Entry Animations
+========================= */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.kpi-anim-1,
+.kpi-anim-2,
+.kpi-anim-3,
+.kpi-anim-4 {
+  animation: fadeSlideUp 0.5s ease-out forwards;
+  opacity: 0;
+}
+
+.kpi-anim-1 { animation-delay: 0.1s; }
+.kpi-anim-2 { animation-delay: 0.2s; }
+.kpi-anim-3 { animation-delay: 0.3s; }
+.kpi-anim-4 { animation-delay: 0.4s; }
+
+/* Enhanced KPI hover */
+.kpi {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.kpi:hover {
+  transform: translateY(-4px) scale(1.02);
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(99, 102, 241, 0.3);
+}
+
+.kpi:hover::after {
+  height: 4px;
+  opacity: 1;
+}
+
+/* =========================
+   Chart Interactions
+========================= */
+.chart-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.chart-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.chart-wrap {
+  position: relative;
+}
+
+/* Clickable indicator */
+.chart-wrap::after {
+  content: 'Clique para detalhes';
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.chart-wrap:hover::after {
+  opacity: 0.8;
+}
+
+/* =========================
+   Dialogs
+========================= */
+:deep(.modern-dialog) {
+  border-radius: 18px;
+  background: rgba(17, 24, 39, 0.95);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5);
+}
+
+:deep(.modern-dialog .p-dialog-header) {
+  background: transparent;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  padding: 16px 20px;
+}
+
+:deep(.modern-dialog .p-dialog-content) {
+  background: transparent;
+  padding: 0;
+}
+
+.dlg-hdr {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dlg-hdr-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dlg-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.dlg-icon i {
+  font-size: 18px;
+  color: #6366F1;
+}
+
+.dlg-title {
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: -0.3px;
+}
+
+.dlg-sub {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.dlg-body {
+  padding: 20px;
+}
+
+/* Deck stats */
+.deck-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.deck-stat {
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  text-align: center;
+}
+
+.deck-stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.deck-stat-value {
+  font-size: 24px;
+  font-weight: 1000;
+  letter-spacing: -0.5px;
+}
+
+.deck-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+/* Day stats */
+.day-stats {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.day-stat-big .day-stat-value {
+  font-size: 48px;
+  font-weight: 1000;
+  letter-spacing: -1px;
+  background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.day-stat-big .day-stat-label {
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.day-close-btn {
+  width: 100%;
+}
+
+/* Mini legend clickable */
+.mini-row {
+  cursor: pointer;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  border-radius: 8px;
+  transition: background 0.2s ease;
+}
+
+.mini-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+@media (max-width: 640px) {
+  .filter-row {
+    flex-direction: column;
+  }
+
+  .filter-group {
+    width: 100%;
+    min-width: unset;
+  }
+
+  .filter-clear {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .deck-stats {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
