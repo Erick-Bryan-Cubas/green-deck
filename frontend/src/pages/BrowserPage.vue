@@ -1,7 +1,7 @@
 <!-- frontend/src/pages/BrowserPage.vue -->
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 
 // PrimeVue
 import Toolbar from 'primevue/toolbar'
@@ -19,6 +19,7 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Divider from 'primevue/divider'
 import Textarea from 'primevue/textarea'
+import ProgressBar from 'primevue/progressbar'
 import { useToast } from 'primevue/usetoast'
 
 // App components
@@ -27,6 +28,7 @@ import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 
 const router = useRouter()
+const route = useRoute()
 const toast = useToast()
 
 // Sidebar ref
@@ -281,7 +283,8 @@ const queryBuilt = computed(() => {
 // ----------------------
 // paginação / dados
 // ----------------------
-const loading = ref(false)
+const loading = ref(true)  // Start with loading to avoid flash
+const initializing = ref(true)  // Flag to skip watch during URL param setup
 const items = ref([])
 const total = ref(0)
 const first = ref(0)
@@ -379,9 +382,10 @@ async function fetchCards() {
   }
 }
 
-// Debounce filtros
+// Debounce filtros (skip during initialization to avoid flash)
 let debounce = null
 watch([deck, status, text, advancedQuery], () => {
+  if (initializing.value) return  // Skip during URL param setup
   first.value = 0
   if (debounce) clearTimeout(debounce)
   debounce = setTimeout(fetchCards, 450)
@@ -861,8 +865,26 @@ onMounted(async () => {
   await fetchHealth()
   healthTimer = setInterval(fetchHealth, 6000)
 
+  // Apply URL filter parameter if present (before any fetch)
+  const filterParam = route.query.filter
+  if (filterParam) {
+    const knownStatuses = statusOptions.map(o => o.value).filter(v => v)
+    if (knownStatuses.includes(filterParam)) {
+      status.value = filterParam
+      addLog(`Applied URL filter to status: ${filterParam}`, 'info')
+    } else {
+      // For complex queries like "is:due", use advancedQuery
+      advancedQuery.value = filterParam
+      status.value = ''
+      addLog(`Applied URL filter to advancedQuery: ${filterParam}`, 'info')
+    }
+  }
+
   await fetchDecks()
   await fetchCards()
+
+  // Enable watch for filter changes after initial load
+  initializing.value = false
 })
 
 onUnmounted(() => {
@@ -922,20 +944,34 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="main">
-      <div class="filters card-surface">
+      <!-- Initial loading indicator -->
+      <Transition name="fade">
+        <div v-if="initializing" class="initial-loading card-surface">
+          <div class="loading-content">
+            <i class="pi pi-spin pi-spinner loading-spinner"></i>
+            <div class="loading-text">
+              <div class="loading-title">Carregando Browser...</div>
+              <div class="loading-sub muted">Aplicando filtros e buscando cards</div>
+            </div>
+          </div>
+          <ProgressBar mode="indeterminate" class="loading-bar" />
+        </div>
+      </Transition>
+
+      <div class="filters card-surface" :class="{ 'filters-disabled': initializing }">
         <div class="filters-row">
-          <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter class="w-22" placeholder="Deck" />
-          <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-18" />
-          <InputText v-model="text" class="w-22" placeholder="Buscar texto (Anki query terms)..." />
-          <InputText v-model="advancedQuery" class="w-34" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' />
-          <Button icon="pi pi-refresh" label="Atualizar" outlined @click="fetchCards" />
+          <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter class="w-22" placeholder="Deck" :disabled="initializing" />
+          <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-18" :disabled="initializing" />
+          <InputText v-model="text" class="w-22" placeholder="Buscar texto (Anki query terms)..." :disabled="initializing" />
+          <InputText v-model="advancedQuery" class="w-34" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' :disabled="initializing" />
+          <Button icon="pi pi-refresh" label="Atualizar" outlined @click="fetchCards" :disabled="initializing" />
         </div>
 
         <div class="query-hint">
           <span class="muted">Query:</span>
           <code class="q">{{ queryBuilt }}</code>
           <span class="muted">Total:</span>
-          <b>{{ total }}</b>
+          <b>{{ loading ? '...' : total }}</b>
         </div>
       </div>
 
@@ -1539,6 +1575,71 @@ onUnmounted(() => {
 .menu-toggle {
   width: 42px;
   height: 42px;
+}
+
+/* =========================
+   Initial Loading
+========================= */
+.initial-loading {
+  margin-bottom: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.loading-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading-spinner {
+  font-size: 28px;
+  color: #6366F1;
+}
+
+.loading-title {
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: -0.3px;
+}
+
+.loading-sub {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.loading-bar {
+  height: 4px;
+  border-radius: 4px;
+}
+
+:deep(.loading-bar .p-progressbar-value) {
+  background: linear-gradient(90deg, #6366F1, #8B5CF6, #6366F1);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.filters-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Fade transition */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 
 .app-shell {
