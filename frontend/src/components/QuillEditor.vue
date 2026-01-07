@@ -665,7 +665,7 @@ defineExpose({
    */
   hasHighlightedContent: () => {
     if (!quill) return false
-    
+
     const delta = quill.getContents()
     if (!delta || !delta.ops) return false
 
@@ -673,6 +673,66 @@ defineExpose({
       const bg = op.attributes?.background
       return bg && typeof bg === 'string' && bg.startsWith('#')
     })
+  },
+
+  /**
+   * Apply topic-based highlights to specific text ranges
+   * @param {Array} segments - Array of {start, end, color} objects
+   */
+  applyTopicHighlights: (segments) => {
+    if (!quill || !Array.isArray(segments)) return
+
+    // Sort segments from end to start to preserve positions
+    const sorted = [...segments].sort((a, b) => b.start - a.start)
+
+    for (const seg of sorted) {
+      const start = seg.start
+      const length = seg.end - seg.start
+      const color = seg.color || '#e5e7eb'
+
+      if (length > 0 && start >= 0) {
+        quill.formatText(start, length, {
+          background: color,
+          color: textColorForBackground(color)
+        })
+      }
+    }
+  },
+
+  /**
+   * Clear all topic highlights from the editor
+   * Removes background and color formatting from entire document
+   */
+  clearTopicHighlights: () => {
+    if (!quill) return
+    const length = quill.getLength()
+    quill.formatText(0, length, { background: false, color: false })
+  },
+
+  /**
+   * Scroll to a specific position in the editor and select it
+   * @param {number} start - Start character index
+   * @param {number} length - Length of selection
+   */
+  scrollToPosition: (start, length) => {
+    if (!quill) return
+
+    // Set selection to highlight the text
+    quill.setSelection(start, length)
+
+    // Get bounds and scroll to make visible
+    const bounds = quill.getBounds(start, length)
+    if (bounds) {
+      const container = editorRef.value?.querySelector('.ql-container')
+      if (container) {
+        // Scroll to center the selection vertically
+        const targetScroll = bounds.top - (container.clientHeight / 3)
+        container.scrollTo({
+          top: Math.max(0, targetScroll),
+          behavior: 'smooth'
+        })
+      }
+    }
   }
 })
 

@@ -38,12 +38,14 @@ import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import PdfUpload from '@/components/PdfUpload.vue'
 import PromptEditor from '@/components/PromptEditor.vue'
+import TopicLegend from '@/components/TopicLegend.vue'
 import { useRouter } from 'vue-router'
 
 // Services
 import {
   generateCardsWithStream,
   analyzeText,
+  segmentTopics,
   getStoredApiKeys,
   storeApiKeys,
   validateAnthropicApiKey,
@@ -784,7 +786,10 @@ function buildActiveSessionSnapshot() {
     plainText,
     quillDelta: delta,
     cards: cards.value,
-    documentContext: documentContext.value
+    documentContext: documentContext.value,
+    // Topic segmentation data
+    topicSegments: topicSegments.value,
+    topicDefinitions: topicDefinitions.value
   }
 }
 
@@ -843,7 +848,23 @@ async function restoreSessionById(id) {
     lastEditorHtml.value = ''
     lastTextForAnalysis.value = normalizePlainText(s.plainText || '')
 
+    // Restaura topic segmentation
+    topicSegments.value = s.topicSegments || []
+    topicDefinitions.value = s.topicDefinitions || []
+    showTopicLegend.value = topicSegments.value.length > 0
+
     await nextTick()
+
+    // Reaplicar highlights dos tópicos se existirem
+    if (topicSegments.value.length > 0 && topicDefinitions.value.length > 0) {
+      const highlightData = topicSegments.value.map(seg => ({
+        start: seg.start,
+        end: seg.end,
+        color: topicDefinitions.value.find(t => t.id === seg.topic_id)?.color || '#e5e7eb'
+      }))
+      editorRef.value?.applyTopicHighlights(highlightData)
+    }
+
     notify(`Sessão restaurada: ${s.title}`, 'success', 3200)
 
     // se estiver no leitor, recalcula páginas
@@ -864,10 +885,15 @@ function clearCurrentSession() {
   lastEditorDelta.value = null
   lastEditorHtml.value = ''
   lastTextForAnalysis.value = ''
-  
+
   // Limpa paginação do PDF
   pdfPagesContent.value = []
   usePdfPagination.value = false
+
+  // Limpa topic segmentation
+  topicSegments.value = []
+  topicDefinitions.value = []
+  showTopicLegend.value = false
 
   editorRef.value?.setDelta?.(null)
 
@@ -893,10 +919,15 @@ function newSession() {
   lastEditorDelta.value = null
   lastEditorHtml.value = ''
   lastTextForAnalysis.value = ''
-  
+
   // Limpa paginação do PDF
   pdfPagesContent.value = []
   usePdfPagination.value = false
+
+  // Limpa topic segmentation
+  topicSegments.value = []
+  topicDefinitions.value = []
+  showTopicLegend.value = false
 
   editorRef.value?.setDelta?.(null)
 
@@ -911,7 +942,9 @@ function newSession() {
     plainText: '',
     quillDelta: null,
     cards: [],
-    documentContext: ''
+    documentContext: '',
+    topicSegments: [],
+    topicDefinitions: []
   })
 
   notify('Nova sessão criada.', 'success', 2200)
@@ -944,6 +977,19 @@ const lastEditorHtml = ref('')
 const lastTextForAnalysis = ref('')
 const lastNormalizedTextOnChange = ref('')
 const hasDocumentContext = computed(() => !!documentContext.value)
+
+// Topic segmentation state
+const isSegmentingTopics = ref(false)
+const topicSegments = ref([])
+const topicDefinitions = ref([])
+const showTopicLegend = ref(false)
+const topicSegmentProgress = ref(0)
+const topicSegmentStage = ref('')
+let topicSegmentTimer = null
+
+// Modal de confirmação para marcação de tópicos
+const showTopicConfirmModal = ref(false)
+const pendingTextForSegmentation = ref('')
 
 // ============================================================
 // Indicador de salvamento
@@ -1685,6 +1731,100 @@ async function analyzeDocumentContext(text) {
   } finally {
     isAnalyzing.value = false
   }
+}
+
+// ============================================================
+// Topic Segmentation - Marcação automática por tópico
+// ============================================================
+
+function scheduleTopicSegmentation(text) {
+  if (topicSegmentTimer) clearTimeout(topicSegmentTimer)
+  // Mostra modal de confirmação ao invés de executar diretamente
+  topicSegmentTimer = setTimeout(() => {
+    if (text.length >= 200) {
+      pendingTextForSegmentation.value = text
+      showTopicConfirmModal.value = true
+    }
+  }, 400)
+}
+
+function confirmTopicSegmentation() {
+  showTopicConfirmModal.value = false
+  if (pendingTextForSegmentation.value) {
+    performTopicSegmentation(pendingTextForSegmentation.value)
+    pendingTextForSegmentation.value = ''
+  }
+}
+
+function cancelTopicSegmentation() {
+  showTopicConfirmModal.value = false
+  pendingTextForSegmentation.value = ''
+}
+
+async function performTopicSegmentation(text) {
+  if (isSegmentingTopics.value || text.length < 200) return
+
+  isSegmentingTopics.value = true
+  showTopicLegend.value = true
+  topicSegmentProgress.value = 0
+  topicSegmentStage.value = 'Iniciando...'
+
+  try {
+    const result = await segmentTopics(text, selectedAnalysisModel.value, (event) => {
+      topicSegmentProgress.value = event.data?.percent || 0
+      topicSegmentStage.value = formatSegmentStage(event.stage)
+    })
+
+    topicSegments.value = result.segments
+    topicDefinitions.value = result.topics
+
+    // Aplica highlights no editor
+    if (result.segments.length > 0) {
+      const highlightData = result.segments.map(s => ({
+        start: s.start,
+        end: s.end,
+        color: result.topics.find(t => t.id === s.topic_id)?.color || '#e5e7eb'
+      }))
+      editorRef.value?.applyTopicHighlights(highlightData)
+      notify(`${result.segments.length} trechos marcados por tópico`, 'success', 3000)
+    } else {
+      notify('Nenhum tópico identificado no texto', 'info', 3000)
+      showTopicLegend.value = false
+    }
+
+    schedulePersistActiveSession()
+  } catch (err) {
+    console.error('Topic segmentation error:', err)
+    notify('Erro ao segmentar tópicos: ' + (err?.message || String(err)), 'error', 5000)
+    showTopicLegend.value = false
+  } finally {
+    isSegmentingTopics.value = false
+    topicSegmentProgress.value = 100
+  }
+}
+
+function formatSegmentStage(stage) {
+  const stages = {
+    'preparing': 'Preparando...',
+    'building_prompt': 'Construindo prompt...',
+    'calling_llm': 'Analisando texto...',
+    'parsing_response': 'Processando resposta...',
+    'building_topics': 'Identificando tópicos...',
+    'done': 'Concluído'
+  }
+  return stages[stage] || stage || 'Processando...'
+}
+
+function onNavigateToSegment(segment) {
+  editorRef.value?.scrollToPosition(segment.start, segment.end - segment.start)
+}
+
+function clearTopicHighlights() {
+  editorRef.value?.clearTopicHighlights()
+  topicSegments.value = []
+  topicDefinitions.value = []
+  showTopicLegend.value = false
+  schedulePersistActiveSession()
 }
 
 // ============================================================
@@ -2646,7 +2786,18 @@ function onContentChanged(payload) {
 
   const normalized = normalizePlainText(fullText)
   if (normalized === lastNormalizedTextOnChange.value) return
+
+  // Detecta paste: adição significativa de texto em uma única operação
+  const prevLen = lastNormalizedTextOnChange.value?.length || 0
+  const textDiff = normalized.length - prevLen
+  const isPaste = textDiff > 200 // threshold para considerar como paste
+
   lastNormalizedTextOnChange.value = normalized
+
+  // Segmentação automática de tópicos quando detecta paste
+  if (isPaste && !isSegmentingTopics.value) {
+    scheduleTopicSegmentation(fullText)
+  }
 
   // Análise automática removida - agora é feita apenas inicialmente ou sob demanda
   // O usuário pode usar o botão "Analisar" ou o menu de contexto
@@ -2703,6 +2854,10 @@ function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metada
     nextTick(() => {
       if (text.length > 100) {
         scheduleAnalyze(text)
+      }
+      // Pergunta se quer marcar tópicos
+      if (text.length >= 200) {
+        scheduleTopicSegmentation(text)
       }
     })
   } else {
@@ -3421,6 +3576,20 @@ onBeforeUnmount(() => {
                   @selection-changed="onSelectionChanged"
                   @content-changed="onContentChanged"
                   @context-menu="onEditorContextMenu"
+                />
+
+                <!-- Topic Legend - navegação por tópicos -->
+                <TopicLegend
+                  v-if="!immersiveReader"
+                  :visible="showTopicLegend"
+                  :topics="topicDefinitions"
+                  :segments="topicSegments"
+                  :is-loading="isSegmentingTopics"
+                  :progress="topicSegmentProgress"
+                  :progress-stage="topicSegmentStage"
+                  @navigate="onNavigateToSegment"
+                  @clear="clearTopicHighlights"
+                  @close="showTopicLegend = false"
                 />
               </div>
 
@@ -4144,6 +4313,44 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+    </Dialog>
+
+    <!-- TOPIC SEGMENTATION CONFIRM -->
+    <Dialog
+      v-model:visible="showTopicConfirmModal"
+      header="Marcar Tópicos Automaticamente?"
+      modal
+      class="modern-dialog"
+      style="width: min(480px, 95vw);"
+    >
+      <div class="topic-confirm-content">
+        <div class="confirm-icon">
+          <i class="pi pi-palette" style="font-size: 2.5rem; color: var(--p-primary-500);"></i>
+        </div>
+        <p class="confirm-text">
+          Deseja que o modelo identifique e marque automaticamente os diferentes tópicos no texto com cores?
+        </p>
+        <p class="confirm-subtext">
+          <i class="pi pi-info-circle"></i>
+          Serão identificados: definições, exemplos, conceitos, fórmulas, procedimentos e comparações.
+        </p>
+      </div>
+      <template #footer>
+        <div class="topic-confirm-footer">
+          <Button
+            label="Não, obrigado"
+            icon="pi pi-times"
+            severity="secondary"
+            text
+            @click="cancelTopicSegmentation"
+          />
+          <Button
+            label="Sim, marcar tópicos"
+            icon="pi pi-palette"
+            @click="confirmTopicSegmentation"
+          />
+        </div>
+      </template>
     </Dialog>
 
     <!-- API KEYS -->
@@ -6618,5 +6825,37 @@ onBeforeUnmount(() => {
 
 .clear-all-btn:not(:disabled):hover svg {
   transform: scale(1.1);
+}
+
+/* Topic Confirm Modal */
+.topic-confirm-content {
+  text-align: center;
+  padding: 1rem 0;
+}
+
+.topic-confirm-content .confirm-icon {
+  margin-bottom: 1rem;
+}
+
+.topic-confirm-content .confirm-text {
+  font-size: 1rem;
+  color: var(--p-surface-700);
+  margin-bottom: 0.75rem;
+  line-height: 1.5;
+}
+
+.topic-confirm-content .confirm-subtext {
+  font-size: 0.85rem;
+  color: var(--p-surface-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.topic-confirm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
 }
 </style>
