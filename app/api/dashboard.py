@@ -1,13 +1,14 @@
 # app/api/dashboard.py
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
 import time
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -24,8 +25,7 @@ DEFAULT_TIMEOUT_SEC = float(os.getenv("ANKI_CONNECT_TIMEOUT", "10"))
 
 # cache simples p/ não recalcular tudo 4x quando a página carrega
 _CACHE_TTL_SEC = float(os.getenv("DASHBOARD_CACHE_TTL", "15"))
-_cache_ts: float = 0.0
-_cache_payload: Dict[str, Any] | None = None
+_cache: Dict[str, Dict[str, Any]] = {}  # key -> {ts, payload}
 
 # segmentação (scikit-learn)
 SEG_K = int(os.getenv("DASHBOARD_SEGMENTS_K", "4"))
@@ -84,6 +84,24 @@ def _card_created_day(card_info: Dict[str, Any]) -> str | None:
 def _status_counts() -> Dict[str, int]:
     # queries baratas e bem úteis pro gráfico de rosca
     def q(query: str) -> int:
+        ids = anki_invoke("findCards", {"query": query}) or []
+        return int(len(ids))
+
+    return {
+        "new": q("is:new"),
+        "learn": q("is:learn"),
+        "review": q("is:review"),
+        "due": q("is:due"),
+        "suspended": q("is:suspended"),
+    }
+
+
+def _status_counts_for_decks(decks: List[str]) -> Dict[str, int]:
+    """Status counts filtered by specific decks."""
+    deck_query = " OR ".join([f'deck:"{d}"' for d in decks])
+
+    def q(status_query: str) -> int:
+        query = f"({deck_query}) {status_query}"
         ids = anki_invoke("findCards", {"query": query}) or []
         return int(len(ids))
 
@@ -169,11 +187,51 @@ def _kmeans_segments(features: List[List[float]], k: int) -> Dict[str, Any]:
     return {"success": True, "k": k, "sampled": len(features), "items": items}
 
 
-def _build_all_stats() -> Dict[str, Any]:
+def _build_query(
+    decks: Optional[List[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """Build Anki query string from filters."""
+    parts = []
+
+    # Deck filter
+    if decks and len(decks) > 0:
+        deck_queries = [f'deck:"{d}"' for d in decks]
+        parts.append(f"({' OR '.join(deck_queries)})")
+    else:
+        parts.append("deck:*")
+
+    # Note: Anki doesn't support date range filtering on card creation
+    # The date filtering will be done in Python after fetching cards
+
+    return " ".join(parts)
+
+
+def _build_all_stats(
+    decks: Optional[List[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict[str, Any]:
     random.seed(SEG_RANDOM_SEED)
 
-    # 1) IDs de todos os cards
-    all_card_ids = anki_invoke("findCards", {"query": "deck:*"}) or []
+    # Parse date filters
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date).date()
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date).date()
+        except ValueError:
+            pass
+
+    # 1) Build query and get card IDs
+    query = _build_query(decks=decks)
+    all_card_ids = anki_invoke("findCards", {"query": query}) or []
     total_cards = len(all_card_ids)
 
     # 2) decks (rápido)
@@ -191,13 +249,29 @@ def _build_all_stats() -> Dict[str, Any]:
     feat_sample: List[List[float]] = []
     seen = 0
 
+    filtered_card_count = 0  # Cards that pass date filter
+
     for batch in chunked(all_card_ids, size=500):
         infos = anki_invoke("cardsInfo", {"cards": batch}) or []
         for c in infos:
+            d = _card_created_day(c)
+
+            # Apply date filter if specified
+            if d:
+                try:
+                    card_date = datetime.fromisoformat(d).date()
+                    if start_dt and card_date < start_dt:
+                        continue
+                    if end_dt and card_date > end_dt:
+                        continue
+                except ValueError:
+                    pass
+
+            filtered_card_count += 1
+
             deck = c.get("deckName") or "Unknown"
             by_deck[deck] += 1
 
-            d = _card_created_day(c)
             if d:
                 by_day[d] += 1
 
@@ -218,11 +292,18 @@ def _build_all_stats() -> Dict[str, Any]:
                 if j < SEG_MAX_SAMPLE:
                     feat_sample[j] = vec
 
-    # 4) status breakdown (para rosca)
-    sc = _status_counts()
+    # 4) status breakdown (para rosca) - only for filtered decks if specified
+    if decks and len(decks) > 0:
+        # Calculate status counts for filtered decks
+        sc = _status_counts_for_decks(decks)
+    else:
+        sc = _status_counts()
     status_items = _format_status_items(sc)
 
-    # 5) avg/dia all-time
+    # Use filtered count as total when filters are active
+    display_total = filtered_card_count if (start_dt or end_dt or decks) else total_cards
+
+    # 5) avg/dia for the filtered period
     avg_per_day = None
     if by_day:
         days_sorted = sorted(by_day.keys())
@@ -230,7 +311,7 @@ def _build_all_stats() -> Dict[str, Any]:
         d1 = datetime.fromisoformat(days_sorted[-1]).date()
         span = (d1 - d0).days + 1
         if span > 0:
-            avg_per_day = total_cards / float(span)
+            avg_per_day = display_total / float(span)
 
     # 6) segmentação (scikit-learn)
     segments = _kmeans_segments(feat_sample, k=SEG_K)
@@ -241,12 +322,12 @@ def _build_all_stats() -> Dict[str, Any]:
 
     summary = {
         "success": True,
-        "totalCards": total_cards,
+        "totalCards": display_total,
         "totalDecks": total_decks if total_decks > 0 else len(by_deck.keys()),
-        "createdTotal": total_cards,
+        "createdTotal": display_total,
         "avgPerDay": avg_per_day,
-        "statusBreakdown": status_items,         # <- NOVO
-        "segmentsMeta": {"k": segments.get("k"), "sampled": segments.get("sampled")},  # <- NOVO
+        "statusBreakdown": status_items,
+        "segmentsMeta": {"k": segments.get("k"), "sampled": segments.get("sampled")},
     }
 
     return {
@@ -257,37 +338,87 @@ def _build_all_stats() -> Dict[str, Any]:
     }
 
 
-def _get_cached_or_build() -> Dict[str, Any]:
-    global _cache_ts, _cache_payload
+def _get_cache_key(
+    decks: Optional[List[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """Generate cache key from filter parameters."""
+    key_parts = [
+        ",".join(sorted(decks)) if decks else "",
+        start_date or "",
+        end_date or "",
+    ]
+    key_str = "|".join(key_parts)
+    return hashlib.md5(key_str.encode()).hexdigest()
+
+
+def _get_cached_or_build(
+    decks: Optional[List[str]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    global _cache
+    cache_key = _get_cache_key(decks, start_date, end_date)
     now = time.time()
-    if _cache_payload is not None and (now - _cache_ts) < _CACHE_TTL_SEC:
-        return _cache_payload
-    payload = _build_all_stats()
-    _cache_payload = payload
-    _cache_ts = now
+
+    if cache_key in _cache:
+        cached = _cache[cache_key]
+        if (now - cached["ts"]) < _CACHE_TTL_SEC:
+            return cached["payload"]
+
+    payload = _build_all_stats(decks=decks, start_date=start_date, end_date=end_date)
+    _cache[cache_key] = {"ts": now, "payload": payload}
+
+    # Cleanup old cache entries (keep max 10)
+    if len(_cache) > 10:
+        oldest_key = min(_cache.keys(), key=lambda k: _cache[k]["ts"])
+        del _cache[oldest_key]
+
     return payload
 
 
 @router.get("/summary")
-def dashboard_summary() -> Dict[str, Any]:
-    payload = _get_cached_or_build()
+def dashboard_summary(
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    decks: Optional[str] = Query(None, description="Comma-separated deck names"),
+) -> Dict[str, Any]:
+    deck_list = decks.split(",") if decks else None
+    payload = _get_cached_or_build(decks=deck_list, start_date=start_date, end_date=end_date)
     return payload["summary"]
 
 
 @router.get("/by-day")
-def dashboard_by_day() -> Dict[str, Any]:
-    payload = _get_cached_or_build()
+def dashboard_by_day(
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    decks: Optional[str] = Query(None, description="Comma-separated deck names"),
+) -> Dict[str, Any]:
+    deck_list = decks.split(",") if decks else None
+    payload = _get_cached_or_build(decks=deck_list, start_date=start_date, end_date=end_date)
     return payload["by_day"]
 
 
 @router.get("/top-decks")
-def dashboard_top_decks(limit: int = Query(12, ge=1, le=200)) -> Dict[str, Any]:
-    payload = _get_cached_or_build()
+def dashboard_top_decks(
+    limit: int = Query(12, ge=1, le=200),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    decks: Optional[str] = Query(None, description="Comma-separated deck names"),
+) -> Dict[str, Any]:
+    deck_list = decks.split(",") if decks else None
+    payload = _get_cached_or_build(decks=deck_list, start_date=start_date, end_date=end_date)
     items = payload["top_decks"]["items"][: int(limit)]
     return {"success": True, "items": items}
 
 
 @router.get("/segments")
-def dashboard_segments() -> Dict[str, Any]:
-    payload = _get_cached_or_build()
+def dashboard_segments(
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    decks: Optional[str] = Query(None, description="Comma-separated deck names"),
+) -> Dict[str, Any]:
+    deck_list = decks.split(",") if decks else None
+    payload = _get_cached_or_build(decks=deck_list, start_date=start_date, end_date=end_date)
     return payload["segments"]
