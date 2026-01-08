@@ -991,6 +991,9 @@ let topicSegmentTimer = null
 const showTopicConfirmModal = ref(false)
 const pendingTextForSegmentation = ref('')
 
+// Flag para evitar duplicação de triggers ao carregar PDF
+const isLoadingPdf = ref(false)
+
 // ============================================================
 // Indicador de salvamento
 // ============================================================
@@ -1750,10 +1753,13 @@ function scheduleTopicSegmentation(text) {
 
 function confirmTopicSegmentation() {
   showTopicConfirmModal.value = false
-  if (pendingTextForSegmentation.value) {
-    performTopicSegmentation(pendingTextForSegmentation.value)
-    pendingTextForSegmentation.value = ''
+  // Usa o texto EXATO do editor para garantir que as posições correspondam
+  const currentText = editorRef.value?.getRawText?.() || editorRef.value?.getFullText?.() || pendingTextForSegmentation.value
+  console.log('[TopicSegmentation] Using text from editor, length:', currentText?.length)
+  if (currentText && currentText.length >= 200) {
+    performTopicSegmentation(currentText)
   }
+  pendingTextForSegmentation.value = ''
 }
 
 function cancelTopicSegmentation() {
@@ -1762,7 +1768,18 @@ function cancelTopicSegmentation() {
 }
 
 async function performTopicSegmentation(text) {
-  if (isSegmentingTopics.value || text.length < 200) return
+  if (isSegmentingTopics.value || text.length < 200) {
+    console.log('[TopicSegmentation] Skipped - already running or text too short')
+    return
+  }
+
+  console.log('[TopicSegmentation] Starting with text length:', text.length)
+  console.log('[TopicSegmentation] Text preview (first 200 chars):', text.substring(0, 200))
+  console.log('[TopicSegmentation] Using model:', selectedAnalysisModel.value)
+
+  // Verifica comprimento do texto no editor
+  const editorTextLength = editorRef.value?.getRawText?.()?.length || 0
+  console.log('[TopicSegmentation] Editor text length:', editorTextLength)
 
   isSegmentingTopics.value = true
   showTopicLegend.value = true
@@ -1771,20 +1788,39 @@ async function performTopicSegmentation(text) {
 
   try {
     const result = await segmentTopics(text, selectedAnalysisModel.value, (event) => {
+      console.log('[TopicSegmentation] Progress:', event)
       topicSegmentProgress.value = event.data?.percent || 0
       topicSegmentStage.value = formatSegmentStage(event.stage)
     })
+
+    console.log('[TopicSegmentation] Result:', result)
+    console.log('[TopicSegmentation] Backend text_length:', result.text_length)
+
+    // Validar comprimento do texto
+    const editorTextLength = editorRef.value?.getRawText?.()?.length || 0
+    const backendTextLength = result.text_length || 0
+    console.log('[TopicSegmentation] Length comparison:', { editorTextLength, backendTextLength, diff: Math.abs(editorTextLength - backendTextLength) })
+
+    // Aviso se houver diferença significativa (mais de 50 caracteres)
+    if (backendTextLength > 0 && Math.abs(editorTextLength - backendTextLength) > 50) {
+      console.warn('[TopicSegmentation] Text length mismatch - positions may be incorrect')
+    }
 
     topicSegments.value = result.segments
     topicDefinitions.value = result.topics
 
     // Aplica highlights no editor
     if (result.segments.length > 0) {
-      const highlightData = result.segments.map(s => ({
-        start: s.start,
-        end: s.end,
-        color: result.topics.find(t => t.id === s.topic_id)?.color || '#e5e7eb'
-      }))
+      const highlightData = result.segments.map(s => {
+        const topic = result.topics.find(t => t.id === s.topic_id)
+        return {
+          start: s.start,
+          end: s.end,
+          color: topic?.color || '#e5e7eb'
+        }
+      })
+      console.log('[TopicSegmentation] Applying', highlightData.length, 'highlights')
+
       editorRef.value?.applyTopicHighlights(highlightData)
       notify(`${result.segments.length} trechos marcados por tópico`, 'success', 3000)
     } else {
@@ -1794,7 +1830,7 @@ async function performTopicSegmentation(text) {
 
     schedulePersistActiveSession()
   } catch (err) {
-    console.error('Topic segmentation error:', err)
+    console.error('[TopicSegmentation] Error:', err)
     notify('Erro ao segmentar tópicos: ' + (err?.message || String(err)), 'error', 5000)
     showTopicLegend.value = false
   } finally {
@@ -2794,8 +2830,8 @@ function onContentChanged(payload) {
 
   lastNormalizedTextOnChange.value = normalized
 
-  // Segmentação automática de tópicos quando detecta paste
-  if (isPaste && !isSegmentingTopics.value) {
+  // Segmentação automática de tópicos quando detecta paste (mas não durante carregamento de PDF)
+  if (isPaste && !isSegmentingTopics.value && !isLoadingPdf.value) {
     scheduleTopicSegmentation(fullText)
   }
 
@@ -2818,13 +2854,16 @@ const usePdfPagination = ref(false)  // Se deve usar paginação baseada no PDF
 
 function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metadata }) {
   console.log('[onPdfExtracted] pagesContent:', pagesContent?.length, 'pages:', pages)
-  
+
+  // Seta flag para evitar que onContentChanged dispare segmentação duplicada
+  isLoadingPdf.value = true
+
   // Armazena conteúdo das páginas para paginação
   pdfPagesContent.value = pagesContent || []
   usePdfPagination.value = pagesContent && pagesContent.length > 0
-  
+
   console.log('[onPdfExtracted] usePdfPagination set to:', usePdfPagination.value)
-  
+
   // Insere o texto extraído do PDF no editor
   if (editorRef.value?.setContent) {
     editorRef.value.setContent(text)
@@ -2850,17 +2889,15 @@ function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metada
       readerPage.value = 1
     }
     
-    // Dispara análise automática
-    nextTick(() => {
-      if (text.length > 100) {
-        scheduleAnalyze(text)
-      }
-      // Pergunta se quer marcar tópicos
+    // Pergunta se quer marcar tópicos (após delay para não conflitar)
+    setTimeout(() => {
+      isLoadingPdf.value = false  // Reseta flag para permitir futuras detecções de paste
       if (text.length >= 200) {
         scheduleTopicSegmentation(text)
       }
-    })
+    }, 800)
   } else {
+    isLoadingPdf.value = false  // Reseta flag mesmo em caso de erro
     notify('Erro ao inserir texto no editor', 'error', 4000)
   }
 }
