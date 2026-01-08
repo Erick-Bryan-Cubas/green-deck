@@ -357,6 +357,7 @@ async function segmentTopics(text, analysisModel = null, onProgress = null) {
       return {
         segments: result.segments || [],
         topics: result.topics || [],
+        text_length: result.text_length || 0,
         analysis_id: result.analysis_id,
       };
     }

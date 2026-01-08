@@ -556,6 +556,13 @@ defineExpose({
   clearHighlight,
   clearSelection,
   getFullText: () => (quill ? quill.getText().trim() : ''),
+  // Retorna o texto exato do editor sem trim (para posicionamento preciso)
+  getRawText: () => {
+    if (!quill) return ''
+    // Quill adiciona um \n no final, removemos apenas esse
+    const text = quill.getText()
+    return text.endsWith('\n') ? text.slice(0, -1) : text
+  },
   getSelectedText: () => (hasValidSavedRange() ? getSelectedText(savedRange) : ''),
   getDelta: () => (quill ? quill.getContents() : null),
   setDelta: (delta) => {
@@ -680,23 +687,51 @@ defineExpose({
    * @param {Array} segments - Array of {start, end, color} objects
    */
   applyTopicHighlights: (segments) => {
-    if (!quill || !Array.isArray(segments)) return
+    console.log('[QuillEditor] applyTopicHighlights called with:', segments?.length, 'segments')
+    if (!quill) {
+      console.warn('[QuillEditor] applyTopicHighlights - quill not initialized')
+      return
+    }
+    if (!Array.isArray(segments)) {
+      console.warn('[QuillEditor] applyTopicHighlights - segments is not an array')
+      return
+    }
+
+    // Quill adiciona \n implícito no final, então o comprimento real do texto é getLength() - 1
+    const quillLength = quill.getLength()
+    const textLength = quillLength - 1
+    console.log('[QuillEditor] Quill length:', quillLength, '| Real text length:', textLength)
 
     // Sort segments from end to start to preserve positions
     const sorted = [...segments].sort((a, b) => b.start - a.start)
 
+    let appliedCount = 0
     for (const seg of sorted) {
       const start = seg.start
-      const length = seg.end - seg.start
+      // Limitar end ao tamanho real do texto
+      const end = Math.min(seg.end, textLength)
+      const length = end - start
       const color = seg.color || '#e5e7eb'
 
-      if (length > 0 && start >= 0) {
-        quill.formatText(start, length, {
-          background: color,
-          color: textColorForBackground(color)
-        })
+      console.log('[QuillEditor] Processing segment:', { start, end, length, color, textLength })
+
+      if (length > 0 && start >= 0 && end <= textLength) {
+        try {
+          const textColor = textColorForBackground(color)
+          quill.formatText(start, length, {
+            background: color,
+            color: textColor
+          })
+          appliedCount++
+          console.log('[QuillEditor] Format applied:', { start, length, color })
+        } catch (e) {
+          console.error('[QuillEditor] Error applying format:', e)
+        }
+      } else {
+        console.warn('[QuillEditor] Skipping segment - out of bounds:', { start, end, length, textLength })
       }
     }
+    console.log('[QuillEditor] applyTopicHighlights completed:', appliedCount, 'of', segments.length, 'applied')
   },
 
   /**
