@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import Optional, Tuple
+from pydantic import BaseModel, Field
+from typing import Optional, Tuple, List
 import json
 import re
 import logging
 from pathlib import Path
+import httpx
 
 from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, OLLAMA_VALIDATION_MODEL
 from app.services.ollama import ollama_generate_stream
@@ -912,6 +913,19 @@ class SegmentTopicsRequest(BaseModel):
     perplexityApiKey: Optional[str] = None
 
 
+# Schemas Pydantic para Ollama JSON Mode
+class TopicSegment(BaseModel):
+    """Segmento de texto com categoria de tópico."""
+    excerpt: str = Field(..., description="Trecho literal do texto (50-200 caracteres)")
+    category: str = Field(..., description="DEFINICAO|EXEMPLO|CONCEITO|FORMULA|PROCEDIMENTO|COMPARACAO")
+    custom_name: Optional[str] = Field(None, description="Nome customizado para categoria ESPECIFICO")
+
+
+class SegmentationResponse(BaseModel):
+    """Resposta de segmentação de tópicos."""
+    segments: List[TopicSegment] = Field(..., description="Lista de segmentos identificados")
+
+
 # Cores para categorias base de tópicos
 TOPIC_COLORS = {
     "DEFINICAO": {"color": "#fef08a", "name": "Definições"},
@@ -927,10 +941,151 @@ TOPIC_COLORS = {
 CUSTOM_TOPIC_COLORS = ["#fcd34d", "#4ade80", "#60a5fa", "#a78bfa", "#f87171", "#22d3d8"]
 
 
+def _clean_llm_json(raw: str) -> str:
+    """
+    Limpa e corrige erros comuns de JSON gerado por LLMs.
+    """
+    cleaned = raw
+
+    # Corrige todas as variações de "custom_name" (case insensitive)
+    # Cobre: custom-Name, custom-name, customName, custom_Name, custom-than, etc.
+    cleaned = re.sub(r'"custom[-_]?[nN]ame"', '"custom_name"', cleaned)
+    cleaned = re.sub(r'"custom[-_]?than"', '"custom_name"', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'"customName"', '"custom_name"', cleaned, flags=re.IGNORECASE)
+
+    # Remove fragmentos soltos como "custom", que não são pares chave-valor válidos
+    # Padrão: "palavra", seguida de vírgula, sem : após
+    cleaned = re.sub(r'"[a-zA-Z_-]+"\s*,\s*(?="[a-zA-Z_-]+":\s*)', '', cleaned)
+
+    # Remove vírgulas antes de } ou ]
+    cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+
+    # Remove vírgulas duplicadas
+    cleaned = re.sub(r',\s*,', ',', cleaned)
+
+    # Remove caracteres de controle que podem quebrar JSON (exceto whitespace válido)
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
+
+    return cleaned
+
+
+async def _call_ollama_structured(prompt: str, schema: type, model: str) -> dict:
+    """
+    Chama Ollama com JSON Mode estruturado usando Pydantic schema.
+    Garante JSON 100% válido conforme o schema fornecido.
+    """
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "format": schema.model_json_schema(),
+        "stream": False,
+        "options": {"temperature": 0.0}
+    }
+
+    logger.info("[Ollama JSON Mode] Calling model: %s with schema: %s", model, schema.__name__)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "http://localhost:11434/api/generate",
+                json=payload,
+                timeout=120.0
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            raw_response = result.get("response", "{}")
+            logger.debug("[Ollama JSON Mode] Raw response: %s", raw_response[:500])
+
+            parsed = json.loads(raw_response)
+            logger.info("[Ollama JSON Mode] Successfully parsed JSON with %d segments",
+                       len(parsed.get("segments", [])))
+            return parsed
+
+    except httpx.HTTPStatusError as e:
+        logger.error("[Ollama JSON Mode] HTTP error: %s", e)
+        raise
+    except json.JSONDecodeError as e:
+        logger.error("[Ollama JSON Mode] JSON parse error: %s", e)
+        raise
+    except Exception as e:
+        logger.error("[Ollama JSON Mode] Unexpected error: %s", e)
+        raise
+
+
+def _calculate_positions(text: str, segments_raw: List[dict]) -> List[dict]:
+    """
+    Calcula posições start/end a partir dos trechos extraídos pelo LLM.
+    Usa str.find() para localizar cada trecho no texto original.
+    """
+    results = []
+    used_positions = set()  # Evita duplicatas de posição
+
+    logger.info("[CalculatePositions] Processing %d raw segments", len(segments_raw))
+
+    for i, seg in enumerate(segments_raw):
+        excerpt = seg.get("excerpt", "")
+        if not excerpt or len(excerpt) < 20:
+            logger.debug("[CalculatePositions] Segment %d skipped: excerpt too short (%d chars)", i, len(excerpt))
+            continue
+
+        # Busca exata primeiro
+        start = text.find(excerpt)
+
+        # Se não encontrou, tenta case-insensitive
+        if start == -1:
+            start_lower = text.lower().find(excerpt.lower())
+            if start_lower != -1:
+                start = start_lower
+                logger.debug("[CalculatePositions] Segment %d: found via case-insensitive search", i)
+
+        # Se ainda não encontrou, tenta buscar primeiros 50 caracteres
+        if start == -1 and len(excerpt) > 50:
+            short = excerpt[:50]
+            start = text.find(short)
+            if start == -1:
+                start = text.lower().find(short.lower())
+            if start != -1:
+                logger.debug("[CalculatePositions] Segment %d: found via partial match (first 50 chars)", i)
+
+        if start == -1:
+            logger.warning("[CalculatePositions] Segment %d NOT FOUND in text: '%s...'", i, excerpt[:60])
+            continue
+
+        if start in used_positions:
+            logger.debug("[CalculatePositions] Segment %d skipped: duplicate position %d", i, start)
+            continue
+
+        # Calcula end baseado no tamanho do excerpt encontrado
+        end = start + len(excerpt)
+
+        # Limita ao tamanho do texto
+        end = min(end, len(text))
+
+        used_positions.add(start)
+
+        results.append({
+            "start": start,
+            "end": end,
+            "category": seg.get("category", "CONCEITO").upper(),
+            "custom_name": seg.get("custom_name"),
+            "text": text[start:end],
+        })
+
+        logger.debug("[CalculatePositions] Segment %d: start=%d, end=%d, category=%s",
+                    i, start, end, seg.get("category"))
+
+    logger.info("[CalculatePositions] Found %d valid segments out of %d", len(results), len(segments_raw))
+    return results
+
+
 def _parse_topic_segments(raw_response: str, original_text: str) -> list:
     """
     Parseia a resposta JSON do LLM e valida os segmentos.
     """
+    logger.info("Parsing topic segments from LLM response (length: %d)", len(raw_response))
+    logger.debug("Raw response preview: %s", raw_response[:500] if raw_response else "empty")
+
     # Tenta extrair JSON da resposta
     try:
         # Remove possíveis markdown code blocks
@@ -938,18 +1093,39 @@ def _parse_topic_segments(raw_response: str, original_text: str) -> list:
         cleaned = re.sub(r"```\s*", "", cleaned)
         cleaned = cleaned.strip()
 
+        # Limpa erros comuns de JSON do LLM
+        cleaned = _clean_llm_json(cleaned)
+
         # Encontra o JSON
         json_match = re.search(r'\{[\s\S]*\}', cleaned)
         if json_match:
-            data = json.loads(json_match.group())
+            json_str = json_match.group()
+            logger.debug("Cleaned JSON (first 500 chars): %s", json_str[:500] if json_str else "empty")
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                logger.warning("First JSON parse failed at pos %d: %s", e.pos, e.msg)
+                # Log do contexto ao redor do erro
+                error_context = json_str[max(0, e.pos-30):min(len(json_str), e.pos+30)]
+                logger.warning("Error context: ...%s...", repr(error_context))
+                # Tenta limpeza mais agressiva
+                json_str = re.sub(r'[^\x20-\x7E\n\r\t]', '', json_str)
+                try:
+                    data = json.loads(json_str)
+                except json.JSONDecodeError as e2:
+                    logger.error("Second JSON parse also failed: %s", e2)
+                    raise e2
+            logger.info("Found JSON with %d segments", len(data.get("segments", [])))
         else:
+            logger.warning("No JSON found in response")
             return []
 
         segments = data.get("segments", [])
         validated = []
         text_len = len(original_text)
+        logger.info("Original text length: %d, segments to validate: %d", text_len, len(segments))
 
-        for seg in segments:
+        for i, seg in enumerate(segments):
             start = seg.get("start", 0)
             end = seg.get("end", 0)
             category = seg.get("category", "ESPECIFICO")
@@ -957,8 +1133,10 @@ def _parse_topic_segments(raw_response: str, original_text: str) -> list:
 
             # Valida posições
             if start < 0 or end <= start or end > text_len:
+                logger.debug("Segment %d rejected: invalid positions (start=%d, end=%d, text_len=%d)", i, start, end, text_len)
                 continue
             if end - start < 20 or end - start > 600:
+                logger.debug("Segment %d rejected: invalid length (%d)", i, end - start)
                 continue
 
             # Extrai texto do segmento
@@ -972,9 +1150,11 @@ def _parse_topic_segments(raw_response: str, original_text: str) -> list:
                 "text": segment_text,
             })
 
+        logger.info("Validated %d segments out of %d", len(validated), len(segments))
         return validated
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.warning("Failed to parse topic segments: %s", e)
+        logger.debug("Raw response that failed: %s", raw_response[:1000] if raw_response else "empty")
         return []
 
 
@@ -1026,7 +1206,8 @@ async def segment_topics(
 ):
     """
     Segmenta texto por tópicos para highlighting automático.
-    Retorna posições de caracteres para cada segmento identificado.
+    Usa Ollama JSON Mode para garantir JSON válido, então calcula posições
+    a partir dos trechos extraídos usando str.find().
     """
     async def generate():
         try:
@@ -1045,45 +1226,65 @@ async def segment_topics(
             # Trunca texto se muito longo
             src = request.text[:15000] if len(request.text) > 15000 else request.text
 
-            # Detecta idioma
-            detected_lang = detect_language_pt_en_es(src[:500])
-
             yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'building_prompt'})}\n\n"
 
-            # Constrói prompt de segmentação
+            # Constrói prompt de segmentação (novo formato pedindo trechos)
             from app.api.prompts import PROMPTS
 
             prompt = PROMPTS["TOPIC_SEGMENTATION_PROMPT"].replace("${text}", src)
-            system = PROMPTS["TOPIC_SEGMENTATION_SYSTEM"]
-            options = {"num_predict": 2048, "temperature": 0.2}
 
             yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_llm', 'model': analysis_model})}\n\n"
 
-            raw = ""
+            segments_raw = []
+
             try:
-                if use_openai:
-                    async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
-                        raw += piece
-                elif use_perplexity:
-                    async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
-                        raw += piece
+                if use_ollama:
+                    # Usa Ollama JSON Mode com Pydantic schema - garante JSON válido
+                    llm_result = await _call_ollama_structured(
+                        prompt=prompt,
+                        schema=SegmentationResponse,
+                        model=analysis_model,
+                    )
+                    segments_raw = llm_result.get("segments", [])
+                    logger.info("[TopicSegmentation] Ollama JSON Mode returned %d segments", len(segments_raw))
+
                 else:
-                    async for piece in ollama_generate_stream(analysis_model, prompt, system=system, options=options):
-                        raw += piece
+                    # Fallback para OpenAI/Perplexity - usa streaming tradicional
+                    system = PROMPTS["TOPIC_SEGMENTATION_SYSTEM"]
+                    options = {"num_predict": 2048, "temperature": 0.2}
+
+                    raw = ""
+                    if use_openai:
+                        async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
+                            raw += piece
+                    elif use_perplexity:
+                        async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
+                            raw += piece
+
+                    # Parseia resposta JSON manualmente para providers externos
+                    try:
+                        cleaned = _clean_llm_json(raw)
+                        json_match = re.search(r'\{[\s\S]*\}', cleaned)
+                        if json_match:
+                            data = json.loads(json_match.group())
+                            segments_raw = data.get("segments", [])
+                    except Exception as parse_error:
+                        logger.warning("[TopicSegmentation] Failed to parse external provider response: %s", parse_error)
+
             except Exception as llm_error:
                 logger.warning("Topic segmentation LLM failed: %s", llm_error)
                 yield f"event: error\ndata: {json.dumps({'error': f'LLM failed: {str(llm_error)}'})}\n\n"
                 return
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 70, 'stage': 'parsing_response'})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'calculating_positions', 'raw_segments': len(segments_raw)})}\n\n"
 
-            # Parseia resposta
-            segments = _parse_topic_segments(raw, src)
+            # Calcula posições a partir dos trechos usando str.find()
+            segments = _calculate_positions(src, segments_raw)
 
             if not segments:
-                logger.warning("No valid segments parsed from LLM response")
+                logger.warning("No valid segments found after position calculation")
                 yield f"event: progress\ndata: {json.dumps({'percent': 100, 'stage': 'done', 'segments': 0})}\n\n"
-                yield f"event: result\ndata: {json.dumps({'success': True, 'segments': [], 'topics': [], 'analysis_id': None})}\n\n"
+                yield f"event: result\ndata: {json.dumps({'success': True, 'segments': [], 'topics': [], 'text_length': len(src), 'analysis_id': None})}\n\n"
                 return
 
             yield f"event: progress\ndata: {json.dumps({'percent': 85, 'stage': 'building_topics', 'segments': len(segments)})}\n\n"
@@ -1101,6 +1302,7 @@ async def segment_topics(
                     "topics_count": len(topics),
                     "model": analysis_model,
                     "provider": provider,
+                    "method": "ollama_json_mode" if use_ollama else "streaming",
                 },
             )
 
@@ -1108,6 +1310,7 @@ async def segment_topics(
                 "success": True,
                 "segments": segments,
                 "topics": topics,
+                "text_length": len(src),
                 "analysis_id": analysis_id,
             }
 

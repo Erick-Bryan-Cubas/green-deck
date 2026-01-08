@@ -251,35 +251,34 @@ Return a short structured summary (3–7 bullets).
     "TOPIC_SEGMENTATION_SYSTEM": (
         "Você segmenta texto educacional por tipo de conteúdo.\n"
         "Responda APENAS em JSON válido, sem explicações.\n"
-        "Preserve as posições exatas dos caracteres.\n"
+        "Extraia trechos LITERAIS do texto fornecido.\n"
     ),
 
-    "TOPIC_SEGMENTATION_PROMPT": """Segmente o texto abaixo identificando tópicos e suas posições exatas de caracteres.
+    "TOPIC_SEGMENTATION_PROMPT": """Identifique os tópicos educacionais mais importantes no texto abaixo.
 
-CATEGORIAS BASE (use estes IDs exatos):
+CATEGORIAS (use estes IDs exatos):
 - DEFINICAO: conceitos sendo definidos ou explicados
 - EXEMPLO: casos práticos, ilustrações, cenários
 - CONCEITO: ideias-chave, princípios fundamentais, teorias
 - FORMULA: expressões matemáticas, equações, fórmulas
 - PROCEDIMENTO: passos, processos, algoritmos, métodos
-- COMPARACAO: contrastes, similaridades, diferenças entre conceitos
+- COMPARACAO: contrastes, similaridades, diferenças
 
-REGRAS:
-1. Segmentos devem ter entre 50-500 caracteres
-2. Preserve posições EXATAS (start/end são índices de caracteres, começando em 0)
-3. Para tópicos específicos do domínio que não se encaixam nas categorias, use "ESPECIFICO" com custom_name
-4. Não sobreponha segmentos significativamente
-5. Priorize trechos com informação densa e relevante
-6. Máximo 15 segmentos por texto
+REGRAS IMPORTANTES:
+1. Extraia TRECHOS LITERAIS do texto (50-200 caracteres cada)
+2. Copie o texto EXATAMENTE como aparece - NÃO resuma nem modifique
+3. Máximo 15 segmentos por texto
+4. Cada trecho deve ser único e educacionalmente relevante
+5. Use a categoria mais apropriada para cada trecho
 
-TEXTO:
+TEXTO PARA SEGMENTAR:
 ${text}
 
-RESPONDA em JSON válido (sem markdown):
+RESPONDA apenas em JSON válido (sem markdown, sem explicações):
 {
   "segments": [
-    {"start": 0, "end": 150, "category": "DEFINICAO", "custom_name": null},
-    {"start": 200, "end": 350, "category": "ESPECIFICO", "custom_name": "Neuroplasticidade"}
+    {"excerpt": "trecho literal copiado do texto", "category": "DEFINICAO", "custom_name": null},
+    {"excerpt": "outro trecho literal do texto", "category": "CONCEITO", "custom_name": null}
   ]
 }""",
 
