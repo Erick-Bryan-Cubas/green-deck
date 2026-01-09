@@ -37,6 +37,11 @@ from app.services.storage import (
 from app.services.prompt_provider import PromptProvider, get_prompt_provider
 from app.api.prompts import get_default_prompts_for_ui
 from app.api.models import get_provider_for_model
+from app.api.topic_segmentation import (
+    segment_with_langextract,
+    is_langextract_available,
+    TOPIC_CATEGORIES,
+)
 
 router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
@@ -1013,15 +1018,85 @@ async def _call_ollama_structured(prompt: str, schema: type, model: str) -> dict
         raise
 
 
+def _normalize_whitespace(text: str) -> tuple[str, list[int]]:
+    """
+    Normaliza whitespace (múltiplos espaços/quebras de linha -> espaço único).
+    Retorna (texto_normalizado, mapeamento_posicoes).
+    O mapeamento permite converter índices do texto normalizado para o original.
+    """
+    normalized = []
+    position_map = []  # position_map[i] = índice no texto original
+    i = 0
+    prev_was_space = False
+
+    while i < len(text):
+        char = text[i]
+        if char in ' \t\n\r':
+            if not prev_was_space:
+                normalized.append(' ')
+                position_map.append(i)
+                prev_was_space = True
+        else:
+            normalized.append(char)
+            position_map.append(i)
+            prev_was_space = False
+        i += 1
+
+    return ''.join(normalized), position_map
+
+
+def _find_in_normalized(text: str, excerpt: str, text_norm: str, pos_map: list[int]) -> tuple[int, int]:
+    """
+    Busca excerpt no texto usando normalização de whitespace.
+    Retorna (start_original, end_original) ou (-1, -1) se não encontrado.
+    """
+    # Normaliza o excerpt também
+    excerpt_norm = ' '.join(excerpt.split())
+
+    # Busca no texto normalizado
+    norm_start = text_norm.find(excerpt_norm)
+    if norm_start == -1:
+        # Tenta case-insensitive
+        norm_start = text_norm.lower().find(excerpt_norm.lower())
+
+    if norm_start == -1:
+        return -1, -1
+
+    norm_end = norm_start + len(excerpt_norm)
+
+    # Mapeia de volta para posições originais
+    if norm_start >= len(pos_map) or norm_end > len(pos_map):
+        return -1, -1
+
+    orig_start = pos_map[norm_start]
+
+    # Para o end, precisamos encontrar o fim do último caractere no original
+    if norm_end >= len(pos_map):
+        orig_end = len(text)
+    else:
+        orig_end = pos_map[norm_end - 1] + 1
+        # Expande para incluir whitespace trailing no original
+        while orig_end < len(text) and text[orig_end] in ' \t\n\r':
+            orig_end += 1
+            # Para no próximo caractere não-whitespace
+            if orig_end < len(text) and text[orig_end] not in ' \t\n\r':
+                break
+
+    return orig_start, orig_end
+
+
 def _calculate_positions(text: str, segments_raw: List[dict]) -> List[dict]:
     """
     Calcula posições start/end a partir dos trechos extraídos pelo LLM.
-    Usa str.find() para localizar cada trecho no texto original.
+    Usa busca com normalização de whitespace para maior tolerância.
     """
     results = []
     used_positions = set()  # Evita duplicatas de posição
 
     logger.info("[CalculatePositions] Processing %d raw segments", len(segments_raw))
+
+    # Pré-calcula texto normalizado para buscas flexíveis
+    text_norm, pos_map = _normalize_whitespace(text)
 
     for i, seg in enumerate(segments_raw):
         excerpt = seg.get("excerpt", "")
@@ -1029,23 +1104,42 @@ def _calculate_positions(text: str, segments_raw: List[dict]) -> List[dict]:
             logger.debug("[CalculatePositions] Segment %d skipped: excerpt too short (%d chars)", i, len(excerpt))
             continue
 
-        # Busca exata primeiro
-        start = text.find(excerpt)
+        start = -1
+        end = -1
 
-        # Se não encontrou, tenta case-insensitive
+        # 1. Busca exata primeiro
+        exact_start = text.find(excerpt)
+        if exact_start != -1:
+            start = exact_start
+            end = start + len(excerpt)
+            logger.debug("[CalculatePositions] Segment %d: found via exact match", i)
+
+        # 2. Se não encontrou, tenta case-insensitive
         if start == -1:
-            start_lower = text.lower().find(excerpt.lower())
-            if start_lower != -1:
-                start = start_lower
+            lower_start = text.lower().find(excerpt.lower())
+            if lower_start != -1:
+                start = lower_start
+                end = start + len(excerpt)
                 logger.debug("[CalculatePositions] Segment %d: found via case-insensitive search", i)
 
-        # Se ainda não encontrou, tenta buscar primeiros 50 caracteres
+        # 3. Se ainda não encontrou, tenta com normalização de whitespace
+        if start == -1:
+            start, end = _find_in_normalized(text, excerpt, text_norm, pos_map)
+            if start != -1:
+                logger.debug("[CalculatePositions] Segment %d: found via whitespace-normalized search", i)
+
+        # 4. Fallback: busca primeiros 50 caracteres
         if start == -1 and len(excerpt) > 50:
             short = excerpt[:50]
-            start = text.find(short)
-            if start == -1:
-                start = text.lower().find(short.lower())
-            if start != -1:
+            short_start = text.find(short)
+            if short_start == -1:
+                short_start = text.lower().find(short.lower())
+            if short_start == -1:
+                # Tenta com normalização
+                short_start, _ = _find_in_normalized(text, short, text_norm, pos_map)
+            if short_start != -1:
+                start = short_start
+                end = min(start + len(excerpt), len(text))
                 logger.debug("[CalculatePositions] Segment %d: found via partial match (first 50 chars)", i)
 
         if start == -1:
@@ -1055,9 +1149,6 @@ def _calculate_positions(text: str, segments_raw: List[dict]) -> List[dict]:
         if start in used_positions:
             logger.debug("[CalculatePositions] Segment %d skipped: duplicate position %d", i, start)
             continue
-
-        # Calcula end baseado no tamanho do excerpt encontrado
-        end = start + len(excerpt)
 
         # Limita ao tamanho do texto
         end = min(end, len(text))
@@ -1206,8 +1297,8 @@ async def segment_topics(
 ):
     """
     Segmenta texto por tópicos para highlighting automático.
-    Usa Ollama JSON Mode para garantir JSON válido, então calcula posições
-    a partir dos trechos extraídos usando str.find().
+    Usa LangExtract (se disponível) para posições exatas,
+    com fallback para Ollama JSON Mode + str.find().
     """
     async def generate():
         try:
@@ -1226,60 +1317,79 @@ async def segment_topics(
             # Trunca texto se muito longo
             src = request.text[:15000] if len(request.text) > 15000 else request.text
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'building_prompt'})}\n\n"
+            segments = []
+            method_used = "legacy"
 
-            # Constrói prompt de segmentação (novo formato pedindo trechos)
-            from app.api.prompts import PROMPTS
+            # Tenta usar LangExtract primeiro (posições exatas)
+            if is_langextract_available():
+                yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_langextract', 'model': analysis_model})}\n\n"
 
-            prompt = PROMPTS["TOPIC_SEGMENTATION_PROMPT"].replace("${text}", src)
-
-            yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_llm', 'model': analysis_model})}\n\n"
-
-            segments_raw = []
-
-            try:
-                if use_ollama:
-                    # Usa Ollama JSON Mode com Pydantic schema - garante JSON válido
-                    llm_result = await _call_ollama_structured(
-                        prompt=prompt,
-                        schema=SegmentationResponse,
+                try:
+                    segments = await segment_with_langextract(
+                        text=src,
                         model=analysis_model,
+                        ollama_url="http://localhost:11434",
+                        openai_key=request.openaiApiKey if use_openai else None,
+                        gemini_key=None,  # TODO: adicionar suporte a Gemini
                     )
-                    segments_raw = llm_result.get("segments", [])
-                    logger.info("[TopicSegmentation] Ollama JSON Mode returned %d segments", len(segments_raw))
+                    method_used = "langextract"
+                    logger.info("[TopicSegmentation] LangExtract returned %d segments with exact positions", len(segments))
 
-                else:
-                    # Fallback para OpenAI/Perplexity - usa streaming tradicional
-                    system = PROMPTS["TOPIC_SEGMENTATION_SYSTEM"]
-                    options = {"num_predict": 2048, "temperature": 0.2}
+                except Exception as langextract_error:
+                    logger.warning("[TopicSegmentation] LangExtract failed, falling back to legacy: %s", langextract_error)
+                    segments = []
 
-                    raw = ""
-                    if use_openai:
-                        async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
-                            raw += piece
-                    elif use_perplexity:
-                        async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
-                            raw += piece
+            # Fallback para método legado (Ollama JSON Mode + str.find)
+            if not segments:
+                yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'building_prompt'})}\n\n"
 
-                    # Parseia resposta JSON manualmente para providers externos
-                    try:
-                        cleaned = _clean_llm_json(raw)
-                        json_match = re.search(r'\{[\s\S]*\}', cleaned)
-                        if json_match:
-                            data = json.loads(json_match.group())
-                            segments_raw = data.get("segments", [])
-                    except Exception as parse_error:
-                        logger.warning("[TopicSegmentation] Failed to parse external provider response: %s", parse_error)
+                from app.api.prompts import PROMPTS
+                prompt = PROMPTS["TOPIC_SEGMENTATION_PROMPT"].replace("${text}", src)
 
-            except Exception as llm_error:
-                logger.warning("Topic segmentation LLM failed: %s", llm_error)
-                yield f"event: error\ndata: {json.dumps({'error': f'LLM failed: {str(llm_error)}'})}\n\n"
-                return
+                yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_llm', 'model': analysis_model})}\n\n"
 
-            yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'calculating_positions', 'raw_segments': len(segments_raw)})}\n\n"
+                segments_raw = []
 
-            # Calcula posições a partir dos trechos usando str.find()
-            segments = _calculate_positions(src, segments_raw)
+                try:
+                    if use_ollama:
+                        llm_result = await _call_ollama_structured(
+                            prompt=prompt,
+                            schema=SegmentationResponse,
+                            model=analysis_model,
+                        )
+                        segments_raw = llm_result.get("segments", [])
+                        logger.info("[TopicSegmentation] Ollama JSON Mode returned %d segments", len(segments_raw))
+
+                    else:
+                        system = PROMPTS["TOPIC_SEGMENTATION_SYSTEM"]
+                        options = {"num_predict": 2048, "temperature": 0.2}
+
+                        raw = ""
+                        if use_openai:
+                            async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
+                                raw += piece
+                        elif use_perplexity:
+                            async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
+                                raw += piece
+
+                        try:
+                            cleaned = _clean_llm_json(raw)
+                            json_match = re.search(r'\{[\s\S]*\}', cleaned)
+                            if json_match:
+                                data = json.loads(json_match.group())
+                                segments_raw = data.get("segments", [])
+                        except Exception as parse_error:
+                            logger.warning("[TopicSegmentation] Failed to parse external provider response: %s", parse_error)
+
+                except Exception as llm_error:
+                    logger.warning("Topic segmentation LLM failed: %s", llm_error)
+                    yield f"event: error\ndata: {json.dumps({'error': f'LLM failed: {str(llm_error)}'})}\n\n"
+                    return
+
+                yield f"event: progress\ndata: {json.dumps({'percent': 60, 'stage': 'calculating_positions', 'raw_segments': len(segments_raw)})}\n\n"
+
+                segments = _calculate_positions(src, segments_raw)
+                method_used = "legacy_ollama" if use_ollama else "legacy_api"
 
             if not segments:
                 logger.warning("No valid segments found after position calculation")
@@ -1302,7 +1412,7 @@ async def segment_topics(
                     "topics_count": len(topics),
                     "model": analysis_model,
                     "provider": provider,
-                    "method": "ollama_json_mode" if use_ollama else "streaming",
+                    "method": method_used,
                 },
             )
 

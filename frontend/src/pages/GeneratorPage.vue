@@ -17,6 +17,7 @@ import Textarea from 'primevue/textarea'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
 import ProgressBar from 'primevue/progressbar'
+import ProgressSpinner from 'primevue/progressspinner'
 import Paginator from 'primevue/paginator'
 import Menu from 'primevue/menu'
 import ContextMenu from 'primevue/contextmenu'
@@ -1809,10 +1810,15 @@ async function performTopicSegmentation(text) {
     topicSegments.value = result.segments
     topicDefinitions.value = result.topics
 
+    console.log('[TopicSegmentation] Segments received:', result.segments.length)
+    console.log('[TopicSegmentation] Topics received:', result.topics)
+    console.log('[TopicSegmentation] First segment:', result.segments[0])
+
     // Aplica highlights no editor
     if (result.segments.length > 0) {
       const highlightData = result.segments.map(s => {
         const topic = result.topics.find(t => t.id === s.topic_id)
+        console.log('[TopicSegmentation] Segment topic_id:', s.topic_id, '-> topic:', topic?.id, '-> color:', topic?.color)
         return {
           start: s.start,
           end: s.end,
@@ -1820,8 +1826,14 @@ async function performTopicSegmentation(text) {
         }
       })
       console.log('[TopicSegmentation] Applying', highlightData.length, 'highlights')
+      console.log('[TopicSegmentation] First highlight:', highlightData[0])
 
-      editorRef.value?.applyTopicHighlights(highlightData)
+      // Aguarda próximo tick para garantir que o editor está pronto
+      await nextTick()
+
+      const applied = editorRef.value?.applyTopicHighlights(highlightData)
+      console.log('[TopicSegmentation] Applied result:', applied)
+
       notify(`${result.segments.length} trechos marcados por tópico`, 'success', 3000)
     } else {
       notify('Nenhum tópico identificado no texto', 'info', 3000)
@@ -3614,6 +3626,24 @@ onBeforeUnmount(() => {
                   @content-changed="onContentChanged"
                   @context-menu="onEditorContextMenu"
                 />
+
+                <!-- Overlay de carregamento durante segmentação de tópicos -->
+                <Transition name="fade">
+                  <div v-if="isSegmentingTopics" class="segmentation-overlay">
+                    <div class="segmentation-content">
+                      <ProgressSpinner
+                        style="width: 50px; height: 50px"
+                        strokeWidth="4"
+                        animationDuration=".8s"
+                      />
+                      <div class="segmentation-text">
+                        <span class="stage">{{ topicSegmentStage || 'Analisando tópicos...' }}</span>
+                        <ProgressBar :value="topicSegmentProgress" :showValue="false" style="height: 6px; width: 200px" />
+                        <span class="percent">{{ topicSegmentProgress }}%</span>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
 
                 <!-- Topic Legend - navegação por tópicos -->
                 <TopicLegend
@@ -6108,6 +6138,54 @@ onBeforeUnmount(() => {
 .editor-surface{
   height: 100%;
   min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Overlay de segmentação de tópicos */
+.segmentation-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  border-radius: inherit;
+  pointer-events: auto;
+}
+
+.segmentation-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 2rem;
+  background: var(--p-surface-800);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.segmentation-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.segmentation-text .stage {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--p-surface-0);
+}
+
+.segmentation-text .percent {
+  font-size: 0.8rem;
+  color: var(--p-surface-200);
 }
 
 /* wrapper do leitor */
