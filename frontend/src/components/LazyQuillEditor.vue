@@ -102,11 +102,29 @@ function hasHighlightedContent() {
   return editorRef.value?.hasHighlightedContent?.() || false
 }
 
+// Métodos para segmentação de tópicos
+function applyTopicHighlights(segments) {
+  return editorRef.value?.applyTopicHighlights?.(segments)
+}
+
+function clearTopicHighlights() {
+  return editorRef.value?.clearTopicHighlights?.()
+}
+
+function scrollToPosition(start, length) {
+  return editorRef.value?.scrollToPosition?.(start, length)
+}
+
+function getRawText() {
+  return editorRef.value?.getRawText?.() || ''
+}
+
 defineExpose({
   getHtml,
   getText,
   getFullText,
   getSelectedText,
+  getRawText,
   clearContent,
   setContent,
   focus,
@@ -116,7 +134,10 @@ defineExpose({
   clearHighlight,
   clearSelection,
   getHighlightedContent,
-  hasHighlightedContent
+  hasHighlightedContent,
+  applyTopicHighlights,
+  clearTopicHighlights,
+  scrollToPosition
 })
 </script>
 

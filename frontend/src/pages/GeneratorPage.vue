@@ -1754,11 +1754,23 @@ function scheduleTopicSegmentation(text) {
 
 function confirmTopicSegmentation() {
   showTopicConfirmModal.value = false
-  // Usa o texto EXATO do editor para garantir que as posições correspondam
-  const currentText = editorRef.value?.getRawText?.() || editorRef.value?.getFullText?.() || pendingTextForSegmentation.value
+  // Tenta obter o texto do editor em ordem de preferência
+  let currentText = editorRef.value?.getRawText?.()
+  if (!currentText || currentText.length === 0) {
+    currentText = editorRef.value?.getFullText?.()
+  }
+  if (!currentText || currentText.length === 0) {
+    currentText = pendingTextForSegmentation.value
+  }
+  
   console.log('[TopicSegmentation] Using text from editor, length:', currentText?.length)
+  console.log('[TopicSegmentation] Text preview:', currentText?.substring(0, 100))
+  
   if (currentText && currentText.length >= 200) {
     performTopicSegmentation(currentText)
+  } else {
+    addLog('[Segmentação] ⚠ Texto insuficiente para análise (mínimo 200 caracteres)', 'warn')
+    notify('Texto insuficiente para análise. Mínimo 200 caracteres.', 'warn', 3000)
   }
   pendingTextForSegmentation.value = ''
 }
@@ -1774,13 +1786,16 @@ async function performTopicSegmentation(text) {
     return
   }
 
+  addLog('[Segmentação] Iniciando análise de segmentação por tópicos', 'info')
   console.log('[TopicSegmentation] Starting with text length:', text.length)
   console.log('[TopicSegmentation] Text preview (first 200 chars):', text.substring(0, 200))
   console.log('[TopicSegmentation] Using model:', selectedAnalysisModel.value)
 
-  // Verifica comprimento do texto no editor
-  const editorTextLength = editorRef.value?.getRawText?.()?.length || 0
-  console.log('[TopicSegmentation] Editor text length:', editorTextLength)
+  // Usar o texto passado como parâmetro (que já foi validado e é confiável)
+  const textLength = text.length
+  console.log('[TopicSegmentation] Text length from parameter:', textLength)
+  addLog(`[Segmentação] Tamanho do texto: ${textLength} caracteres`, 'info')
+  addLog(`[Segmentação] Modelo: ${selectedAnalysisModel.value}`, 'info')
 
   isSegmentingTopics.value = true
   showTopicLegend.value = true
@@ -1792,19 +1807,21 @@ async function performTopicSegmentation(text) {
       console.log('[TopicSegmentation] Progress:', event)
       topicSegmentProgress.value = event.data?.percent || 0
       topicSegmentStage.value = formatSegmentStage(event.stage)
+      addLog(`[Segmentação] ${formatSegmentStage(event.stage)} (${event.data?.percent || 0}%)`, 'info')
     })
 
     console.log('[TopicSegmentation] Result:', result)
     console.log('[TopicSegmentation] Backend text_length:', result.text_length)
+    addLog(`[Segmentação] ✓ Análise concluída com sucesso`, 'success')
 
-    // Validar comprimento do texto
-    const editorTextLength = editorRef.value?.getRawText?.()?.length || 0
+    // Validar comprimento do texto usando o texto original passado como parâmetro
     const backendTextLength = result.text_length || 0
-    console.log('[TopicSegmentation] Length comparison:', { editorTextLength, backendTextLength, diff: Math.abs(editorTextLength - backendTextLength) })
+    console.log('[TopicSegmentation] Length comparison:', { parameterTextLength: text.length, backendTextLength, diff: Math.abs(text.length - backendTextLength) })
 
     // Aviso se houver diferença significativa (mais de 50 caracteres)
-    if (backendTextLength > 0 && Math.abs(editorTextLength - backendTextLength) > 50) {
+    if (backendTextLength > 0 && Math.abs(text.length - backendTextLength) > 50) {
       console.warn('[TopicSegmentation] Text length mismatch - positions may be incorrect')
+      addLog('[Segmentação] ⚠ Diferença detectada no comprimento do texto', 'warn')
     }
 
     topicSegments.value = result.segments
@@ -1813,9 +1830,14 @@ async function performTopicSegmentation(text) {
     console.log('[TopicSegmentation] Segments received:', result.segments.length)
     console.log('[TopicSegmentation] Topics received:', result.topics)
     console.log('[TopicSegmentation] First segment:', result.segments[0])
+    addLog(`[Segmentação] ${result.segments.length} trechos identificados em ${result.topics.length} tópico(s)`, 'info')
+    result.topics.forEach(topic => {
+      addLog(`  • ${topic.name}: ${result.segments.filter(s => s.topic_id === topic.id).length} trechos`, 'info')
+    })
 
     // Aplica highlights no editor
     if (result.segments.length > 0) {
+      addLog(`[Segmentação] Aplicando ${result.segments.length} highlights no editor...`, 'info')
       const highlightData = result.segments.map(s => {
         const topic = result.topics.find(t => t.id === s.topic_id)
         console.log('[TopicSegmentation] Segment topic_id:', s.topic_id, '-> topic:', topic?.id, '-> color:', topic?.color)
@@ -1833,9 +1855,11 @@ async function performTopicSegmentation(text) {
 
       const applied = editorRef.value?.applyTopicHighlights(highlightData)
       console.log('[TopicSegmentation] Applied result:', applied)
+      addLog(`[Segmentação] ✓ Highlights aplicados com sucesso`, 'success')
 
       notify(`${result.segments.length} trechos marcados por tópico`, 'success', 3000)
     } else {
+      addLog('[Segmentação] ⚠ Nenhum tópico foi identificado no texto', 'warn')
       notify('Nenhum tópico identificado no texto', 'info', 3000)
       showTopicLegend.value = false
     }
@@ -1843,7 +1867,9 @@ async function performTopicSegmentation(text) {
     schedulePersistActiveSession()
   } catch (err) {
     console.error('[TopicSegmentation] Error:', err)
-    notify('Erro ao segmentar tópicos: ' + (err?.message || String(err)), 'error', 5000)
+    const errorMsg = err?.message || String(err)
+    addLog(`[Segmentação] ✗ Erro ao segmentar tópicos: ${errorMsg}`, 'error')
+    notify('Erro ao segmentar tópicos: ' + errorMsg, 'error', 5000)
     showTopicLegend.value = false
   } finally {
     isSegmentingTopics.value = false
@@ -1853,12 +1879,14 @@ async function performTopicSegmentation(text) {
 
 function formatSegmentStage(stage) {
   const stages = {
-    'preparing': 'Preparando...',
-    'building_prompt': 'Construindo prompt...',
-    'calling_llm': 'Analisando texto...',
-    'parsing_response': 'Processando resposta...',
-    'building_topics': 'Identificando tópicos...',
-    'done': 'Concluído'
+    'preparing': '📋 Preparando texto...',
+    'building_prompt': '✍️ Construindo prompt de análise...',
+    'calling_llm': '🤖 Enviando para análise de IA...',
+    'parsing_response': '📖 Processando resposta da IA...',
+    'building_topics': '🏷️ Identificando e agrupando tópicos...',
+    'mapping_segments': '🗺️ Mapeando trechos para tópicos...',
+    'validating': '✓ Validando resultados...',
+    'done': '✅ Concluído'
   }
   return stages[stage] || stage || 'Processando...'
 }
