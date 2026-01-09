@@ -17,6 +17,7 @@ scikit-learn>=1.3.0
 
 # Text Processing & NLP
 nltk>=3.8.0
+langextract>=0.1.0
 
 # Resilience
 tenacity>=8.0.0
