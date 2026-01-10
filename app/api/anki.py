@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, Body
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Tuple, Literal
 import httpx
@@ -1196,3 +1196,841 @@ async def anki_note_update(req: AnkiNoteUpdateRequest):
             return {"success": True, "noteId": note_id, "updatedFields": len(fields)}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+# =============================================================================
+# Translate via SLM/Ollama (traduz cards in-place preservando estrutura)
+# =============================================================================
+
+OLLAMA_TRANSLATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "translated_fields": {
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+        }
+    },
+    "required": ["translated_fields"]
+}
+
+PROMPT_TRANSLATE = """\
+Você é um tradutor profissional especializado em material educacional.
+
+OBJETIVO:
+Traduzir o conteúdo dos campos de flashcards do Anki para o idioma de destino.
+
+REGRAS OBRIGATÓRIAS:
+1) Responda APENAS com JSON válido no schema solicitado.
+2) PRESERVE EXATAMENTE as marcações de cloze no formato {{c1::texto::hint}} ou {{c1::texto}}.
+   - Traduza APENAS o texto dentro do cloze, mantendo a estrutura {{cN::...}}.
+   - Exemplo: "{{c1::dog}}" → "{{c1::cachorro}}"
+3) PRESERVE tags HTML como <b>, <i>, <br>, <div>, <span>, etc.
+4) PRESERVE referências de mídia:
+   - Áudio: [sound:arquivo.mp3]
+   - Imagens: <img src="...">
+5) Mantenha termos técnicos em inglês quando não houver tradução consagrada.
+6) Mantenha siglas e acrônimos originais (ex: AWS, API, HTTP).
+7) Use português brasileiro natural e fluente.
+8) Se um campo estiver vazio ou contiver apenas mídia/HTML, retorne-o inalterado.
+
+EXEMPLOS DE TRADUÇÃO:
+
+Original: "The {{c1::heart}} pumps {{c2::blood}} through the body."
+Traduzido: "O {{c1::coração}} bombeia {{c2::sangue}} pelo corpo."
+
+Original: "<b>API</b> stands for Application Programming Interface"
+Traduzido: "<b>API</b> significa Application Programming Interface (Interface de Programação de Aplicações)"
+
+Original: "[sound:audio.mp3]<br>What is the capital of France?"
+Traduzido: "[sound:audio.mp3]<br>Qual é a capital da França?"
+
+SAÍDA:
+{ "translated_fields": { "campo1": "valor traduzido", "campo2": "valor traduzido" } }
+"""
+
+
+class AnkiTranslateRequest(BaseModel):
+    cardIds: List[int] = Field(default_factory=list)
+    deckName: Optional[str] = None  # Se omitido, usa cardIds; se definido, traduz todo deck
+    targetLanguage: str = "pt-br"
+    model: Optional[str] = None  # Modelo para tradução (ex: gpt-4o, sonar, qwen-flashcard)
+    # API Keys para providers externos
+    openaiApiKey: Optional[str] = None
+    perplexityApiKey: Optional[str] = None
+    anthropicApiKey: Optional[str] = None
+
+
+def _detect_provider(
+    model: str,
+    openai_key: Optional[str] = None,
+    perplexity_key: Optional[str] = None,
+    anthropic_key: Optional[str] = None,
+) -> str:
+    """Detecta o provider baseado no nome do modelo e chaves disponíveis."""
+    if not model:
+        return "ollama"
+
+    name_lower = model.lower()
+
+    # OpenAI: gpt-*, o1-*, chatgpt-*
+    if openai_key and ("gpt" in name_lower or model.startswith("o1-") or "chatgpt" in name_lower):
+        return "openai"
+
+    # Anthropic: claude-*
+    if anthropic_key and "claude" in name_lower:
+        return "anthropic"
+
+    # Perplexity: sonar*
+    if perplexity_key and "sonar" in name_lower:
+        return "perplexity"
+
+    return "ollama"
+
+
+async def _translate_with_provider(
+    *,
+    provider: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    request_id: str,
+    source_note_id: int,
+    openai_key: Optional[str] = None,
+    perplexity_key: Optional[str] = None,
+    anthropic_key: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    Executa tradução usando o provider especificado.
+    Retorna: (conteúdo_resposta, caminho_debug_file)
+    """
+    t0 = time.monotonic()
+    dbg: dict = {
+        "kind": "translate_provider",
+        "ts": _now_iso(),
+        "requestId": request_id,
+        "provider": provider,
+        "model": model,
+        "temperature": temperature,
+        "sourceNoteId": source_note_id,
+    }
+
+    try:
+        if provider == "openai" and openai_key:
+            content = await _call_openai_translate(
+                api_key=openai_key,
+                model=model,
+                system=system_prompt,
+                user=user_prompt,
+                temperature=temperature,
+            )
+        elif provider == "anthropic" and anthropic_key:
+            content = await _call_anthropic_translate(
+                api_key=anthropic_key,
+                model=model,
+                system=system_prompt,
+                user=user_prompt,
+                temperature=temperature,
+            )
+        elif provider == "perplexity" and perplexity_key:
+            content = await _call_perplexity_translate(
+                api_key=perplexity_key,
+                model=model,
+                system=system_prompt,
+                user=user_prompt,
+                temperature=temperature,
+            )
+        else:
+            # Fallback: Ollama
+            content = await _call_ollama_translate(
+                model=model,
+                system=system_prompt,
+                user=user_prompt,
+                temperature=temperature,
+            )
+
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        dbg["contentPreview"] = (content or "")[:500]
+        path = _write_toon_file(f"translate_{provider}_ok_nid{source_note_id}", request_id, dbg)
+        return content, path
+
+    except Exception as e:
+        dbg["error"] = str(e)
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"translate_{provider}_error_nid{source_note_id}", request_id, dbg)
+        raise Exception(f"[{provider}] {e}. (Veja: {path})")
+
+
+async def _call_openai_translate(
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+) -> str:
+    """Chama OpenAI API para tradução (não-streaming)."""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    # O1 models não suportam temperature
+    if model.startswith("o1-"):
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": 4096
+        }
+    else:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 4096
+        }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=payload
+        )
+        if r.status_code != 200:
+            raise Exception(f"OpenAI HTTP {r.status_code}: {r.text[:300]}")
+
+        data = r.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+async def _call_anthropic_translate(
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+) -> str:
+    """Chama Anthropic API para tradução (não-streaming)."""
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01"
+    }
+
+    payload = {
+        "model": model,
+        "max_tokens": 4096,
+        "temperature": temperature,
+        "system": system,
+        "messages": [
+            {"role": "user", "content": user}
+        ]
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload
+        )
+        if r.status_code != 200:
+            raise Exception(f"Anthropic HTTP {r.status_code}: {r.text[:300]}")
+
+        data = r.json()
+        content_blocks = data.get("content", [])
+        if content_blocks and isinstance(content_blocks, list):
+            return content_blocks[0].get("text", "")
+        return ""
+
+
+async def _call_perplexity_translate(
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+) -> str:
+    """Chama Perplexity API para tradução (não-streaming)."""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+        "max_tokens": 4096
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=payload
+        )
+        if r.status_code != 200:
+            raise Exception(f"Perplexity HTTP {r.status_code}: {r.text[:300]}")
+
+        data = r.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+async def _call_ollama_translate(
+    model: str,
+    system: str,
+    user: str,
+    temperature: float,
+) -> str:
+    """Chama Ollama API para tradução (não-streaming)."""
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "format": OLLAMA_TRANSLATE_SCHEMA,
+        "options": {"temperature": temperature},
+    }
+
+    async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT_S) as client:
+        r = await client.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT_S)
+        r.raise_for_status()
+        data = r.json()
+
+        msg = data.get("message") or {}
+        return msg.get("content") or ""
+
+
+async def ollama_translate_fields(
+    client: httpx.AsyncClient,
+    *,
+    request_id: str,
+    ollama_model: str,
+    temperature: float,
+    source_note_id: int,
+    source_card_id: Optional[int],
+    source_fields: Dict[str, str],
+    target_language: str,
+    retry_hint: Optional[str] = None,
+) -> Tuple[Dict[str, str], str]:
+    """
+    Traduz os campos de uma nota usando Ollama.
+    Retorna: (campos_traduzidos, caminho_do_arquivo_toon)
+    """
+    system = (
+        "Você é um tradutor profissional. SEMPRE responda somente com JSON válido, "
+        "seguindo exatamente o schema solicitado. Não escreva nada fora do JSON."
+    )
+
+    language_names = {
+        "pt-br": "português brasileiro",
+        "pt": "português",
+        "es": "espanhol",
+        "en": "inglês",
+        "fr": "francês",
+        "de": "alemão",
+        "it": "italiano",
+    }
+    target_lang_name = language_names.get(target_language.lower(), target_language)
+
+    user = {
+        "task": "translate_anki_note_fields",
+        "source_fields": source_fields,
+        "target_language": target_lang_name,
+        "target_field_names": list(source_fields.keys()),
+        "retry_hint": retry_hint or "",
+        "instructions": PROMPT_TRANSLATE,
+    }
+
+    payload = {
+        "model": ollama_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+        ],
+        "stream": False,
+        "format": OLLAMA_TRANSLATE_SCHEMA,
+        "options": {"temperature": float(temperature)},
+    }
+
+    t0 = time.monotonic()
+    dbg: dict = {
+        "kind": "ollama_translation",
+        "ts": _now_iso(),
+        "requestId": request_id,
+        "ollamaUrl": OLLAMA_URL,
+        "ollamaModel": ollama_model,
+        "temperature": temperature,
+        "timeoutS": OLLAMA_TIMEOUT_S,
+        "sourceNoteId": source_note_id,
+        "sourceCardId": source_card_id,
+        "targetLanguage": target_language,
+        "sourceFieldsPreview": {k: v[:200] for k, v in list(source_fields.items())[:4]},
+        "retryHint": retry_hint or "",
+        "requestPayload": payload,
+    }
+
+    try:
+        r = await client.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=OLLAMA_TIMEOUT_S)
+        r.raise_for_status()
+        data = r.json()
+        dbg["httpStatus"] = r.status_code
+        dbg["rawResponse"] = data
+    except httpx.TimeoutException as e:
+        dbg["error"] = f"Ollama timeout após {OLLAMA_TIMEOUT_S}s: {e}"
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"translate_timeout_nid{source_note_id}", request_id, dbg)
+        raise Exception(f"Ollama timeout após {OLLAMA_TIMEOUT_S}s. (Veja: {path})")
+    except Exception as e:
+        dbg["error"] = f"Ollama HTTP/parse falhou: {e}"
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"translate_error_nid{source_note_id}", request_id, dbg)
+        raise Exception(f"Ollama indisponível ou erro HTTP. (Veja: {path})")
+
+    content = ""
+    if isinstance(data, dict):
+        msg = data.get("message") or {}
+        content = msg.get("content") or ""
+
+    dbg["messageContentHead"] = (content or "")[:5000]
+    parsed = _try_extract_json(content)
+    dbg["parsed"] = parsed
+
+    if not parsed or "translated_fields" not in parsed:
+        dbg["error"] = "SLM/Ollama retornou conteúdo não-JSON ou fora do schema esperado."
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"translate_badjson_nid{source_note_id}", request_id, dbg)
+        raise Exception(f"SLM/Ollama retornou JSON inválido/fora do schema. (Veja: {path})")
+
+    translated = parsed.get("translated_fields") or {}
+    if not isinstance(translated, dict):
+        dbg["error"] = "translated_fields não é um dict."
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"translate_badfields_nid{source_note_id}", request_id, dbg)
+        raise Exception(f"SLM/Ollama retornou translated_fields inválido. (Veja: {path})")
+
+    out = {str(k): str(v) for k, v in translated.items()}
+    dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+    dbg["translatedPreview"] = {k: (out.get(k, "")[:200]) for k in list(out.keys())[:4]}
+    path = _write_toon_file(f"translate_ok_nid{source_note_id}", request_id, dbg)
+    return out, path
+
+
+@router.post("/anki-translate")
+async def translate_cards(req: AnkiTranslateRequest):
+    """
+    Traduz cards do Anki in-place usando LLM (Ollama, OpenAI, Anthropic ou Perplexity).
+    Preserva tags, mídia e marcações cloze.
+    Retorna SSE stream com eventos de progresso.
+    
+    Parâmetros:
+    - cardIds: Lista de card IDs (se vazio e deckName fornecido, busca todo o deck)
+    - deckName: Nome do deck (alternativa a cardIds)
+    - targetLanguage: Idioma alvo (padrão: pt-br)
+    - model: Modelo LLM para tradução
+    """
+    request_id = uuid.uuid4().hex[:12]
+    
+    # Resolver cardIds: se vazio e deckName fornecido, buscar todo deck
+    card_ids = list(req.cardIds or [])
+    if not card_ids and req.deckName:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as temp_client:
+                deck_cards = await ankiconnect(
+                    temp_client, "findCards", {"query": f'deck:"{req.deckName}"'}
+                )
+                card_ids = list(deck_cards or [])
+        except Exception as e:
+            async def error_gen():
+                yield f"event: error\ndata: {json.dumps({'success': False, 'requestId': request_id, 'error': f'Erro ao buscar deck: {str(e)}'})}\n\n"
+            return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    target_language = (req.targetLanguage or "pt-br").strip().lower()
+
+    # Detectar modelo e provider
+    model = req.model or OLLAMA_MODEL_NEUTRAL
+    provider = _detect_provider(
+        model,
+        openai_key=req.openaiApiKey,
+        perplexity_key=req.perplexityApiKey,
+        anthropic_key=req.anthropicApiKey,
+    )
+
+    # Preparar nomes de idiomas para o prompt
+    language_names = {
+        "pt-br": "português brasileiro",
+        "pt": "português",
+        "es": "espanhol",
+        "en": "inglês",
+        "fr": "francês",
+        "de": "alemão",
+        "it": "italiano",
+    }
+    target_lang_name = language_names.get(target_language, target_language)
+
+    async def generate():
+        t_all = time.monotonic()
+
+        # Caso sem cards
+        if not card_ids:
+            yield f"event: result\ndata: {json.dumps({'success': True, 'requestId': request_id, 'totalCards': 0, 'totalNotes': 0, 'translated': 0, 'failed': 0, 'results': []})}\n\n"
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as anki_client:
+                # 1) cardsInfo (para cardId/noteId)
+                t0 = time.monotonic()
+                infos = await ankiconnect(anki_client, "cardsInfo", {"cards": card_ids})
+                infos = list(infos or [])
+                t_cardsinfo_ms = int((time.monotonic() - t0) * 1000)
+
+                by_note: Dict[int, Dict[str, Any]] = {}
+                invalid: List[Dict[str, Any]] = []
+
+                for c in infos:
+                    nid = safe_int(c.get("noteId") or c.get("note"), default=None)
+                    cid = safe_int(c.get("cardId"), default=None)
+                    if nid is None:
+                        invalid.append({"success": False, "stage": "anki_cardsInfo", "cardId": cid, "error": "noteId=None"})
+                        continue
+                    if nid not in by_note:
+                        by_note[nid] = c
+
+                note_ids = list(by_note.keys())
+
+                # 2) notesInfo (tags + fields brutos)
+                t0 = time.monotonic()
+                notes_info = await ankiconnect(anki_client, "notesInfo", {"notes": note_ids})
+                notes_info = list(notes_info or [])
+                t_notesinfo_ms = int((time.monotonic() - t0) * 1000)
+
+                note_info_by_id: Dict[int, Dict[str, Any]] = {}
+                for ni in notes_info:
+                    nid = safe_int(ni.get("noteId"), default=None)
+                    if nid is not None:
+                        note_info_by_id[nid] = ni
+
+                # Emitir evento de início
+                total_notes = len(note_ids)
+                yield f"event: start\ndata: {json.dumps({'requestId': request_id, 'totalCards': len(card_ids), 'totalNotes': total_notes, 'provider': provider, 'model': model})}\n\n"
+
+                # 3) traduzir e atualizar cada nota
+                results: List[Dict[str, Any]] = []
+                translated_count = 0
+                failed_count = 0
+                current_note = 0
+
+                for inv in invalid:
+                    results.append(inv)
+                    failed_count += 1
+
+                for nid, c in by_note.items():
+                    current_note += 1
+                    card_id = safe_int(c.get("cardId"), default=None)
+                    ni = note_info_by_id.get(nid) or {}
+
+                    src_fields_map, src_ordered = _extract_notesinfo_fields(ni)
+
+                    # Filtrar campos vazios ou que são apenas mídia
+                    fields_to_translate = {}
+                    for fname, fvalue in src_fields_map.items():
+                        # Pular campos vazios
+                        if not fvalue or not fvalue.strip():
+                            continue
+                        # Pular campos que são apenas referências de mídia
+                        text_only = re.sub(r'\[sound:[^\]]+\]', '', fvalue)
+                        text_only = re.sub(r'<img[^>]+>', '', text_only)
+                        text_only = TAG_PAT.sub('', text_only).strip()
+                        if text_only:
+                            fields_to_translate[fname] = fvalue
+
+                    if not fields_to_translate:
+                        # Nada para traduzir nesta nota
+                        results.append({
+                            "success": True,
+                            "stage": "skip_empty",
+                            "noteId": nid,
+                            "cardId": card_id,
+                            "message": "Nenhum campo com texto para traduzir"
+                        })
+                        # Emitir progresso (skip)
+                        percent = int((current_note / total_notes) * 100)
+                        yield f"event: progress\ndata: {json.dumps({'current': current_note, 'total': total_notes, 'percent': percent, 'noteId': nid, 'status': 'skipped', 'message': 'Sem texto para traduzir'})}\n\n"
+                        continue
+
+                    # Tentar traduzir com retry
+                    max_attempts = 2
+                    attempt = 0
+                    last_error = None
+                    last_toon = None
+
+                    while attempt < max_attempts:
+                        attempt += 1
+                        temp = 0.3 if attempt == 1 else 0.5
+
+                        # Montar prompts
+                        system_prompt = (
+                            "Você é um tradutor profissional. SEMPRE responda somente com JSON válido, "
+                            "seguindo exatamente o schema solicitado. Não escreva nada fora do JSON."
+                        )
+
+                        user_content = {
+                            "task": "translate_anki_note_fields",
+                            "source_fields": fields_to_translate,
+                            "target_language": target_lang_name,
+                            "target_field_names": list(fields_to_translate.keys()),
+                            "retry_hint": "Tente novamente." if attempt > 1 else "",
+                            "instructions": PROMPT_TRANSLATE,
+                        }
+                        user_prompt = json.dumps(user_content, ensure_ascii=False)
+
+                        try:
+                            # Usar provider apropriado
+                            content, toon_path = await _translate_with_provider(
+                                provider=provider,
+                                model=model,
+                                system_prompt=system_prompt,
+                                user_prompt=user_prompt,
+                                temperature=temp,
+                                request_id=request_id,
+                                source_note_id=nid,
+                                openai_key=req.openaiApiKey,
+                                perplexity_key=req.perplexityApiKey,
+                                anthropic_key=req.anthropicApiKey,
+                            )
+                            last_toon = toon_path
+
+                            # Parse JSON da resposta
+                            parsed = _try_extract_json(content)
+                            if not parsed or "translated_fields" not in parsed:
+                                raise Exception("Resposta não contém translated_fields válido")
+
+                            translated_fields = parsed.get("translated_fields") or {}
+                            if not isinstance(translated_fields, dict):
+                                raise Exception("translated_fields não é um dict")
+
+                            # Mesclar campos traduzidos com campos originais
+                            final_fields = dict(src_fields_map)
+                            for fname, tvalue in translated_fields.items():
+                                if fname in final_fields and tvalue and str(tvalue).strip():
+                                    final_fields[fname] = str(tvalue)
+
+                            # Atualizar nota no Anki
+                            update_payload = {"note": {"id": nid, "fields": final_fields}}
+                            await ankiconnect(anki_client, "updateNoteFields", update_payload)
+
+                            translated_count += 1
+                            results.append({
+                                "success": True,
+                                "stage": "anki_updateNoteFields",
+                                "requestId": request_id,
+                                "noteId": nid,
+                                "cardId": card_id,
+                                "fieldsTranslated": len(translated_fields),
+                                "targetLanguage": target_language,
+                                "provider": provider,
+                                "model": model,
+                                "toonPath": last_toon,
+                            })
+                            last_error = None
+                            break
+
+                        except Exception as e:
+                            last_error = str(e)
+                            continue
+
+                    # Emitir progresso após cada nota
+                    percent = int((current_note / total_notes) * 100)
+                    if last_error is not None:
+                        failed_count += 1
+                        results.append({
+                            "success": False,
+                            "stage": "translate_retry_exhausted",
+                            "requestId": request_id,
+                            "noteId": nid,
+                            "cardId": card_id,
+                            "targetLanguage": target_language,
+                            "provider": provider,
+                            "model": model,
+                            "toonPath": last_toon,
+                            "error": last_error,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'current': current_note, 'total': total_notes, 'percent': percent, 'noteId': nid, 'status': 'failed', 'error': last_error[:100]})}\n\n"
+                    else:
+                        yield f"event: progress\ndata: {json.dumps({'current': current_note, 'total': total_notes, 'percent': percent, 'noteId': nid, 'status': 'success'})}\n\n"
+
+                timings = {
+                    "cardsInfoMs": t_cardsinfo_ms,
+                    "notesInfoMs": t_notesinfo_ms,
+                    "totalMs": int((time.monotonic() - t_all) * 1000),
+                    "avgPerNoteMs": int((time.monotonic() - t_all) * 1000 / max(1, len(note_ids))),
+                }
+
+                payload = {
+                    "requestId": request_id,
+                    "success": (translated_count > 0 and failed_count == 0),
+                    "targetLanguage": target_language,
+                    "provider": provider,
+                    "model": model,
+                    "totalCards": len(req.cardIds),
+                    "totalNotes": len(note_ids),
+                    "translated": translated_count,
+                    "failed": failed_count,
+                    "timings": timings,
+                    "results": results,
+                }
+
+                if translated_count == 0 and failed_count > 0:
+                    payload["success"] = False
+                    payload["error"] = "Falha ao traduzir: nenhuma nota foi traduzida. Veja results para detalhes."
+
+                if translated_count > 0 and failed_count > 0:
+                    payload["success"] = True
+                    payload["warning"] = "Sucesso parcial: algumas notas falharam. Veja results."
+
+                yield f"event: result\ndata: {json.dumps(payload)}\n\n"
+
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'success': False, 'requestId': request_id, 'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# =============================================================================
+# Detect Language in Cards (usando langid)
+# =============================================================================
+class DetectLanguageRequest(BaseModel):
+    cardIds: List[int] = Field(default_factory=list)
+    deckName: Optional[str] = None  # Se omitido, usa cardIds; se definido, busca todo deck
+
+
+@router.post("/detect-card-languages")
+async def detect_card_languages(req: DetectLanguageRequest):
+    """
+    Detecta idiomas nos campos de cartões usando langid.
+    Retorna quantos já estão em português e quantos não estão.
+    """
+    try:
+        import langid
+    except ImportError:
+        return JSONResponse(
+            {"error": "langid não instalado. Execute: pip install langid"},
+            status_code=500,
+        )
+
+    request_id = uuid.uuid4().hex[:12]
+    card_ids = list(req.cardIds or [])
+
+    # Se deckName fornecido, buscar todo o deck
+    if req.deckName and not card_ids:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                deck_cards = await ankiconnect(
+                    client, "findCards", {"query": f'deck:"{req.deckName}"'}
+                )
+                card_ids = list(deck_cards or [])
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Erro ao buscar deck: {str(e)}", "requestId": request_id},
+                status_code=400,
+            )
+
+    if not card_ids:
+        return JSONResponse(
+            {
+                "success": True,
+                "requestId": request_id,
+                "totalCards": 0,
+                "languages": {},
+                "alreadyPortuguese": 0,
+                "needsTranslation": 0,
+            }
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            # Buscar info dos cartões
+            infos = await ankiconnect(client, "cardsInfo", {"cards": card_ids})
+            infos = list(infos or [])
+
+            # Buscar notas info
+            note_ids = []
+            for c in infos:
+                nid = safe_int(c.get("noteId") or c.get("note"), default=None)
+                if nid and nid not in note_ids:
+                    note_ids.append(nid)
+
+            notes_info = await ankiconnect(client, "notesInfo", {"notes": note_ids})
+            notes_info = list(notes_info or [])
+
+            # Detectar idiomas
+            language_counts = {}
+            pt_count = 0
+            needs_translation = 0
+
+            for ni in notes_info:
+                # Concatenar campos para análise
+                fields = ni.get("fields", {})
+                text_content = " ".join(
+                    str(v).strip() for v in fields.values() if v
+                ).strip()
+
+                if not text_content:
+                    lang = "empty"
+                else:
+                    # Remover tags HTML e markdown simples
+                    text_clean = re.sub(r"<[^>]+>", "", text_content)
+                    text_clean = re.sub(r"\{\{c\d+::[^}]+\}\}", "", text_clean)
+
+                    if text_clean.strip():
+                        try:
+                            lang, conf = langid.classify(text_clean)
+                        except Exception:
+                            lang = "unknown"
+                    else:
+                        lang = "empty"
+
+                language_counts[lang] = language_counts.get(lang, 0) + 1
+
+                if lang in ["pt", "pt-br", "pt_br"]:
+                    pt_count += 1
+                elif lang != "empty":
+                    needs_translation += 1
+
+            return JSONResponse(
+                {
+                    "success": True,
+                    "requestId": request_id,
+                    "totalCards": len(card_ids),
+                    "totalNotes": len(notes_info),
+                    "languages": language_counts,
+                    "alreadyPortuguese": pt_count,
+                    "needsTranslation": needs_translation,
+                    "summary": {
+                        "pt_percentage": int((pt_count / len(notes_info) * 100)) if notes_info else 0,
+                        "message": f"{pt_count} em português, {needs_translation} precisam tradução",
+                    },
+                }
+            )
+
+    except Exception as e:
+        import traceback
+
+        return JSONResponse(
+            {
+                "success": False,
+                "requestId": request_id,
+                "error": str(e),
+                "trace": traceback.format_exc(),
+            },
+            status_code=500,
+        )

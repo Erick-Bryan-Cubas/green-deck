@@ -995,6 +995,15 @@ const pendingTextForSegmentation = ref('')
 // Flag para evitar duplicação de triggers ao carregar PDF
 const isLoadingPdf = ref(false)
 
+// Watch para debug de mudanças no stage
+watch(topicSegmentStage, (newVal, oldVal) => {
+  console.log('[TopicSegmentation] Stage changed:', { from: oldVal, to: newVal })
+})
+
+watch(topicSegmentProgress, (newVal, oldVal) => {
+  console.log('[TopicSegmentation] Progress changed:', { from: oldVal, to: newVal })
+})
+
 // ============================================================
 // Indicador de salvamento
 // ============================================================
@@ -1804,10 +1813,19 @@ async function performTopicSegmentation(text) {
 
   try {
     const result = await segmentTopics(text, selectedAnalysisModel.value, (event) => {
-      console.log('[TopicSegmentation] Progress:', event)
-      topicSegmentProgress.value = event.data?.percent || 0
-      topicSegmentStage.value = formatSegmentStage(event.stage)
-      addLog(`[Segmentação] ${formatSegmentStage(event.stage)} (${event.data?.percent || 0}%)`, 'info')
+      console.log('[TopicSegmentation] Progress event received:', JSON.stringify(event))
+      const stage = event.stage || event.data?.stage || 'processing'
+      const percent = event.data?.percent || 0
+      console.log('[TopicSegmentation] Extracted - Stage:', stage, 'Percent:', percent)
+      console.log('[TopicSegmentation] Formatted stage:', formatSegmentStage(stage))
+      
+      // Atualiza o state de forma mais segura
+      topicSegmentProgress.value = percent
+      const formattedStage = formatSegmentStage(stage)
+      console.log('[TopicSegmentation] Setting topicSegmentStage to:', formattedStage)
+      topicSegmentStage.value = formattedStage
+      
+      addLog(`[Segmentação] ${formattedStage} (${percent}%)`, 'info')
     })
 
     console.log('[TopicSegmentation] Result:', result)
@@ -1878,6 +1896,8 @@ async function performTopicSegmentation(text) {
 }
 
 function formatSegmentStage(stage) {
+  if (!stage) return 'Processando...'
+  
   const stages = {
     'preparing': '📋 Preparando texto...',
     'building_prompt': '✍️ Construindo prompt de análise...',
@@ -1888,7 +1908,19 @@ function formatSegmentStage(stage) {
     'validating': '✓ Validando resultados...',
     'done': '✅ Concluído'
   }
-  return stages[stage] || stage || 'Processando...'
+  
+  const formatted = stages[stage]
+  if (formatted) {
+    console.log('[formatSegmentStage] Found mapping for stage:', stage, '->', formatted)
+    return formatted
+  }
+  
+  // Se não encontrar um mapeamento, capitalize o stage
+  console.log('[formatSegmentStage] No mapping for stage:', stage, '- using as-is')
+  return String(stage)
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ') + '...'
 }
 
 function onNavigateToSegment(segment) {
