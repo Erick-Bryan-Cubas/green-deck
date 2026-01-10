@@ -27,6 +27,9 @@ import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 
+// API service
+import { getStoredApiKeys } from '@/services/api.js'
+
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
@@ -653,6 +656,328 @@ function openNoteTypesDialog() {
 }
 
 // ----------------------
+// Modal Translate (Tradução via LLM)
+// ----------------------
+const translateDialogVisible = ref(false)
+const translating = ref(false)
+
+// Progress tracking
+const translateProgress = ref(0)
+const translateCurrent = ref(0)
+const translateTotal = ref(0)
+const translateStatus = ref('')  // 'preparing' | 'translating' | 'done' | 'error'
+const translateLastNoteStatus = ref('')  // 'success' | 'failed' | 'skipped'
+
+// Progress modal (mostrado durante tradução)
+const translateProgressVisible = ref(false)
+const translateTranslatedCount = ref(0)
+const translateFailedCount = ref(0)
+const translateSkippedCount = ref(0)
+const translateLastError = ref('')
+let translateAbortController = null
+
+// Language detection
+const translateDetectingLanguages = ref(false)
+const translateAlreadyPtCount = ref(0)
+const translateNeedsTranslationCount = ref(0)
+const translateDetectError = ref('')
+const translateUseEntireDeck = ref(false)
+
+// Model selection for translation
+const translateAvailableModels = ref([])
+const translateSelectedModel = ref('')
+const translateLoadingModels = ref(false)
+
+// Computed: only LLM models (not embedding)
+const translateLlmModels = computed(() => translateAvailableModels.value.filter(m => m.type !== 'embedding'))
+
+async function detectCardLanguages() {
+  const deckName = deck.value
+  const cardIds = selected.value?.map(x => x.cardId) || []
+  
+  if (!deckName && !cardIds.length) {
+    translateDetectError.value = 'Nenhum deck ou cartão selecionado'
+    return
+  }
+
+  translateDetectingLanguages.value = true
+  translateDetectError.value = ''
+  translateAlreadyPtCount.value = 0
+  translateNeedsTranslationCount.value = 0
+
+  try {
+    const payload = translateUseEntireDeck.value 
+      ? { deckName }
+      : { cardIds }
+
+    const resp = await fetch('/api/detect-card-languages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+
+    if (!resp.ok) {
+      const err = await resp.json()
+      throw new Error(err.error || `HTTP ${resp.status}`)
+    }
+
+    const data = await resp.json()
+    if (data.success) {
+      translateAlreadyPtCount.value = data.alreadyPortuguese || 0
+      translateNeedsTranslationCount.value = data.needsTranslation || 0
+      const totalNotes = data.totalNotes || 0
+      const ptPercentage = data.summary?.pt_percentage || 0
+      addLog(
+        `Detectado: ${data.alreadyPortuguese}/${totalNotes} em português (${ptPercentage}%). ${data.needsTranslation} precisam tradução.`,
+        'info'
+      )
+    } else {
+      throw new Error(data.error || 'Erro ao detectar idiomas')
+    }
+  } catch (e) {
+    translateDetectError.value = e?.message || String(e)
+    addLog(`Erro na detecção: ${translateDetectError.value}`, 'error')
+  } finally {
+    translateDetectingLanguages.value = false
+  }
+}
+
+async function fetchTranslateModels() {
+  try {
+    translateLoadingModels.value = true
+    const keys = getStoredApiKeys()
+
+    const headers = {}
+    if (keys.openaiApiKey) headers['X-OpenAI-Key'] = keys.openaiApiKey
+    if (keys.perplexityApiKey) headers['X-Perplexity-Key'] = keys.perplexityApiKey
+
+    const resp = await fetch('/api/all-models', { headers })
+    if (resp.ok) {
+      const data = await resp.json()
+      translateAvailableModels.value = data.models || []
+
+      // Set default model if not set
+      if (!translateSelectedModel.value && translateLlmModels.value.length > 0) {
+        // Prefer gpt-4o or claude if available, otherwise first LLM
+        const preferred = translateLlmModels.value.find(m =>
+          m.name.includes('gpt-4o') || m.name.includes('claude')
+        )
+        translateSelectedModel.value = preferred?.name || translateLlmModels.value[0].name
+      }
+    }
+  } catch (e) {
+    addLog(`Erro ao carregar modelos: ${e?.message || String(e)}`, 'error')
+  } finally {
+    translateLoadingModels.value = false
+  }
+}
+
+
+async function openTranslateDialog() {
+  if (!selected.value?.length && !deck.value) {
+    notify('Selecione cartões ou um deck para traduzir.', 'warn', 4200)
+    return
+  }
+  
+  // Reset state
+  translateUseEntireDeck.value = false
+  translateAlreadyPtCount.value = 0
+  translateNeedsTranslationCount.value = 0
+  translateDetectError.value = ''
+  
+  translateDialogVisible.value = true
+  fetchTranslateModels()
+  
+  // Auto-detect languages se houver cards selecionados
+  if (selected.value?.length) {
+    setTimeout(() => detectCardLanguages(), 500)
+  }
+}
+
+function cancelTranslate() {
+  if (translateAbortController) {
+    translateAbortController.abort()
+    translateAbortController = null
+    translateLastError.value = 'Tradução cancelada pelo usuário'
+    addLog('Tradução cancelada', 'warn')
+    translating.value = false
+  }
+}
+
+async function confirmTranslate() {
+  if (!selected.value?.length && !translateUseEntireDeck.value) {
+    notify('Selecione cartões ou ative "Traduzir deck inteiro".', 'warn', 4200)
+    return
+  }
+
+  // Reset progress state
+  translating.value = true
+  translateDialogVisible.value = false
+  translateProgressVisible.value = true
+  translateProgress.value = 0
+  translateCurrent.value = 0
+  translateTotal.value = 0
+  translateTranslatedCount.value = 0
+  translateFailedCount.value = 0
+  translateSkippedCount.value = 0
+  translateStatus.value = 'preparing'
+  translateLastNoteStatus.value = ''
+  translateLastError.value = ''
+  translateAbortController = new AbortController()
+
+  const startedAt = performance.now()
+
+  try {
+    await fetchHealth()
+    addLog(
+      `Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'}`,
+      ankiHealth.value.ok ? 'info' : 'warn'
+    )
+
+    const cardIds = translateUseEntireDeck.value ? [] : selected.value.map((x) => x.cardId)
+    const keys = getStoredApiKeys()
+    const model = translateSelectedModel.value || null
+
+    const payload = {
+      cardIds,
+      ...(translateUseEntireDeck.value && { deckName: deck.value }),
+      targetLanguage: 'pt-br',
+      model,
+      openaiApiKey: keys.openaiApiKey || null,
+      perplexityApiKey: keys.perplexityApiKey || null,
+      anthropicApiKey: keys.anthropicApiKey || null
+    }
+
+    const sourceName = translateUseEntireDeck.value ? `deck "${deck.value}"` : `${cardIds.length} cards`
+    addLog(`Tradução iniciada: ${sourceName} | modelo=${model || 'default'} idioma=pt-br`, 'info')
+
+    const response = await fetch('/api/anki-translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: translateAbortController.signal
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
+
+    // Process SSE stream
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    let finalResult = null
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      // Process complete event blocks (separated by double newline)
+      let parts = buffer.split('\n\n')
+      buffer = parts.pop() // keep incomplete tail
+
+      for (const part of parts) {
+        const lines = part.split('\n')
+        let event = 'message'
+        let data = ''
+        for (const line of lines) {
+          if (line.startsWith('event:')) event = line.replace('event:', '').trim()
+          else if (line.startsWith('data:')) data += line.replace('data:', '').trim()
+        }
+
+        try {
+          const parsed = data ? JSON.parse(data) : null
+
+          if (event === 'start' && parsed) {
+            translateTotal.value = parsed.totalNotes || 0
+            translateStatus.value = 'translating'
+            addLog(`Tradução iniciada: ${parsed.totalNotes} notas | provider=${parsed.provider} model=${parsed.model}`, 'info')
+          } else if (event === 'progress' && parsed) {
+            translateCurrent.value = parsed.current || 0
+            translateTotal.value = parsed.total || translateTotal.value
+            translateProgress.value = parsed.percent || 0
+            translateLastNoteStatus.value = parsed.status || ''
+
+            if (parsed.status === 'success') {
+              translateTranslatedCount.value++
+            } else if (parsed.status === 'failed') {
+              translateFailedCount.value++
+              translateLastError.value = parsed.error || 'Erro desconhecido'
+              addLog(`[${parsed.current}/${parsed.total}] Nota ${parsed.noteId} falhou: ${parsed.error || 'erro'}`, 'warn')
+            } else if (parsed.status === 'skipped') {
+              translateSkippedCount.value++
+              addLog(`[${parsed.current}/${parsed.total}] Nota ${parsed.noteId} pulada: ${parsed.message || 'sem texto'}`, 'info')
+            }
+          } else if (event === 'result' && parsed) {
+            finalResult = parsed
+            translateStatus.value = 'done'
+            translateProgress.value = 100
+          } else if (event === 'error' && parsed) {
+            translateStatus.value = 'error'
+            translateLastError.value = parsed.error || 'Erro desconhecido'
+            throw new Error(parsed.error || 'Translation failed')
+          }
+        } catch (parseErr) {
+          if (event === 'error') throw parseErr
+          // Ignore JSON parse errors for intermediate events
+        }
+      }
+    }
+
+    const elapsed = Math.round(performance.now() - startedAt)
+
+    if (!finalResult) {
+      throw new Error('Nenhum resultado recebido do stream de tradução')
+    }
+
+    const requestId = finalResult.requestId || '—'
+    addLog(`Tradução concluída: requestId=${requestId} tempo=${elapsed}ms`, 'info')
+
+    if (finalResult.timings) {
+      addLog(
+        `Tempos: cardsInfo=${ms(finalResult.timings.cardsInfoMs)} notesInfo=${ms(finalResult.timings.notesInfoMs)} total=${ms(finalResult.timings.totalMs)} média=${ms(finalResult.timings.avgPerNoteMs)}/nota`,
+        'info'
+      )
+    }
+
+    const translated = Number(finalResult.translated || 0)
+    const failed = Number(finalResult.failed || 0)
+    const notes = Number(finalResult.totalNotes || 0)
+
+    addLog(`Resultado final: notas=${notes} traduzidas=${translated} falhas=${failed}`, failed ? 'warn' : 'success')
+
+    if (translated > 0 && failed === 0) {
+      notify(`✓ Traduzidos: ${translated} de ${notes} notas.`, 'success', 6500)
+    } else if (translated > 0 && failed > 0) {
+      notify(`⚠ Traduzidos: ${translated} (falhas: ${failed})`, 'warn', 7500)
+    } else if (failed > 0) {
+      notify(`✕ Falha na tradução: ${failed} notas`, 'error', 7500)
+    } else {
+      notify(`→ Nenhuma nota para traduzir`, 'info', 5000)
+    }
+
+    // Keep progress modal open por 1.5s para mostrar conclusão
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    translateProgressVisible.value = false
+    await fetchCards()
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      translateStatus.value = 'cancelled'
+      addLog('Tradução cancelada pelo usuário', 'warn')
+    } else {
+      translateStatus.value = 'error'
+      translateLastError.value = e?.message || String(e)
+      addLog(`Erro na tradução: ${e?.message || String(e)}`, 'error')
+      notify(e?.message || String(e), 'error', 8000)
+    }
+  } finally {
+    translating.value = false
+    translateAbortController = null
+  }
+}
+
+// ----------------------
 // Modal Recreate (SLM/Ollama)
 // ----------------------
 const recreating = ref(false)
@@ -989,6 +1314,7 @@ onUnmounted(() => {
         </div>
 
         <div class="recreate-right">
+          <Button icon="pi pi-language" label="Traduzir" :disabled="!selected.length" @click="openTranslateDialog" severity="info" />
           <Button icon="pi pi-copy" label="Recriar (SLM)" :disabled="!selected.length" @click="openRecreateDialog" />
           <Tag severity="secondary" class="pill">Selecionados: {{ selected.length }}</Tag>
         </div>
@@ -1276,6 +1602,278 @@ onUnmounted(() => {
             <div class="footer-right">
               <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="editDialogVisible = false" />
               <Button label="Salvar" icon="pi pi-save" :loading="editSaving" :disabled="editLoading || !editFields.length" @click="saveNoteEdits" />
+            </div>
+          </div>
+        </template>
+      </Dialog>
+
+      <!-- Modal Translate (Tradução) -->
+      <Dialog v-model:visible="translateDialogVisible" modal :draggable="false" class="dlg dlg-translate modern-dialog" style="width:min(720px,96vw)" contentStyle="padding: 0;">
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon"><i class="pi pi-language"></i></div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Traduzir Cards</div>
+                <div class="dlg-sub">Traduz o conteúdo dos cards in-place, preservando tags, mídia e clozes.</div>
+              </div>
+            </div>
+
+            <div class="dlg-hdr-right">
+              <span class="svc-mini" :class="ankiHealth.ok ? 'on' : ankiHealth.ok === null ? 'idle' : 'off'" :title="ankiStatusTitle">
+                <i class="pi" :class="ankiHealth.ok ? 'pi-check' : ankiHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times'"></i>
+                <span>Anki</span>
+              </span>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body translate-modal">
+          <div class="translate-hero">
+            <div class="hero-left">
+              <div class="hero-title">
+                <span class="hero-pill">Tradução</span>
+                <span class="muted">•</span>
+                <span class="muted">Inglês → Português (BR)</span>
+              </div>
+
+              <div class="hero-kpis" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+                <div class="kpi" v-if="!translateUseEntireDeck">
+                  <div class="kpi-lbl">Cards selecionados</div>
+                  <div class="kpi-val">{{ selected.length }}</div>
+                </div>
+                <div class="kpi" v-if="!translateUseEntireDeck">
+                  <div class="kpi-lbl">Notas únicas</div>
+                  <div class="kpi-val">{{ selectedNotesCount }}</div>
+                </div>
+                <div class="kpi" v-if="translateUseEntireDeck">
+                  <div class="kpi-lbl">Modo</div>
+                  <div class="kpi-val">Deck: {{ deck }}</div>
+                </div>
+                <div class="kpi" v-if="translateAlreadyPtCount > 0">
+                  <div class="kpi-lbl">Já em PT</div>
+                  <div class="kpi-val" style="color: #22c55e;">{{ translateAlreadyPtCount }}</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="hero-right">
+              <Tag class="pill" severity="info">
+                <i class="pi pi-globe mr-2" />
+                pt-br
+              </Tag>
+            </div>
+          </div>
+
+          <!-- Opção: Traduzir Deck Inteiro -->
+          <div style="display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(255,255,255,0.02);">
+            <InputSwitch v-model="translateUseEntireDeck" @change="() => { translateAlreadyPtCount = 0; translateDetectError = ''; }" />
+            <label style="flex: 1; cursor: pointer; font-size: 13px;">Traduzir deck inteiro "{{ deck }}"</label>
+            <Button 
+              v-if="translateUseEntireDeck || selected.length"
+              icon="pi pi-search" 
+              severity="secondary" 
+              text 
+              @click="detectCardLanguages"
+              :loading="translateDetectingLanguages"
+              v-tooltip.top="'Detectar quantos já estão em português'"
+              style="padding: 6px 8px;"
+            />
+          </div>
+
+          <!-- Detecção de Idioma -->
+          <div v-if="translateDetectError" style="padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(239,68,68,0.35); background: rgba(239,68,68,0.08); color: #ef4444; font-size: 12px;">
+            <i class="pi pi-exclamation-circle mr-2" style="color: #ef4444;"></i>
+            {{ translateDetectError }}
+          </div>
+
+          <div v-if="translateAlreadyPtCount > 0" style="padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); font-size: 12px;">
+            <i class="pi pi-info-circle mr-2" style="color: #22c55e;"></i>
+            <strong>{{ translateAlreadyPtCount }}</strong> cartões já estão em português
+            <span v-if="translateNeedsTranslationCount">, <strong>{{ translateNeedsTranslationCount }}</strong> precisam tradução</span>
+          </div>
+
+          <!-- Model Selection -->
+          <div class="translate-model-section">
+            <label class="section-label">Modelo para Tradução</label>
+            <div class="model-selector-row">
+              <Select
+                v-model="translateSelectedModel"
+                :options="translateLlmModels"
+                optionLabel="name"
+                optionValue="name"
+                placeholder="Selecione um modelo"
+                class="model-select"
+                :loading="translateLoadingModels"
+                filter
+              >
+                <template #option="{ option }">
+                  <div class="model-option">
+                    <span class="model-name">{{ option.name }}</span>
+                    <Tag :severity="option.provider === 'ollama' ? 'secondary' : option.provider === 'openai' ? 'success' : option.provider === 'perplexity' ? 'info' : 'warn'" class="provider-tag">
+                      {{ option.provider }}
+                    </Tag>
+                  </div>
+                </template>
+                <template #value="{ value }">
+                  <div v-if="value" class="model-option">
+                    <span class="model-name">{{ value }}</span>
+                  </div>
+                  <span v-else class="muted">Selecione um modelo</span>
+                </template>
+              </Select>
+              <Button
+                icon="pi pi-refresh"
+                severity="secondary"
+                outlined
+                @click="fetchTranslateModels"
+                :loading="translateLoadingModels"
+                v-tooltip.top="'Atualizar lista de modelos'"
+              />
+            </div>
+            <small class="muted" v-if="!translateLlmModels.length && !translateLoadingModels">
+              Nenhum modelo disponível. Verifique se Ollama está rodando ou configure API keys em GeneratorPage.
+            </small>
+          </div>
+
+          <div class="translate-info">
+            <div class="info-box">
+              <i class="pi pi-info-circle"></i>
+              <div>
+                <div class="info-title">O que será preservado:</div>
+                <ul class="info-list">
+                  <li>Tags do Anki (não serão alteradas)</li>
+                  <li>Arquivos de mídia (áudio, imagens)</li>
+                  <li>Marcações cloze <code v-pre>{{c1::...}}</code></li>
+                  <li>Formatação HTML (negrito, itálico, etc.)</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="translate-warning" v-if="!translateUseEntireDeck && selectedNotesCount > 10">
+            <i class="pi pi-exclamation-triangle"></i>
+            <div class="muted">
+              Você selecionou muitas notas. A tradução pode demorar alguns minutos.
+              Tempo estimado: ~{{ Math.ceil(selectedNotesCount * 3 / 60) }} min
+            </div>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <div class="footer-left">
+              <Tag class="pill" severity="secondary" v-if="!translateUseEntireDeck">
+                <i class="pi pi-file mr-2" /> 
+                Notas: {{ selectedNotesCount }}
+              </Tag>
+              <Tag class="pill" severity="secondary" v-else>
+                <i class="pi pi-database mr-2" />
+                Deck: {{ deck }}
+              </Tag>
+            </div>
+            <div class="footer-right">
+              <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="translateDialogVisible = false" />
+              <Button
+                label="Traduzir agora"
+                icon="pi pi-language"
+                :disabled="(!selected.length && !translateUseEntireDeck) || !ankiHealth.ok || !translateSelectedModel"
+                :loading="translating"
+                @click="confirmTranslate"
+              />
+            </div>
+          </div>
+        </template>
+      </Dialog>
+
+      <!-- Modal Progress Tradução -->
+      <Dialog v-model:visible="translateProgressVisible" modal :draggable="false" class="dlg dlg-translate-progress modern-dialog" style="width:min(520px,96vw)" :closable="false" contentStyle="padding: 0;">
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon" :class="{ 'spinning': translateStatus === 'translating' }">
+                <i class="pi" :class="translateStatus === 'translating' ? 'pi-spin pi-spinner' : translateStatus === 'done' ? 'pi-check' : 'pi-exclamation-triangle'"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">{{ translateStatus === 'done' ? '✓ Tradução Concluída' : 'Traduzindo Cards...' }}</div>
+                <div class="dlg-sub" v-if="translateStatus === 'translating'">{{ translateCurrent }}/{{ translateTotal }} notas processadas</div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body translate-progress-modal">
+          <!-- Progress Bar -->
+          <ProgressBar :value="translateProgress" :show-value="false" />
+
+          <!-- Stats -->
+          <div class="progress-stats">
+            <div class="stat stat-current">
+              <div class="stat-label">Processadas</div>
+              <div class="stat-value">{{ translateCurrent }}/{{ translateTotal }}</div>
+            </div>
+            <div class="stat stat-success">
+              <div class="stat-label">Traduzidas</div>
+              <div class="stat-value" style="color: #22c55e;">{{ translateTranslatedCount }}</div>
+            </div>
+            <div class="stat stat-warning" v-if="translateFailedCount > 0">
+              <div class="stat-label">Falhas</div>
+              <div class="stat-value" style="color: #ef4444;">{{ translateFailedCount }}</div>
+            </div>
+            <div class="stat stat-info" v-if="translateSkippedCount > 0">
+              <div class="stat-label">Puladas</div>
+              <div class="stat-value" style="color: #f59e0b;">{{ translateSkippedCount }}</div>
+            </div>
+          </div>
+
+          <!-- Status Message -->
+          <div v-if="translateStatus === 'translating'" class="progress-status">
+            <div class="status-item">
+              <i class="pi" :class="translateLastNoteStatus === 'success' ? 'pi-check' : translateLastNoteStatus === 'failed' ? 'pi-times' : 'pi-minus'"></i>
+              <span>Última: <strong>{{ translateLastNoteStatus || '—' }}</strong></span>
+            </div>
+            <div v-if="translateLastError" class="status-error">{{ translateLastError }}</div>
+          </div>
+
+          <div v-if="translateStatus === 'error'" class="progress-error">
+            <i class="pi pi-exclamation-circle"></i>
+            <div>
+              <div class="error-title">Erro na Tradução</div>
+              <div class="error-msg">{{ translateLastError || 'Erro desconhecido' }}</div>
+            </div>
+          </div>
+
+          <div v-if="translateStatus === 'done'" class="progress-done">
+            <i class="pi pi-check-circle"></i>
+            <div>
+              <div class="done-title">Tradução Finalizada</div>
+              <div class="done-msg">
+                {{ translateTranslatedCount }} de {{ translateTotal }} notas traduzidas com sucesso.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <div class="footer-left" />
+            <div class="footer-right">
+              <Button 
+                v-if="translateStatus === 'translating'" 
+                label="Cancelar" 
+                icon="pi pi-times" 
+                severity="danger" 
+                outlined 
+                @click="cancelTranslate" 
+              />
+              <Button 
+                v-if="translateStatus !== 'translating'" 
+                label="Fechar" 
+                icon="pi pi-times" 
+                severity="secondary" 
+                outlined 
+                @click="translateProgressVisible = false" 
+              />
             </div>
           </div>
         </template>
@@ -2058,6 +2656,240 @@ onUnmounted(() => {
   align-items:center;
 }
 .field-name{ font-weight: 950; letter-spacing: -0.2px; }
+
+/* Translate modal */
+.translate-modal{ display:flex; flex-direction:column; gap: 12px; }
+.translate-hero{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap: 12px;
+  flex-wrap:wrap;
+  border-radius: 18px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.14);
+  background:
+    radial-gradient(600px 180px at 0% 0%, rgba(59,130,246,0.18), transparent 60%),
+    radial-gradient(600px 180px at 100% 0%, rgba(16,185,129,0.14), transparent 60%),
+    rgba(255,255,255,0.02);
+}
+.translate-info{
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.16);
+}
+.info-box{
+  display:flex;
+  gap: 12px;
+  align-items:flex-start;
+}
+.info-box > i{
+  font-size: 18px;
+  color: #3B82F6;
+  margin-top: 2px;
+}
+.info-title{
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+.info-list{
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  opacity: 0.85;
+  display:flex;
+  flex-direction:column;
+  gap: 4px;
+}
+.info-list code{
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(148,163,184,0.16);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+.translate-warning{
+  display:flex;
+  gap: 10px;
+  align-items:flex-start;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px dashed rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.08);
+}
+.translate-warning > i{
+  color: #F59E0B;
+  margin-top: 2px;
+}
+.translate-model-section{
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(0,0,0,0.12);
+}
+.translate-model-section .section-label{
+  display: block;
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 8px;
+  opacity: 0.9;
+}
+.model-selector-row{
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.model-selector-row .model-select{
+  flex: 1;
+  min-width: 200px;
+}
+.model-option{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-option .model-name{
+  font-size: 13px;
+}
+.model-option .provider-tag{
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+/* Translate Progress Modal */
+.translate-progress-modal{
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px;
+}
+
+:deep(.translate-progress-modal .p-progressbar) {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.14);
+  overflow: hidden;
+}
+
+:deep(.translate-progress-modal .p-progressbar-value) {
+  background: linear-gradient(90deg, #3B82F6, #10B981);
+  transition: width 0.3s ease;
+}
+
+.progress-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 12px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 900;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 950;
+  letter-spacing: -0.4px;
+}
+
+.progress-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.status-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.status-item i {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.status-error {
+  font-size: 12px;
+  color: #ef4444;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.progress-error,
+.progress-done {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  align-items: flex-start;
+}
+
+.progress-error {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.progress-error i {
+  color: #ef4444;
+  font-size: 20px;
+  margin-top: 2px;
+}
+
+.progress-done {
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.progress-done i {
+  color: #22c55e;
+  font-size: 20px;
+  margin-top: 2px;
+}
+
+.error-title,
+.done-title {
+  font-weight: 900;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.error-msg,
+.done-msg {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.dlg-icon.spinning i {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
 
 /* Recreate modal */
 .recreate-modal{ display:flex; flex-direction:column; gap: 12px; }
