@@ -20,6 +20,7 @@ import Column from 'primevue/column'
 import Divider from 'primevue/divider'
 import Textarea from 'primevue/textarea'
 import ProgressBar from 'primevue/progressbar'
+import Popover from 'primevue/popover'
 import { useToast } from 'primevue/usetoast'
 
 // App components
@@ -228,19 +229,6 @@ const ankiStatusTitle = computed(() => {
   return `AnkiConnect OFF: ${ankiHealth.value.error || 'erro desconhecido'}`
 })
 
-const ollamaStatusTitle = computed(() => {
-  if (ollamaHealth.value.ok) {
-    const req = ollamaHealth.value.required
-    const en = req?.easy_or_neutral
-    const ht = req?.hard_technical
-    const enTxt = en?.model ? `${en.model}=${en.available ? 'OK' : 'NÃO'}` : 'easy/neutral=?'
-    const htTxt = ht?.model ? `${ht.model}=${ht.available ? 'OK' : 'NÃO'}` : 'tech=?'
-    return `Ollama OK • required: ${enTxt} | ${htTxt} • timeout=${ollamaHealth.value.timeoutS ?? '—'}s`
-  }
-  if (ollamaHealth.value.ok === null) return 'Ollama: verificando...'
-  return `Ollama OFF: ${ollamaHealth.value.error || 'erro desconhecido'}`
-})
-
 // ----------------------
 // filtros / estado
 // ----------------------
@@ -259,6 +247,71 @@ const statusOptions = [
   { label: 'Todos', value: '' }
 ]
 
+// Query helper popover
+const queryHelpRef = ref(null)
+
+const queryHelpers = [
+  { category: 'Status', items: [
+    { query: 'is:due', desc: 'Cards para revisar hoje' },
+    { query: 'is:new', desc: 'Cards novos (nunca estudados)' },
+    { query: 'is:review', desc: 'Cards em revisão (aprendidos)' },
+    { query: 'is:learn', desc: 'Cards em aprendizagem' },
+    { query: 'is:suspended', desc: 'Cards suspensos' },
+    { query: 'is:buried', desc: 'Cards enterrados' }
+  ]},
+  { category: 'Deck e Modelo', items: [
+    { query: 'deck:"Nome do Deck"', desc: 'Filtrar por deck específico' },
+    { query: 'deck:current', desc: 'Deck atual selecionado' },
+    { query: '"deck:Pai::Filho"', desc: 'Deck com subdecks (hierarquia)' },
+    { query: 'note:"Basic"', desc: 'Filtrar por tipo de nota' },
+    { query: 'card:1', desc: 'Apenas o primeiro card de cada nota' }
+  ]},
+  { category: 'Tags', items: [
+    { query: 'tag:minhatag', desc: 'Cards com tag específica' },
+    { query: '-tag:minhatag', desc: 'Cards SEM essa tag' },
+    { query: 'tag:none', desc: 'Cards sem nenhuma tag' }
+  ]},
+  { category: 'Datas', items: [
+    { query: 'added:1', desc: 'Adicionados hoje' },
+    { query: 'added:7', desc: 'Adicionados nos últimos 7 dias' },
+    { query: 'edited:3', desc: 'Editados nos últimos 3 dias' },
+    { query: 'rated:1', desc: 'Revisados hoje' },
+    { query: 'rated:7:1', desc: 'Marcados "Again" nos últimos 7 dias' }
+  ]},
+  { category: 'Intervalos', items: [
+    { query: 'prop:ivl>=30', desc: 'Intervalo >= 30 dias' },
+    { query: 'prop:ivl<7', desc: 'Intervalo < 7 dias' },
+    { query: 'prop:due=0', desc: 'Vence hoje' },
+    { query: 'prop:due>0', desc: 'Vence no futuro' },
+    { query: 'prop:ease<2.0', desc: 'Ease factor < 200%' },
+    { query: 'prop:lapses>3', desc: 'Mais de 3 lapsos' }
+  ]},
+  { category: 'Conteúdo', items: [
+    { query: '"texto exato"', desc: 'Busca texto exato' },
+    { query: 'front:palavra', desc: 'Busca no campo Front' },
+    { query: 're:\\d{4}', desc: 'Regex: 4 dígitos' },
+    { query: 'nc:palavra', desc: 'Busca case-insensitive' }
+  ]},
+  { category: 'Flags', items: [
+    { query: 'flag:1', desc: 'Flag vermelha' },
+    { query: 'flag:2', desc: 'Flag laranja' },
+    { query: 'flag:3', desc: 'Flag verde' },
+    { query: 'flag:4', desc: 'Flag azul' },
+    { query: 'flag:0', desc: 'Sem flag' }
+  ]},
+  { category: 'Combinações', items: [
+    { query: 'is:due is:review', desc: 'Reviews para hoje (AND)' },
+    { query: '(is:new OR is:learn)', desc: 'Novos OU aprendendo' },
+    { query: '-is:suspended', desc: 'Excluir suspensos' }
+  ]}
+]
+
+function insertQuery(query) {
+  const current = advancedQuery.value.trim()
+  advancedQuery.value = current ? `${current} ${query}` : query
+  queryHelpRef.value?.hide()
+}
+
 const deckSelectOptions = computed(() => [{ label: 'Todos os decks', value: '' }, ...decks.value.map((d) => ({ label: d, value: d }))])
 const deckTargetOptions = computed(() => [{ label: 'Deck original', value: '' }, ...decks.value.map((d) => ({ label: d, value: d }))])
 
@@ -275,7 +328,7 @@ const queryBuilt = computed(() => {
 })
 
 // ----------------------
-// paginação / dados
+// paginação / dados / ordenação
 // ----------------------
 const loading = ref(true)  // Start with loading to avoid flash
 const initializing = ref(true)  // Flag to skip watch during URL param setup
@@ -283,6 +336,48 @@ const items = ref([])
 const total = ref(0)
 const first = ref(0)
 const rows = ref(50)
+
+// Ordenação local (aplicada aos dados carregados)
+const sortField = ref(null)
+const sortOrder = ref(null)
+
+// Dados ordenados (ordenação client-side pois API do Anki não suporta sort)
+const sortedItems = computed(() => {
+  if (!sortField.value || sortOrder.value === null) {
+    return items.value
+  }
+
+  const field = sortField.value
+  const order = sortOrder.value // 1 = asc, -1 = desc
+
+  return [...items.value].sort((a, b) => {
+    let valA = a[field]
+    let valB = b[field]
+
+    // Handle null/undefined
+    if (valA == null && valB == null) return 0
+    if (valA == null) return order
+    if (valB == null) return -order
+
+    // Numeric comparison for known numeric fields
+    const numericFields = ['interval', 'factor', 'reps', 'lapses', 'queue', 'flags', 'cardId', 'noteId']
+    if (numericFields.includes(field)) {
+      valA = Number(valA) || 0
+      valB = Number(valB) || 0
+      return (valA - valB) * order
+    }
+
+    // String comparison (case-insensitive)
+    valA = String(valA).toLowerCase()
+    valB = String(valB).toLowerCase()
+    return valA.localeCompare(valB) * order
+  })
+})
+
+function onSort(event) {
+  sortField.value = event.sortField
+  sortOrder.value = event.sortOrder
+}
 
 // seleção + preview
 const selected = ref([])
@@ -389,6 +484,13 @@ function onPage(e) {
   first.value = e.first
   rows.value = e.rows
   fetchCards()
+}
+
+// Refresh completo: decks + cards
+async function refreshAll() {
+  addLog('Refreshing all data...', 'info')
+  await Promise.all([fetchDecks(), fetchCards()])
+  notify('Dados atualizados', 'success', 2500)
 }
 
 // ----------------------
@@ -1390,8 +1492,11 @@ onUnmounted(() => {
           <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter class="w-22" placeholder="Deck" :disabled="initializing" />
           <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-18" :disabled="initializing" />
           <InputText v-model="text" class="w-22" placeholder="Buscar texto (Anki query terms)..." :disabled="initializing" />
-          <InputText v-model="advancedQuery" class="w-34" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' :disabled="initializing" />
-          <Button icon="pi pi-refresh" label="Atualizar" outlined @click="fetchCards" :disabled="initializing" />
+          <div class="query-input-wrap">
+            <InputText v-model="advancedQuery" class="query-input" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' :disabled="initializing" />
+            <Button icon="pi pi-question-circle" text rounded class="query-help-btn" @click="(e) => queryHelpRef?.toggle(e)" title="Ajuda com sintaxe de busca" :disabled="initializing" />
+          </div>
+          <Button icon="pi pi-refresh" label="Atualizar" outlined @click="refreshAll" :disabled="initializing" />
         </div>
 
         <div class="query-hint">
@@ -1401,6 +1506,42 @@ onUnmounted(() => {
           <b>{{ loading ? '...' : total }}</b>
         </div>
       </div>
+
+      <!-- Query Helper Popover -->
+      <Popover ref="queryHelpRef" class="query-help-popover">
+        <div class="query-help-content">
+          <div class="query-help-header">
+            <i class="pi pi-search"></i>
+            <div>
+              <div class="query-help-title">Sintaxe de Busca Anki</div>
+              <div class="query-help-sub">Clique para inserir na query</div>
+            </div>
+          </div>
+          <div class="query-help-sections">
+            <div v-for="section in queryHelpers" :key="section.category" class="query-section">
+              <div class="query-section-title">{{ section.category }}</div>
+              <div class="query-items">
+                <button
+                  v-for="item in section.items"
+                  :key="item.query"
+                  class="query-item"
+                  @click="insertQuery(item.query)"
+                  :title="item.desc"
+                >
+                  <code class="query-code">{{ item.query }}</code>
+                  <span class="query-desc">{{ item.desc }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="query-help-footer">
+            <a href="https://docs.ankiweb.net/searching.html" target="_blank" rel="noopener" class="query-docs-link">
+              <i class="pi pi-external-link"></i>
+              Documentação completa
+            </a>
+          </div>
+        </div>
+      </Popover>
 
       <div class="recreate-bar card-surface">
         <div class="recreate-left">
@@ -1417,14 +1558,14 @@ onUnmounted(() => {
 
         <div class="recreate-right">
           <Button icon="pi pi-language" label="Traduzir" :disabled="!selected.length" @click="openTranslateDialog" severity="info" />
-          <Button icon="pi pi-copy" label="Recriar (SLM)" :disabled="!selected.length" @click="openRecreateDialog" />
+          <Button icon="pi pi-sparkles" label="Gerar com LLM" :disabled="!selected.length" @click="openRecreateDialog" severity="help" />
           <Tag severity="secondary" class="pill">Selecionados: {{ selected.length }}</Tag>
         </div>
       </div>
 
       <div class="table-card card-surface">
         <DataTable
-          :value="items"
+          :value="sortedItems"
           dataKey="cardId"
           v-model:selection="selected"
           selectionMode="multiple"
@@ -1437,7 +1578,10 @@ onUnmounted(() => {
           stripedRows
           rowHover
           removableSort
+          :sortField="sortField"
+          :sortOrder="sortOrder"
           @page="onPage"
+          @sort="onSort"
           class="dt modern-dt"
           tableStyle="min-width: 70rem"
           @rowDblclick="openPreview($event.data)"
@@ -1446,10 +1590,10 @@ onUnmounted(() => {
             <div class="dt-header">
               <div class="dt-title">
                 <span class="title">Anki Browser</span>
-                <span class="subtitle">Duplo clique para preview • Recriação via SLM/Ollama</span>
+                <span class="subtitle">Duplo clique para preview • Geração com LLM</span>
               </div>
               <div class="dt-actions">
-                <Button icon="pi pi-refresh" rounded raised @click="fetchCards" title="Atualizar" />
+                <Button icon="pi pi-refresh" rounded raised @click="refreshAll" title="Atualizar tudo (decks + cards)" />
               </div>
             </div>
           </template>
@@ -1981,15 +2125,15 @@ onUnmounted(() => {
         </template>
       </Dialog>
 
-      <!-- Modal Recreate (SLM/Ollama) -->
+      <!-- Modal Gerar com LLM -->
       <Dialog v-model:visible="recreateDialogVisible" modal :draggable="false" class="dlg dlg-recreate modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
         <template #header>
           <div class="dlg-hdr">
             <div class="dlg-hdr-left">
-              <div class="dlg-icon"><i class="pi pi-copy"></i></div>
+              <div class="dlg-icon"><i class="pi pi-sparkles"></i></div>
               <div class="dlg-hdr-txt">
-                <div class="dlg-title">Recriar via SLM/Ollama</div>
-                <div class="dlg-sub">Gera novas notas com clozes e (opcionalmente) suspende os cards originais.</div>
+                <div class="dlg-title">Gerar Flashcards com LLM</div>
+                <div class="dlg-sub">Cria novas notas com clozes usando modelos de IA (local ou cloud).</div>
               </div>
             </div>
 
@@ -1997,10 +2141,6 @@ onUnmounted(() => {
               <span class="svc-mini" :class="ankiHealth.ok ? 'on' : ankiHealth.ok === null ? 'idle' : 'off'" :title="ankiStatusTitle">
                 <i class="pi" :class="ankiHealth.ok ? 'pi-check' : ankiHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times'"></i>
                 <span>Anki</span>
-              </span>
-              <span class="svc-mini" :class="ollamaHealth.ok ? 'on' : ollamaHealth.ok === null ? 'idle' : 'off'" :title="ollamaStatusTitle">
-                <i class="pi" :class="ollamaHealth.ok ? 'pi-check' : ollamaHealth.ok === null ? 'pi-spin pi-spinner' : 'pi-times'"></i>
-                <span>Ollama</span>
               </span>
             </div>
           </div>
@@ -2049,7 +2189,7 @@ onUnmounted(() => {
 
               <Tag v-if="recreateModelProvider === 'ollama' && !ollamaHealth.ok" class="pill" severity="danger">
                 <i class="pi pi-exclamation-triangle mr-2" />
-                Ollama offline — a recriação vai falhar
+                Ollama offline — selecione outro modelo
               </Tag>
             </div>
           </div>
@@ -2309,8 +2449,8 @@ onUnmounted(() => {
             <div class="footer-right">
               <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="recreateDialogVisible = false" />
               <Button
-                label="Recriar agora"
-                icon="pi pi-check"
+                label="Gerar agora"
+                icon="pi pi-sparkles"
                 :disabled="!canConfirmRecreate || !ankiHealth.ok || (recreateModelProvider === 'ollama' && !ollamaHealth.ok)"
                 :loading="recreating"
                 @click="confirmRecreate"
@@ -2675,6 +2815,152 @@ onUnmounted(() => {
 .w-22{ width: 22rem; }
 .w-34{ width: 34rem; }
 .w-100{ width: 100%; }
+
+/* Query input with help button */
+.query-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 34rem;
+}
+.query-input {
+  width: 100%;
+  padding-right: 40px;
+}
+.query-help-btn {
+  position: absolute;
+  right: 4px;
+  width: 32px;
+  height: 32px;
+  opacity: 0.7;
+}
+.query-help-btn:hover {
+  opacity: 1;
+}
+
+/* Query Helper Popover */
+:deep(.query-help-popover) {
+  max-width: 680px;
+  width: 90vw;
+}
+:deep(.query-help-popover .p-popover-content) {
+  padding: 0;
+}
+
+.query-help-content {
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+.query-help-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: rgba(99, 102, 241, 0.08);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+.query-help-header > i {
+  font-size: 20px;
+  color: #6366F1;
+}
+.query-help-title {
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: -0.2px;
+}
+.query-help-sub {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.query-help-sections {
+  padding: 12px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+@media (max-width: 600px) {
+  .query-help-sections {
+    grid-template-columns: 1fr;
+  }
+}
+
+.query-section {
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 12px;
+  padding: 10px;
+}
+.query-section-title {
+  font-weight: 900;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.8;
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+
+.query-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.query-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: background 0.15s ease;
+  text-align: left;
+  width: 100%;
+}
+.query-item:hover {
+  background: rgba(99, 102, 241, 0.15);
+}
+.query-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  color: #a5b4fc;
+  white-space: nowrap;
+}
+.query-desc {
+  font-size: 11px;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.query-help-footer {
+  padding: 10px 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(0, 0, 0, 0.1);
+}
+.query-docs-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6366F1;
+  text-decoration: none;
+  font-weight: 600;
+}
+.query-docs-link:hover {
+  text-decoration: underline;
+}
 
 .table-card{ margin-top: 12px; padding: 10px; }
 .dt{ width: 100%; }
