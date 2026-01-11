@@ -19,6 +19,7 @@ _MODELS_CACHE: dict[str, set[str]] = {
     "ollama": set(),
     "openai": set(),
     "perplexity": set(),
+    "anthropic": set(),
 }
 _CACHE_TIMESTAMP: float = 0
 _CACHE_TTL: float = 300  # 5 minutos
@@ -27,6 +28,7 @@ _CACHE_TTL: float = 300  # 5 minutos
 _API_KEYS: dict[str, Optional[str]] = {
     "openai": None,
     "perplexity": None,
+    "anthropic": None,
 }
 
 # Padrões conhecidos de modelos de embedding
@@ -237,10 +239,21 @@ def get_provider_for_model(
     return "ollama"
 
 
+# Modelos Anthropic conhecidos (fallback)
+ANTHROPIC_FALLBACK_MODELS = [
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+]
+
+
 @router.get("/api/all-models")
 async def get_all_models(
     openai_api_key: Optional[str] = Header(None, alias="X-OpenAI-Key"),
     perplexity_api_key: Optional[str] = Header(None, alias="X-Perplexity-Key"),
+    anthropic_api_key: Optional[str] = Header(None, alias="X-Anthropic-Key"),
 ):
     global _MODELS_CACHE, _CACHE_TIMESTAMP, _API_KEYS
 
@@ -248,12 +261,15 @@ async def get_all_models(
     ollama_names = set()
     openai_names = set()
     perplexity_names = set()
+    anthropic_names = set()
 
     # Armazena chaves API para uso futuro no cache
     if openai_api_key:
         _API_KEYS["openai"] = openai_api_key
     if perplexity_api_key:
         _API_KEYS["perplexity"] = perplexity_api_key
+    if anthropic_api_key:
+        _API_KEYS["anthropic"] = anthropic_api_key
 
     # Ollama models
     try:
@@ -320,17 +336,28 @@ async def get_all_models(
             "type": "llm"
         } for name in p_models)
 
+    # Anthropic models (usa lista conhecida se chave fornecida)
+    if anthropic_api_key:
+        anthropic_names = set(ANTHROPIC_FALLBACK_MODELS)
+        models.extend({
+            "name": name,
+            "provider": "anthropic",
+            "type": "llm"
+        } for name in ANTHROPIC_FALLBACK_MODELS)
+
     # Atualiza cache com os modelos encontrados
     _MODELS_CACHE["ollama"] = ollama_names
     if openai_names:
         _MODELS_CACHE["openai"] = openai_names
     if perplexity_names:
         _MODELS_CACHE["perplexity"] = perplexity_names
+    if anthropic_names:
+        _MODELS_CACHE["anthropic"] = anthropic_names
     _CACHE_TIMESTAMP = time.time()
 
     logger.debug(
-        "Models cache updated via /all-models: ollama=%d, openai=%d, perplexity=%d",
-        len(ollama_names), len(openai_names), len(perplexity_names),
+        "Models cache updated via /all-models: ollama=%d, openai=%d, perplexity=%d, anthropic=%d",
+        len(ollama_names), len(openai_names), len(perplexity_names), len(anthropic_names),
     )
 
     return {"models": models}

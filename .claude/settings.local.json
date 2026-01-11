@@ -4,7 +4,8 @@
       "Bash(cat:*)",
       "Bash(find:*)",
       "Bash(python:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(npx vue-tsc:*)"
     ]
   }
 }
