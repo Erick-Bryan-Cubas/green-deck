@@ -13,8 +13,11 @@ import html as _html
 from pathlib import Path
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+import logging
 
 from app.config import ANKI_CONNECT_URL
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["anki"])
 
@@ -607,6 +610,208 @@ async def ollama_generate_notes(
     path = _write_toon_file(f"ollama_ok_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
     return out, path
 
+
+# =============================================================================
+# Multi-provider generation (OpenAI, Perplexity, Anthropic)
+# =============================================================================
+
+async def generate_notes_multi_provider(
+    *,
+    request_id: str,
+    provider: str,
+    model: str,
+    temperature: float,
+    source_note_id: int,
+    source_card_id: Optional[int],
+    target_model_name: str,
+    target_fields: List[str],
+    family: str,
+    difficulty: Optional[str],
+    source_payload: Dict[str, Any],
+    prompt_struct: str,
+    retry_hint: Optional[str] = None,
+    custom_system: Optional[str] = None,
+    custom_guidelines: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
+    perplexity_api_key: Optional[str] = None,
+    anthropic_api_key: Optional[str] = None,
+) -> Tuple[Dict[str, str], str]:
+    """
+    Gera notas usando múltiplos providers (OpenAI, Perplexity, Anthropic).
+    Retorna tupla (fields_dict, debug_file_path).
+    """
+
+    # Build system prompt
+    system = custom_system or (
+        "Você gera conteúdo para notas do Anki e SEMPRE responde somente com JSON válido, "
+        "seguindo exatamente o schema solicitado. Não escreva nada fora do JSON."
+    )
+
+    # Build user prompt with optional difficulty
+    user_content = {
+        "task": "recreate_notes_from_selected_card",
+        "target_model_name": target_model_name,
+        "target_fields": target_fields,
+        "family": family,
+        "source": source_payload,
+        "retry_hint": retry_hint or "",
+        "instructions": prompt_struct,
+    }
+
+    if difficulty:
+        user_content["difficulty"] = difficulty
+
+    if custom_guidelines:
+        user_content["guidelines"] = custom_guidelines
+
+    t0 = time.monotonic()
+    dbg: dict = {
+        "kind": f"{provider}_generation",
+        "ts": _now_iso(),
+        "requestId": request_id,
+        "provider": provider,
+        "model": model,
+        "temperature": temperature,
+        "sourceNoteId": source_note_id,
+        "sourceCardId": source_card_id,
+        "targetModelName": target_model_name,
+        "targetFields": target_fields,
+        "family": family,
+        "difficulty": difficulty,
+        "retryHint": retry_hint or "",
+    }
+
+    try:
+        content = ""
+
+        if provider == "openai":
+            if not openai_api_key:
+                raise Exception("OpenAI API key não fornecida")
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=180.0)) as client:
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": 4096,
+                    "response_format": {"type": "json_object"},
+                }
+
+                r = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+                r.raise_for_status()
+                data = r.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        elif provider == "perplexity":
+            if not perplexity_api_key:
+                raise Exception("Perplexity API key não fornecida")
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=180.0)) as client:
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": 4096,
+                }
+
+                r = await client.post(
+                    "https://api.perplexity.ai/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {perplexity_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+                r.raise_for_status()
+                data = r.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        elif provider == "anthropic":
+            if not anthropic_api_key:
+                raise Exception("Anthropic API key não fornecida")
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=180.0)) as client:
+                payload = {
+                    "model": model,
+                    "max_tokens": 4096,
+                    "system": system,
+                    "messages": [
+                        {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
+                    ],
+                }
+
+                r = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+                r.raise_for_status()
+                data = r.json()
+                # Anthropic returns content as array of blocks
+                content_blocks = data.get("content", [])
+                content = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
+        else:
+            raise Exception(f"Provider não suportado: {provider}")
+
+        dbg["messageContentHead"] = (content or "")[:5000]
+        parsed = _try_extract_json(content)
+        dbg["parsed"] = parsed
+
+        if not parsed or "notes" not in parsed:
+            dbg["error"] = f"{provider} retornou conteúdo não-JSON ou fora do schema esperado."
+            dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+            path = _write_toon_file(f"{provider}_badjson_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
+            raise Exception(f"{provider} retornou JSON inválido/fora do schema. (Veja: {path})")
+
+        notes = parsed.get("notes") or []
+        if not notes or not isinstance(notes, list) or not isinstance(notes[0], dict):
+            dbg["error"] = f"{provider} não retornou notes válidas."
+            dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+            path = _write_toon_file(f"{provider}_empty_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
+            raise Exception(f"{provider} não retornou notes válidas. (Veja: {path})")
+
+        fields = (notes[0] or {}).get("fields") or {}
+        if not isinstance(fields, dict):
+            dbg["error"] = "fields inválido."
+            dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+            path = _write_toon_file(f"{provider}_badfields_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
+            raise Exception(f"{provider} retornou fields inválido. (Veja: {path})")
+
+        out = {str(k): str(v) for k, v in fields.items()}
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        dbg["fieldsPreview"] = {k: (out.get(k, "")[:250]) for k in list(out.keys())[:4]}
+        path = _write_toon_file(f"{provider}_ok_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
+        return out, path
+
+    except httpx.TimeoutException as e:
+        dbg["error"] = f"{provider} timeout: {e}"
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"{provider}_timeout_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
+        raise Exception(f"{provider} timeout. (Veja: {path})")
+    except Exception as e:
+        dbg["error"] = f"{provider} erro: {e}"
+        dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
+        path = _write_toon_file(f"{provider}_error_nid{source_note_id}_{_slug(target_model_name)}", request_id, dbg)
+        raise Exception(f"{provider} erro: {e}. (Veja: {path})")
+
+
 # =============================================================================
 # Upload / listagens (mantidos)
 # =============================================================================
@@ -751,10 +956,25 @@ class AnkiRecreateRequest(BaseModel):
     countPerNote: int = 1
     targetModelNames: List[str] = Field(default_factory=list)
 
-    difficulty: Optional[DifficultyInput] = "hard_neutral"
+    # Modelo e provider selecionados
+    model: Optional[str] = None  # Nome do modelo (ex: "qwen-flashcard", "gpt-4o", "sonar-pro")
+    provider: Optional[str] = None  # "ollama", "openai", "perplexity", "anthropic"
 
-    # Mantém compatibilidade com frontend antigo, mas NÃO vamos mais enfiar tags "lixo"
-    # Se quiser, pode usar como tag extra (opcional). Default = None.
+    # Dificuldade (opcional)
+    useDifficulty: bool = False
+    difficulty: Optional[DifficultyInput] = None
+
+    # Prompts customizados (opcional)
+    customSystemPrompt: Optional[str] = None
+    customGenerationPrompt: Optional[str] = None
+    customGuidelines: Optional[str] = None
+
+    # API keys
+    openaiApiKey: Optional[str] = None
+    perplexityApiKey: Optional[str] = None
+    anthropicApiKey: Optional[str] = None
+
+    # Mantém compatibilidade com frontend antigo
     addTag: Optional[str] = None
 
 @router.post("/anki-recreate")
@@ -781,7 +1001,17 @@ async def recreate_cards(req: AnkiRecreateRequest):
             content={"success": False, "requestId": request_id, "error": "Selecione 1+ Note Types (targetModelNames)."},
         )
 
-    difficulty = normalize_difficulty(str(req.difficulty) if req.difficulty else "hard_neutral")
+    # Configurações do modelo/provider
+    llm_model = req.model or OLLAMA_MODEL_NEUTRAL
+    llm_provider = (req.provider or "ollama").lower()
+
+    # Dificuldade (opcional)
+    use_difficulty = req.useDifficulty
+    difficulty = normalize_difficulty(str(req.difficulty)) if use_difficulty and req.difficulty else None
+
+    # Prompts customizados
+    custom_system = req.customSystemPrompt or None
+    custom_guidelines = req.customGuidelines or None
 
     unsupported: List[str] = []
     model_prompts: Dict[str, str] = {}
@@ -916,7 +1146,16 @@ async def recreate_cards(req: AnkiRecreateRequest):
 
                             while attempt < max_attempts:
                                 attempt += 1
-                                ollama_model = pick_ollama_model(difficulty)
+
+                                # Determina modelo baseado no provider
+                                if llm_provider == "ollama":
+                                    # Para Ollama, pode usar dificuldade para escolher modelo
+                                    if use_difficulty and difficulty:
+                                        actual_model = pick_ollama_model(difficulty)
+                                    else:
+                                        actual_model = llm_model
+                                else:
+                                    actual_model = llm_model
 
                                 # aumenta temperatura em retries
                                 temp = OLLAMA_TEMPERATURE if attempt == 1 else min(0.85, OLLAMA_TEMPERATURE + 0.25 * attempt)
@@ -929,21 +1168,45 @@ async def recreate_cards(req: AnkiRecreateRequest):
                                     )
 
                                 try:
-                                    gen_fields, toon_path = await ollama_generate_notes(
-                                        slm_client,
-                                        request_id=request_id,
-                                        ollama_model=ollama_model,
-                                        temperature=temp,
-                                        source_note_id=nid,
-                                        source_card_id=card_id,
-                                        target_model_name=mn,
-                                        target_fields=t_fields,
-                                        family=fam,
-                                        difficulty=difficulty,
-                                        source_payload=source_payload,
-                                        prompt_struct=prompt_struct,
-                                        retry_hint=retry_hint,
-                                    )
+                                    # Escolhe função de geração baseado no provider
+                                    if llm_provider == "ollama":
+                                        gen_fields, toon_path = await ollama_generate_notes(
+                                            slm_client,
+                                            request_id=request_id,
+                                            ollama_model=actual_model,
+                                            temperature=temp,
+                                            source_note_id=nid,
+                                            source_card_id=card_id,
+                                            target_model_name=mn,
+                                            target_fields=t_fields,
+                                            family=fam,
+                                            difficulty=difficulty,
+                                            source_payload=source_payload,
+                                            prompt_struct=prompt_struct,
+                                            retry_hint=retry_hint,
+                                        )
+                                    else:
+                                        # Usa multi-provider (OpenAI, Perplexity, Anthropic)
+                                        gen_fields, toon_path = await generate_notes_multi_provider(
+                                            request_id=request_id,
+                                            provider=llm_provider,
+                                            model=actual_model,
+                                            temperature=temp,
+                                            source_note_id=nid,
+                                            source_card_id=card_id,
+                                            target_model_name=mn,
+                                            target_fields=t_fields,
+                                            family=fam,
+                                            difficulty=difficulty,
+                                            source_payload=source_payload,
+                                            prompt_struct=prompt_struct,
+                                            retry_hint=retry_hint,
+                                            custom_system=custom_system,
+                                            custom_guidelines=custom_guidelines,
+                                            openai_api_key=req.openaiApiKey,
+                                            perplexity_api_key=req.perplexityApiKey,
+                                            anthropic_api_key=req.anthropicApiKey,
+                                        )
                                     last_toon = toon_path
 
                                     # montar fields completos
@@ -966,17 +1229,18 @@ async def recreate_cards(req: AnkiRecreateRequest):
                                             last_error = f"Cloze inválido: nenhum {{cN::...}} no campo '{main_field}'."
                                             continue
 
-                                        # valida quantidade por dificuldade
-                                        nclz = _count_cloze_occurrences(v)
-                                        if difficulty == "easy" and nclz != 1:
-                                            last_error = f"easy exige 1 cloze; veio {nclz}."
-                                            continue
-                                        if difficulty == "hard_neutral" and nclz < 3:
-                                            last_error = f"hard_neutral exige >=3 clozes; veio {nclz}."
-                                            continue
-                                        if difficulty == "hard_technical" and nclz < 5:
-                                            last_error = f"hard_technical exige >=5 clozes; veio {nclz}."
-                                            continue
+                                        # valida quantidade por dificuldade (apenas se habilitado)
+                                        if use_difficulty and difficulty:
+                                            nclz = _count_cloze_occurrences(v)
+                                            if difficulty == "easy" and nclz != 1:
+                                                last_error = f"easy exige 1 cloze; veio {nclz}."
+                                                continue
+                                            if difficulty == "hard_neutral" and nclz < 3:
+                                                last_error = f"hard_neutral exige >=3 clozes; veio {nclz}."
+                                                continue
+                                            if difficulty == "hard_technical" and nclz < 5:
+                                                last_error = f"hard_technical exige >=5 clozes; veio {nclz}."
+                                                continue
 
                                         # anti-cópia
                                         if _too_similar(source_for_similarity, v, threshold=0.90):

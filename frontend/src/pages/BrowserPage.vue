@@ -228,15 +228,6 @@ const ankiStatusTitle = computed(() => {
   return `AnkiConnect OFF: ${ankiHealth.value.error || 'erro desconhecido'}`
 })
 
-const ollamaAllRequiredOk = computed(() => {
-  if (!ollamaHealth.value?.required) return null
-  const req = ollamaHealth.value.required
-  const a = req?.easy_or_neutral?.available
-  const b = req?.hard_technical?.available
-  if (a === undefined && b === undefined) return null
-  return Boolean(a !== false && b !== false)
-})
-
 const ollamaStatusTitle = computed(() => {
   if (ollamaHealth.value.ok) {
     const req = ollamaHealth.value.required
@@ -978,7 +969,7 @@ async function confirmTranslate() {
 }
 
 // ----------------------
-// Modal Recreate (SLM/Ollama)
+// Modal Recreate (SLM/Ollama + APIs)
 // ----------------------
 const recreating = ref(false)
 const recreateTargetDeck = ref('')
@@ -987,12 +978,110 @@ const recreateDialogVisible = ref(false)
 const recreateSuspendOriginal = ref(true)
 const recreateCountPerNote = ref(1)
 
+// Seleção de modelo/provider
+const recreateAvailableModels = ref([])
+const recreateSelectedModel = ref('qwen-flashcard')
+const recreateLoadingModels = ref(false)
+
+// Dificuldade (opcional)
+const recreateUseDifficulty = ref(false)
 const difficultyOptions = [
   { label: 'Fácil', value: 'easy' },
   { label: 'Difícil (neutra)', value: 'hard_neutral' },
   { label: 'Difícil (técnica)', value: 'hard_technical' }
 ]
 const recreateDifficulty = ref('easy')
+
+// Prompts customizados
+const recreateUseCustomPrompts = ref(false)
+const recreateCustomSystemPrompt = ref('')
+const recreateCustomGenerationPrompt = ref('')
+const recreateCustomGuidelines = ref('')
+
+// Prompts padrão (carregados da API)
+const defaultPrompts = ref({
+  system: { basic: '', cloze: '' },
+  generation: { default: '' },
+  guidelines: { default: '' }
+})
+
+// Computed para modelos LLM (excluindo embeddings)
+const recreateLlmModels = computed(() => recreateAvailableModels.value.filter(m => m.type !== 'embedding'))
+
+// Helper para info do modelo selecionado
+function getRecreateModelInfo(modelName) {
+  return recreateAvailableModels.value.find(m => m.name === modelName)
+}
+
+// Computed para determinar provider do modelo selecionado
+const recreateModelProvider = computed(() => {
+  const model = getRecreateModelInfo(recreateSelectedModel.value)
+  return model?.provider || 'ollama'
+})
+
+// Helpers para severity/label do provider
+function getProviderSeverity(provider) {
+  if (provider === 'ollama') return 'success'
+  if (provider === 'openai') return 'info'
+  if (provider === 'anthropic') return 'contrast'
+  return 'warning' // perplexity
+}
+
+function getProviderLabel(provider) {
+  if (provider === 'ollama') return 'Ollama'
+  if (provider === 'openai') return 'OpenAI'
+  if (provider === 'anthropic') return 'Anthropic'
+  return 'Perplexity'
+}
+
+// Buscar modelos disponíveis
+async function fetchRecreateModels() {
+  try {
+    recreateLoadingModels.value = true
+    const keys = getStoredApiKeys()
+
+    const headers = {}
+    if (keys.openaiApiKey) headers['X-OpenAI-Key'] = keys.openaiApiKey
+    if (keys.perplexityApiKey) headers['X-Perplexity-Key'] = keys.perplexityApiKey
+    if (keys.anthropicApiKey) headers['X-Anthropic-Key'] = keys.anthropicApiKey
+
+    const resp = await fetch('/api/all-models', { headers })
+    if (resp.ok) {
+      const data = await resp.json()
+      recreateAvailableModels.value = data.models || []
+
+      // Se o modelo selecionado não existe, seleciona o primeiro disponível
+      if (recreateLlmModels.value.length > 0) {
+        const modelExists = recreateLlmModels.value.some(m => m.name === recreateSelectedModel.value)
+        if (!modelExists) {
+          recreateSelectedModel.value = recreateLlmModels.value[0].name
+        }
+      }
+    }
+  } catch (e) {
+    notify('Erro ao carregar modelos disponíveis', 'error', 4000)
+    addLog(`fetchRecreateModels error: ${e?.message || e}`, 'error')
+  } finally {
+    recreateLoadingModels.value = false
+  }
+}
+
+// Buscar prompts padrão
+async function fetchDefaultPrompts() {
+  try {
+    const resp = await fetch('/api/prompts/defaults')
+    if (resp.ok) {
+      const data = await resp.json()
+      defaultPrompts.value = data
+      // Inicializa prompts customizados com os padrões
+      recreateCustomSystemPrompt.value = data.system?.cloze || ''
+      recreateCustomGenerationPrompt.value = data.generation?.default || ''
+      recreateCustomGuidelines.value = data.guidelines?.default || ''
+    }
+  } catch (e) {
+    addLog(`fetchDefaultPrompts error: ${e?.message || e}`, 'warn')
+  }
+}
 
 const difficultyHelp = computed(() => {
   switch (recreateDifficulty.value) {
@@ -1033,6 +1122,15 @@ function openRecreateDialog() {
     return
   }
   recreateDialogVisible.value = true
+
+  // Carrega modelos LLM disponíveis
+  fetchRecreateModels()
+
+  // Carrega prompts padrão (se ainda não carregados)
+  if (!defaultPrompts.value.system?.cloze) {
+    fetchDefaultPrompts()
+  }
+
   if (!noteTypesLoaded.value) {
     fetchNoteTypes().then(() => {
       if (!selectedTargetModels.value.length && supportedNoteTypes.value.length) {
@@ -1050,18 +1148,6 @@ const canConfirmRecreate = computed(() => {
   return selected.value?.length > 0 && selectedTargetModels.value?.length > 0
 })
 
-const ollamaRequiredForDifficulty = computed(() => {
-  const req = ollamaHealth.value?.required
-  if (!req) return null
-  if (recreateDifficulty.value === 'hard_technical') return req?.hard_technical || null
-  return req?.easy_or_neutral || null
-})
-const ollamaDifficultyReady = computed(() => {
-  const o = ollamaRequiredForDifficulty.value
-  if (!o) return null
-  return o.available !== false
-})
-
 async function confirmRecreate() {
   if (!canConfirmRecreate.value) {
     notify('Selecione cards e 1+ Note Types suportados.', 'warn', 6000)
@@ -1073,14 +1159,17 @@ async function confirmRecreate() {
 
   try {
     await fetchHealth()
+    const provider = recreateModelProvider.value
+
     addLog(
-      `Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'} | Ollama=${ollamaHealth.value.ok ? 'ON' : 'OFF'}`,
-      ankiHealth.value.ok && ollamaHealth.value.ok ? 'info' : 'warn'
+      `Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'} | Provider=${provider} (${recreateSelectedModel.value})`,
+      ankiHealth.value.ok ? 'info' : 'warn'
     )
     if (!ankiHealth.value.ok) addLog(`Health Anki error: ${ankiHealth.value.error}`, 'error')
-    if (!ollamaHealth.value.ok) addLog(`Health Ollama error: ${ollamaHealth.value.error}`, 'error')
 
     const cardIds = selected.value.map((x) => x.cardId)
+    const keys = getStoredApiKeys()
+
     const payload = {
       cardIds,
       targetDeckName: recreateTargetDeck.value || null,
@@ -1088,11 +1177,24 @@ async function confirmRecreate() {
       suspendOriginal: !!recreateSuspendOriginal.value,
       countPerNote: Number(recreateCountPerNote.value || 1),
       targetModelNames: [...selectedTargetModels.value],
-      difficulty: recreateDifficulty.value
+      // Modelo e provider selecionados
+      model: recreateSelectedModel.value,
+      provider: provider,
+      // Dificuldade (opcional)
+      useDifficulty: recreateUseDifficulty.value,
+      difficulty: recreateUseDifficulty.value ? recreateDifficulty.value : null,
+      // Prompts customizados (opcional)
+      customSystemPrompt: recreateUseCustomPrompts.value ? recreateCustomSystemPrompt.value : null,
+      customGenerationPrompt: recreateUseCustomPrompts.value ? recreateCustomGenerationPrompt.value : null,
+      customGuidelines: recreateUseCustomPrompts.value ? recreateCustomGuidelines.value : null,
+      // API keys
+      openaiApiKey: keys.openaiApiKey || null,
+      perplexityApiKey: keys.perplexityApiKey || null,
+      anthropicApiKey: keys.anthropicApiKey || null
     }
 
     addLog(
-      `Recreate(SLM) start: cards=${cardIds.length} targetModels=${payload.targetModelNames.join(', ')} difficulty=${payload.difficulty} countPerNote=${payload.countPerNote} suspend=${payload.suspendOriginal}`,
+      `Recreate start: cards=${cardIds.length} model=${payload.model} provider=${provider} difficulty=${payload.useDifficulty ? payload.difficulty : 'disabled'} countPerNote=${payload.countPerNote}`,
       'info'
     )
 
@@ -1940,43 +2042,86 @@ onUnmounted(() => {
                 Deck destino: <b class="ml-2">{{ recreateTargetDeck ? recreateTargetDeck : 'Original' }}</b>
               </Tag>
 
-              <Tag v-if="!ollamaHealth.ok" class="pill" severity="danger">
+              <Tag class="pill" :severity="getProviderSeverity(recreateModelProvider)">
+                <i class="pi pi-microchip mr-2" />
+                {{ getProviderLabel(recreateModelProvider) }}: <b class="ml-1">{{ recreateSelectedModel }}</b>
+              </Tag>
+
+              <Tag v-if="recreateModelProvider === 'ollama' && !ollamaHealth.ok" class="pill" severity="danger">
                 <i class="pi pi-exclamation-triangle mr-2" />
                 Ollama offline — a recriação vai falhar
-              </Tag>
-
-              <Tag v-else-if="ollamaDifficultyReady === false" class="pill" severity="warn">
-                <i class="pi pi-info-circle mr-2" />
-                Modelo exigido p/ dificuldade não encontrado
-              </Tag>
-
-              <Tag v-else-if="ollamaAllRequiredOk === false" class="pill" severity="warn">
-                <i class="pi pi-info-circle mr-2" />
-                Nem todos os modelos required estão disponíveis
               </Tag>
             </div>
           </div>
 
           <div class="sections">
+            <!-- Modelo LLM -->
+            <div class="section">
+              <div class="section-h">
+                <i class="pi pi-microchip"></i>
+                <div>
+                  <div class="section-title">Modelo LLM</div>
+                  <div class="section-sub">Selecione o modelo para geração (Ollama local ou APIs externas)</div>
+                </div>
+              </div>
+
+              <div class="grid">
+                <div class="blk blk-wide">
+                  <div class="lbl">Modelo</div>
+                  <Select
+                    v-model="recreateSelectedModel"
+                    :options="recreateLlmModels"
+                    optionLabel="name"
+                    optionValue="name"
+                    :loading="recreateLoadingModels"
+                    filter
+                    placeholder="Selecione um modelo"
+                    class="w-100"
+                  >
+                    <template #option="{ option }">
+                      <div class="model-option">
+                        <span>{{ option.name }}</span>
+                        <Tag :severity="getProviderSeverity(option.provider)" class="pill ml-2">
+                          {{ getProviderLabel(option.provider) }}
+                        </Tag>
+                      </div>
+                    </template>
+                    <template #value="{ value }">
+                      <div v-if="value" class="model-option">
+                        <span>{{ value }}</span>
+                        <Tag :severity="getProviderSeverity(getRecreateModelInfo(value)?.provider)" class="pill ml-2">
+                          {{ getProviderLabel(getRecreateModelInfo(value)?.provider) }}
+                        </Tag>
+                      </div>
+                      <span v-else>Selecione um modelo</span>
+                    </template>
+                  </Select>
+                  <div class="muted tiny" style="margin-top: 8px;">
+                    <span v-if="recreateLlmModels.length === 0 && !recreateLoadingModels">
+                      Nenhum modelo disponível. Verifique se Ollama está rodando ou configure API keys em GeneratorPage.
+                    </span>
+                    <span v-else-if="recreateModelProvider === 'ollama'">
+                      Modelo local via Ollama (privacidade total).
+                    </span>
+                    <span v-else>
+                      Modelo via API {{ getProviderLabel(recreateModelProvider) }} (requer chave configurada).
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- Config -->
             <div class="section">
               <div class="section-h">
                 <i class="pi pi-sliders-h"></i>
                 <div>
                   <div class="section-title">Configuração</div>
-                  <div class="section-sub">Controle de dificuldade, volume e comportamento de suspensão</div>
+                  <div class="section-sub">Volume, suspensão e dificuldade (opcional)</div>
                 </div>
               </div>
 
               <div class="grid">
-                <div class="blk">
-                  <div class="lbl">Dificuldade</div>
-                  <Select v-model="recreateDifficulty" :options="difficultyOptions" optionLabel="label" optionValue="value" class="w-100" />
-                  <div class="muted tiny" style="margin-top: 8px;">
-                    {{ difficultyHelp }}
-                  </div>
-                </div>
-
                 <div class="blk">
                   <div class="lbl">Suspender originais</div>
                   <div class="inline">
@@ -1994,6 +2139,30 @@ onUnmounted(() => {
                         }}
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <div class="blk">
+                  <div class="lbl">Usar dificuldade</div>
+                  <div class="inline">
+                    <InputSwitch v-model="recreateUseDifficulty" />
+                    <div class="inline-col">
+                      <div class="inline-strong">
+                        {{ recreateUseDifficulty ? 'Sim' : 'Não' }}
+                        <Tag v-if="recreateUseDifficulty" severity="info" class="pill ml-2">controla clozes</Tag>
+                      </div>
+                      <div class="muted tiny">
+                        {{ recreateUseDifficulty ? 'Ajusta quantidade de clozes por dificuldade.' : 'Usa configuração padrão do modelo.' }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="recreateUseDifficulty" class="blk">
+                  <div class="lbl">Nível de dificuldade</div>
+                  <Select v-model="recreateDifficulty" :options="difficultyOptions" optionLabel="label" optionValue="value" class="w-100" />
+                  <div class="muted tiny" style="margin-top: 8px;">
+                    {{ difficultyHelp }}
                   </div>
                 </div>
 
@@ -2052,12 +2221,79 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
+
+            <!-- Prompts Customizados -->
+            <div class="section">
+              <div class="section-h">
+                <i class="pi pi-pencil"></i>
+                <div>
+                  <div class="section-title">Prompts Customizados</div>
+                  <div class="section-sub">Personalize os prompts usados para geração (avançado)</div>
+                </div>
+                <div class="section-right">
+                  <div class="inline" style="gap: 0.5rem;">
+                    <InputSwitch v-model="recreateUseCustomPrompts" />
+                    <span class="muted tiny">{{ recreateUseCustomPrompts ? 'Ativo' : 'Desativado' }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="recreateUseCustomPrompts" class="grid">
+                <div class="blk blk-wide">
+                  <div class="lbl">System Prompt</div>
+                  <Textarea
+                    v-model="recreateCustomSystemPrompt"
+                    rows="4"
+                    class="w-100"
+                    placeholder="Prompt de sistema que define o comportamento base do modelo..."
+                  />
+                  <div class="muted tiny" style="margin-top: 4px;">
+                    Define o papel e comportamento do modelo.
+                  </div>
+                </div>
+
+                <div class="blk blk-wide">
+                  <div class="lbl">Diretrizes (Guidelines)</div>
+                  <Textarea
+                    v-model="recreateCustomGuidelines"
+                    rows="6"
+                    class="w-100"
+                    placeholder="Diretrizes de qualidade para criação de flashcards..."
+                  />
+                  <div class="muted tiny" style="margin-top: 4px;">
+                    Regras de qualidade (SuperMemo, Justin Sung, etc).
+                  </div>
+                </div>
+
+                <div class="blk blk-wide">
+                  <div class="support" style="margin-top: 8px;">
+                    <Button
+                      icon="pi pi-refresh"
+                      label="Restaurar padrões"
+                      severity="secondary"
+                      outlined
+                      size="small"
+                      @click="() => {
+                        recreateCustomSystemPrompt = defaultPrompts.system?.cloze || ''
+                        recreateCustomGuidelines = defaultPrompts.guidelines?.default || ''
+                      }"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div v-else class="blk">
+                <div class="muted tiny">
+                  Ative para personalizar os prompts de geração. Os prompts padrão são otimizados para criar flashcards de alta qualidade.
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="recreate-tip">
             <i class="pi pi-lightbulb"></i>
             <div class="muted">
-              Dica: se quiser testar, use <b>Fácil</b> e <b>Quantidade=1</b> primeiro. Depois aumente a dificuldade/quantidade.
+              Dica: se quiser testar, use <b>Quantidade=1</b> primeiro. Depois aumente conforme necessário.
             </div>
           </div>
         </div>
@@ -2066,13 +2302,16 @@ onUnmounted(() => {
           <div class="dlg-footer">
             <div class="footer-left">
               <Tag class="pill" severity="secondary"><i class="pi pi-calculator mr-2" /> Estimativa: {{ estimatedCreates }}</Tag>
+              <Tag class="pill" :severity="getProviderSeverity(recreateModelProvider)">
+                <i class="pi pi-microchip mr-2" /> {{ getProviderLabel(recreateModelProvider) }}
+              </Tag>
             </div>
             <div class="footer-right">
               <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="recreateDialogVisible = false" />
               <Button
                 label="Recriar agora"
                 icon="pi pi-check"
-                :disabled="!canConfirmRecreate || !ankiHealth.ok || !ollamaHealth.ok || ollamaDifficultyReady === false"
+                :disabled="!canConfirmRecreate || !ankiHealth.ok || (recreateModelProvider === 'ollama' && !ollamaHealth.ok)"
                 :loading="recreating"
                 @click="confirmRecreate"
               />
