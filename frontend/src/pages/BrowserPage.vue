@@ -234,6 +234,8 @@ const ankiStatusTitle = computed(() => {
 // ----------------------
 const decks = ref([])
 const deck = ref('')
+const noteType = ref('')  // Filtro de tipo de nota
+const noteTypeFilterList = ref([])  // Lista de note types do Anki para o filtro
 const status = ref('is:review')
 const text = ref('')
 const advancedQuery = ref('')
@@ -315,12 +317,18 @@ function insertQuery(query) {
 const deckSelectOptions = computed(() => [{ label: 'Todos os decks', value: '' }, ...decks.value.map((d) => ({ label: d, value: d }))])
 const deckTargetOptions = computed(() => [{ label: 'Deck original', value: '' }, ...decks.value.map((d) => ({ label: d, value: d }))])
 
+const noteTypeSelectOptions = computed(() => [
+  { label: 'Todos os tipos', value: '' },
+  ...noteTypeFilterList.value.map((n) => ({ label: n, value: n }))
+])
+
 const queryBuilt = computed(() => {
   const adv = advancedQuery.value.trim()
   if (adv) return adv
 
   const parts = []
   if (deck.value) parts.push(`deck:"${deckQuerySafe(deck.value)}"`)
+  if (noteType.value) parts.push(`note:"${deckQuerySafe(noteType.value)}"`)
   if (status.value) parts.push(status.value)
   if (text.value.trim()) parts.push(text.value.trim())
 
@@ -383,10 +391,58 @@ function onSort(event) {
 const selected = ref([])
 const previewVisible = ref(false)
 const previewCard = ref(null)
+const selectingAll = ref(false)
 
 function openPreview(row) {
   previewCard.value = row
   previewVisible.value = true
+}
+
+// Selecionar todos os cartões da query atual
+async function selectAllCards() {
+  if (total.value === 0) {
+    notify('Nenhum cartão para selecionar.', 'info', 3000)
+    return
+  }
+
+  // Se já temos todos selecionados, limpar seleção
+  if (selected.value.length === total.value) {
+    selected.value = []
+    notify('Seleção limpa.', 'info', 2500)
+    return
+  }
+
+  selectingAll.value = true
+  addLog(`Selecionando todos os ${total.value} cartões...`, 'info')
+
+  try {
+    // Buscar todos os cards da query atual (sem limite de paginação)
+    const built = queryBuilt.value
+    const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=0&limit=${total.value}`
+    const r = await fetch(url)
+    const data = await readJsonSafe(r)
+
+    if (data?.__nonJson || data?.success === false) {
+      notify('Erro ao buscar todos os cartões.', 'error', 5000)
+      return
+    }
+
+    const allItems = Array.isArray(data?.items) ? data.items : []
+    selected.value = allItems
+
+    addLog(`Selecionados: ${allItems.length} cartões`, 'success')
+    notify(`${allItems.length} cartões selecionados.`, 'success', 3000)
+  } catch (e) {
+    addLog(`Erro ao selecionar todos: ${e?.message}`, 'error')
+    notify(e?.message || 'Erro ao selecionar cartões', 'error', 5000)
+  } finally {
+    selectingAll.value = false
+  }
+}
+
+function clearSelection() {
+  selected.value = []
+  notify('Seleção limpa.', 'info', 2500)
 }
 
 // ----------------------
@@ -417,6 +473,33 @@ async function fetchDecks() {
     addLog(`Decks fetch exception: ${e?.message || String(e)}`, 'error')
     notify(e?.message || String(e), 'warn', 6000)
     decks.value = []
+  }
+}
+
+async function fetchNoteTypeFilter() {
+  addLog('Fetching note types for filter...', 'info')
+  try {
+    const r = await fetch('/api/anki-models')
+    const data = await readJsonSafe(r)
+
+    if (data?.__nonJson) {
+      addLog(`Note types: non-JSON response head="${data.__head}"`, 'error')
+      noteTypeFilterList.value = []
+      return
+    }
+    if (!data?.success) {
+      addLog(`Note types error: ${data?.error || 'unknown'}`, 'warn')
+      noteTypeFilterList.value = []
+      return
+    }
+
+    // data.models é um objeto { modelName: [fields...], ... }
+    const modelNames = Object.keys(data.models || {}).sort()
+    noteTypeFilterList.value = modelNames
+    addLog(`Note types loaded: ${modelNames.length}`, 'success')
+  } catch (e) {
+    addLog(`Note types fetch exception: ${e?.message || String(e)}`, 'error')
+    noteTypeFilterList.value = []
   }
 }
 
@@ -473,7 +556,7 @@ async function fetchCards() {
 
 // Debounce filtros (skip during initialization to avoid flash)
 let debounce = null
-watch([deck, status, text, advancedQuery], () => {
+watch([deck, noteType, status, text, advancedQuery], () => {
   if (initializing.value) return  // Skip during URL param setup
   first.value = 0
   if (debounce) clearTimeout(debounce)
@@ -486,10 +569,10 @@ function onPage(e) {
   fetchCards()
 }
 
-// Refresh completo: decks + cards
+// Refresh completo: decks + cards + note types
 async function refreshAll() {
   addLog('Refreshing all data...', 'info')
-  await Promise.all([fetchDecks(), fetchCards()])
+  await Promise.all([fetchDecks(), fetchNoteTypeFilter(), fetchCards()])
   notify('Dados atualizados', 'success', 2500)
 }
 
@@ -577,6 +660,125 @@ const editSaving = ref(false)
 const editRow = ref(null)
 const editFields = ref([]) // [{order,name,value}]
 const editTags = ref([])
+
+// -------- Migração de Campos (Lote) --------
+const migrateDialogVisible = ref(false)
+const migrateSourceField = ref('')
+const migrateTargetField = ref('')
+const migrateConfirmed = ref(false)
+const migrateLoading = ref(false)
+const migrateAvailableFields = ref([])  // Lista de campos disponíveis no modelo
+
+// Contagem de notas únicas selecionadas para migração
+const migrateNotesCount = computed(() => {
+  const noteIds = new Set()
+  for (const card of selected.value || []) {
+    const nid = card?.noteId ?? card?.note ?? card?.note_id
+    if (nid) noteIds.add(nid)
+  }
+  return noteIds.size
+})
+
+const migrateFieldOptions = computed(() =>
+  migrateAvailableFields.value.map((f) => ({ label: f, value: f }))
+)
+
+const canMigrate = computed(() => {
+  return migrateSourceField.value &&
+         migrateTargetField.value &&
+         migrateSourceField.value !== migrateTargetField.value &&
+         selected.value?.length > 0 &&
+         migrateConfirmed.value
+})
+
+async function openMigrateDialog() {
+  if (!selected.value?.length) {
+    notify('Selecione cartões para migrar campos.', 'warn', 4000)
+    return
+  }
+
+  migrateSourceField.value = ''
+  migrateTargetField.value = ''
+  migrateConfirmed.value = false
+  migrateAvailableFields.value = []
+  migrateDialogVisible.value = true
+
+  // Buscar campos disponíveis baseado no primeiro card selecionado
+  const firstCard = selected.value[0]
+  const modelName = firstCard?.modelName
+  if (modelName) {
+    try {
+      const r = await fetch('/api/anki-models')
+      const data = await readJsonSafe(r)
+      if (data?.success && data.models?.[modelName]) {
+        migrateAvailableFields.value = data.models[modelName]
+      }
+    } catch (e) {
+      addLog(`Erro ao buscar campos: ${e?.message}`, 'error')
+    }
+  }
+}
+
+async function executeMigration() {
+  if (!canMigrate.value) return
+
+  migrateLoading.value = true
+  const startedAt = performance.now()
+
+  try {
+    const cardIds = selected.value.map((c) => c.cardId)
+
+    addLog(`Migração em lote: ${cardIds.length} cards | "${migrateSourceField.value}" → "${migrateTargetField.value}"`, 'info')
+
+    const r = await fetch('/api/anki-migrate-fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardIds,
+        sourceField: migrateSourceField.value,
+        targetField: migrateTargetField.value
+      })
+    })
+
+    const data = await readJsonSafe(r)
+    const elapsed = Math.round(performance.now() - startedAt)
+
+    if (data?.__nonJson) {
+      addLog(`Migração: non-JSON response head="${data.__head}"`, 'error')
+      notify('API /anki-migrate-fields não retornou JSON.', 'error', 9000)
+      return
+    }
+
+    if (r.status >= 400 || data?.success === false) {
+      const msg = data?.error || `Falha na migração (HTTP ${r.status}).`
+      addLog(`Migração error: ${msg}`, 'error')
+      notify(msg, 'error', 9000)
+      return
+    }
+
+    const { updated, skipped, failed, totalNotes } = data
+
+    addLog(`Migração concluída: notas=${totalNotes} atualizadas=${updated} puladas=${skipped} falhas=${failed} tempo=${elapsed}ms`, updated > 0 ? 'success' : 'warn')
+
+    if (updated > 0 && failed === 0) {
+      notify(`Migração concluída: ${updated} notas atualizadas.`, 'success', 5500)
+    } else if (updated > 0 && failed > 0) {
+      notify(`Migração parcial: ${updated} atualizadas, ${failed} falhas.`, 'warn', 6500)
+    } else if (failed > 0) {
+      notify(`Migração falhou: ${failed} erros.`, 'error', 6500)
+    } else {
+      notify(`Nenhuma nota atualizada (${skipped} puladas).`, 'info', 5000)
+    }
+
+    migrateDialogVisible.value = false
+    await fetchCards()
+  } catch (e) {
+    addLog(`Migração exception: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || String(e), 'error', 9000)
+  } finally {
+    migrateLoading.value = false
+  }
+}
 
 const editNoteId = computed(() => noteIdOf(editRow.value))
 const editMeta = computed(() => {
@@ -1409,7 +1611,7 @@ onMounted(async () => {
     }
   }
 
-  await fetchDecks()
+  await Promise.all([fetchDecks(), fetchNoteTypeFilter()])
   await fetchCards()
 
   // Enable watch for filter changes after initial load
@@ -1490,8 +1692,9 @@ onUnmounted(() => {
       <div class="filters card-surface" :class="{ 'filters-disabled': initializing }">
         <div class="filters-row">
           <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter class="w-22" placeholder="Deck" :disabled="initializing" />
-          <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-18" :disabled="initializing" />
-          <InputText v-model="text" class="w-22" placeholder="Buscar texto (Anki query terms)..." :disabled="initializing" />
+          <Select v-model="noteType" :options="noteTypeSelectOptions" optionLabel="label" optionValue="value" filter class="w-18" placeholder="Tipo de Nota" :disabled="initializing" />
+          <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-14" :disabled="initializing" />
+          <InputText v-model="text" class="w-18" placeholder="Buscar texto..." :disabled="initializing" />
           <div class="query-input-wrap">
             <InputText v-model="advancedQuery" class="query-input" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' :disabled="initializing" />
             <Button icon="pi pi-question-circle" text rounded class="query-help-btn" @click="(e) => queryHelpRef?.toggle(e)" title="Ajuda com sintaxe de busca" :disabled="initializing" />
@@ -1557,9 +1760,34 @@ onUnmounted(() => {
         </div>
 
         <div class="recreate-right">
+          <div class="selection-controls">
+            <Button
+              :icon="selected.length === total ? 'pi pi-times' : 'pi pi-check-square'"
+              :label="selected.length === total ? 'Limpar' : `Selecionar Todos (${total})`"
+              severity="secondary"
+              text
+              :loading="selectingAll"
+              :disabled="loading || total === 0"
+              @click="selectAllCards"
+              class="select-all-btn"
+            />
+            <Button
+              v-if="selected.length > 0 && selected.length !== total"
+              icon="pi pi-times"
+              severity="secondary"
+              text
+              @click="clearSelection"
+              title="Limpar seleção"
+              class="clear-btn"
+            />
+          </div>
+          <Button icon="pi pi-arrow-right-arrow-left" label="Migrar Campo" :disabled="!selected.length" @click="openMigrateDialog" severity="secondary" outlined />
           <Button icon="pi pi-language" label="Traduzir" :disabled="!selected.length" @click="openTranslateDialog" severity="info" />
           <Button icon="pi pi-sparkles" label="Gerar com LLM" :disabled="!selected.length" @click="openRecreateDialog" severity="help" />
-          <Tag severity="secondary" class="pill">Selecionados: {{ selected.length }}</Tag>
+          <Tag severity="info" class="pill selection-tag" :class="{ 'has-selection': selected.length > 0 }">
+            <i class="pi pi-check-square mr-2" />
+            {{ selected.length }} / {{ total }}
+          </Tag>
         </div>
       </div>
 
@@ -1848,6 +2076,133 @@ onUnmounted(() => {
             <div class="footer-right">
               <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="editDialogVisible = false" />
               <Button label="Salvar" icon="pi pi-save" :loading="editSaving" :disabled="editLoading || !editFields.length" @click="saveNoteEdits" />
+            </div>
+          </div>
+        </template>
+      </Dialog>
+
+      <!-- Modal Migrar Campo (Lote) -->
+      <Dialog v-model:visible="migrateDialogVisible" modal :draggable="false" class="dlg dlg-migrate modern-dialog" style="width:min(640px,96vw)" contentStyle="padding: 0;">
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon"><i class="pi pi-arrow-right-arrow-left"></i></div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">Migrar Conteúdo de Campo</div>
+                <div class="dlg-sub">Adiciona o conteúdo de um campo ao final de outro campo</div>
+              </div>
+            </div>
+            <div class="dlg-hdr-right">
+              <Tag severity="info" class="pill">
+                <i class="pi pi-id-card mr-2" />
+                {{ selected.length }} cards
+              </Tag>
+              <Tag severity="secondary" class="pill">
+                <i class="pi pi-file mr-2" />
+                {{ migrateNotesCount }} notas
+              </Tag>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body migrate-modal">
+          <!-- Stats info -->
+          <div class="migrate-stats">
+            <div class="migrate-stat">
+              <div class="stat-icon"><i class="pi pi-id-card"></i></div>
+              <div class="stat-content">
+                <div class="stat-value">{{ selected.length }}</div>
+                <div class="stat-label">Cartões selecionados</div>
+              </div>
+            </div>
+            <div class="migrate-stat">
+              <div class="stat-icon"><i class="pi pi-file"></i></div>
+              <div class="stat-content">
+                <div class="stat-value">{{ migrateNotesCount }}</div>
+                <div class="stat-label">Notas únicas</div>
+              </div>
+            </div>
+          </div>
+
+          <Divider />
+
+          <div class="migrate-fields-row">
+            <div class="migrate-field-col">
+              <label class="migrate-label">Campo Origem</label>
+              <Select
+                v-model="migrateSourceField"
+                :options="migrateFieldOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="Selecione o campo origem"
+                class="w-100"
+                :loading="!migrateAvailableFields.length"
+              />
+            </div>
+
+            <div class="migrate-arrow">
+              <i class="pi pi-arrow-right"></i>
+            </div>
+
+            <div class="migrate-field-col">
+              <label class="migrate-label">Campo Destino</label>
+              <Select
+                v-model="migrateTargetField"
+                :options="migrateFieldOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="Selecione o campo destino"
+                class="w-100"
+                :loading="!migrateAvailableFields.length"
+              />
+            </div>
+          </div>
+
+          <!-- Warning -->
+          <div class="migrate-warning">
+            <div class="warning-box warning-info">
+              <i class="pi pi-info-circle"></i>
+              <div class="warning-content">
+                <div class="warning-title">Como funciona a migração</div>
+                <div class="warning-text">
+                  O conteúdo do campo "<strong>{{ migrateSourceField || '...' }}</strong>" será <strong>adicionado ao final</strong> do campo
+                  "<strong>{{ migrateTargetField || '...' }}</strong>" em <strong>{{ migrateNotesCount }} notas</strong>.
+                  O conteúdo existente no campo destino será preservado.
+                </div>
+                <div class="warning-confirm">
+                  <InputSwitch v-model="migrateConfirmed" />
+                  <label @click="migrateConfirmed = !migrateConfirmed" style="cursor: pointer;">
+                    Confirmo que desejo realizar esta migração
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Info se os campos são iguais -->
+          <div v-if="migrateSourceField && migrateTargetField && migrateSourceField === migrateTargetField" class="migrate-info">
+            <i class="pi pi-info-circle"></i>
+            <span>Selecione campos diferentes para origem e destino.</span>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <div class="footer-left">
+              <Tag v-if="migrateAvailableFields.length" severity="secondary" class="pill">
+                {{ migrateAvailableFields.length }} campos disponíveis
+              </Tag>
+            </div>
+            <div class="footer-right">
+              <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="migrateDialogVisible = false" :disabled="migrateLoading" />
+              <Button
+                label="Migrar Campos"
+                icon="pi pi-arrow-right"
+                severity="help"
+                :disabled="!canMigrate"
+                :loading="migrateLoading"
+                @click="executeMigration"
+              />
             </div>
           </div>
         </template>
@@ -2800,6 +3155,29 @@ onUnmounted(() => {
 }
 .recreate-left, .recreate-right{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
 
+.selection-controls{
+  display:flex;
+  align-items:center;
+  gap: 4px;
+  padding-right: 8px;
+  border-right: 1px solid rgba(148,163,184,0.15);
+  margin-right: 4px;
+}
+.select-all-btn{
+  font-size: 13px;
+  white-space: nowrap;
+}
+.clear-btn{
+  padding: 6px 8px;
+}
+.selection-tag{
+  transition: all 0.2s ease;
+}
+.selection-tag.has-selection{
+  background: rgba(59,130,246,0.2);
+  border-color: rgba(59,130,246,0.4);
+}
+
 .query-hint{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 .muted{ opacity:.75; }
 .q{
@@ -3181,6 +3559,144 @@ onUnmounted(() => {
   align-items:center;
 }
 .field-name{ font-weight: 950; letter-spacing: -0.2px; }
+
+/* Migrate modal */
+.migrate-modal{ display:flex; flex-direction:column; gap: 16px; }
+.migrate-stats{
+  display:flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.migrate-stat{
+  flex: 1;
+  min-width: 140px;
+  display:flex;
+  gap: 12px;
+  align-items:center;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(255,255,255,0.02);
+}
+.stat-icon{
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(59,130,246,0.15);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color: #3b82f6;
+  font-size: 18px;
+}
+.stat-content{
+  display:flex;
+  flex-direction:column;
+  gap: 2px;
+}
+.stat-value{
+  font-size: 22px;
+  font-weight: 800;
+  color: rgba(255,255,255,0.95);
+  letter-spacing: -0.5px;
+}
+.stat-label{
+  font-size: 12px;
+  color: rgba(148,163,184,0.7);
+}
+.migrate-fields-row{
+  display:flex;
+  gap: 16px;
+  align-items:flex-start;
+}
+.migrate-field-col{
+  flex: 1;
+  display:flex;
+  flex-direction:column;
+  gap: 8px;
+}
+.migrate-arrow{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding-top: 32px;
+  color: rgba(148,163,184,0.6);
+  font-size: 20px;
+}
+.migrate-label{
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.7);
+}
+.migrate-warning{
+  margin-top: 4px;
+}
+.warning-box{
+  display:flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(245,158,11,0.35);
+  background: rgba(245,158,11,0.08);
+}
+.warning-box.warning-info{
+  border: 1px solid rgba(59,130,246,0.35);
+  background: rgba(59,130,246,0.08);
+}
+.warning-box > i{
+  color: #f59e0b;
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.warning-box.warning-info > i{
+  color: #3b82f6;
+}
+.warning-content{
+  display:flex;
+  flex-direction:column;
+  gap: 8px;
+}
+.warning-title{
+  font-weight: 700;
+  color: #f59e0b;
+  font-size: 14px;
+}
+.warning-box.warning-info .warning-title{
+  color: #3b82f6;
+}
+.warning-text{
+  font-size: 13px;
+  color: rgba(255,255,255,0.75);
+  line-height: 1.5;
+}
+.warning-confirm{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: rgba(255,255,255,0.85);
+}
+.migrate-info{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(59,130,246,0.35);
+  background: rgba(59,130,246,0.08);
+  font-size: 13px;
+  color: #3b82f6;
+}
+@media (max-width: 600px){
+  .migrate-fields-row{ flex-direction:column; }
+  .migrate-arrow{
+    padding-top: 0;
+    transform: rotate(90deg);
+    padding: 8px 0;
+  }
+}
 
 /* Translate modal */
 .translate-modal{ display:flex; flex-direction:column; gap: 12px; }
