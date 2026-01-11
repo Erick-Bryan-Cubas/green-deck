@@ -1462,6 +1462,150 @@ async def anki_note_update(req: AnkiNoteUpdateRequest):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+class AnkiMigrateFieldsRequest(BaseModel):
+    cardIds: List[int] = Field(default_factory=list)
+    sourceField: str
+    targetField: str
+
+@router.post("/anki-migrate-fields")
+async def anki_migrate_fields(req: AnkiMigrateFieldsRequest):
+    """
+    Migra conteúdo de um campo para outro em múltiplas notas.
+    Copia o valor do sourceField para o targetField em todas as notas dos cards selecionados.
+    """
+    request_id = str(uuid.uuid4())[:8]
+    started = time.time()
+
+    if not req.cardIds:
+        return JSONResponse(status_code=400, content={
+            "success": False,
+            "requestId": request_id,
+            "error": "Nenhum card selecionado."
+        })
+
+    if not req.sourceField or not req.targetField:
+        return JSONResponse(status_code=400, content={
+            "success": False,
+            "requestId": request_id,
+            "error": "Campos origem e destino são obrigatórios."
+        })
+
+    if req.sourceField == req.targetField:
+        return JSONResponse(status_code=400, content={
+            "success": False,
+            "requestId": request_id,
+            "error": "Campos origem e destino devem ser diferentes."
+        })
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # 1. Buscar info dos cards para obter noteIds únicos
+            cards_info = await ankiconnect(client, "cardsInfo", {"cards": req.cardIds})
+            cards_info = list(cards_info or [])
+
+            if not cards_info:
+                return JSONResponse(status_code=404, content={
+                    "success": False,
+                    "requestId": request_id,
+                    "error": "Nenhum card encontrado."
+                })
+
+            # Extrair noteIds únicos
+            note_ids = list(set(c.get("note") for c in cards_info if c.get("note")))
+
+            if not note_ids:
+                return JSONResponse(status_code=404, content={
+                    "success": False,
+                    "requestId": request_id,
+                    "error": "Nenhum noteId encontrado nos cards."
+                })
+
+            # 2. Buscar info das notas
+            notes_info = await ankiconnect(client, "notesInfo", {"notes": note_ids})
+            notes_info = list(notes_info or [])
+
+            # 3. Processar cada nota
+            updated = 0
+            skipped = 0
+            failed = 0
+            errors = []
+
+            for ni in notes_info:
+                note_id = ni.get("noteId")
+                fields_raw = ni.get("fields") or {}
+
+                # Verificar se os campos existem
+                if req.sourceField not in fields_raw:
+                    skipped += 1
+                    continue
+
+                if req.targetField not in fields_raw:
+                    skipped += 1
+                    continue
+
+                # Extrair valor do campo origem
+                source_val = fields_raw.get(req.sourceField)
+                if isinstance(source_val, dict):
+                    source_val = source_val.get("value", "")
+                source_val = str(source_val or "")
+
+                # Se origem está vazia, pular
+                if not source_val.strip():
+                    skipped += 1
+                    continue
+
+                # Extrair valor atual do campo destino
+                target_val = fields_raw.get(req.targetField)
+                if isinstance(target_val, dict):
+                    target_val = target_val.get("value", "")
+                target_val = str(target_val or "")
+
+                # Concatenar: adicionar conteúdo origem abaixo do destino
+                if target_val.strip():
+                    # Se destino já tem conteúdo, adiciona quebra de linha e o conteúdo origem
+                    new_value = f"{target_val}<br><br>{source_val}"
+                else:
+                    # Se destino está vazio, apenas usa o conteúdo origem
+                    new_value = source_val
+
+                # Atualizar nota
+                try:
+                    payload = {
+                        "note": {
+                            "id": note_id,
+                            "fields": {req.targetField: new_value}
+                        }
+                    }
+                    await ankiconnect(client, "updateNoteFields", payload)
+                    updated += 1
+                except Exception as e:
+                    failed += 1
+                    errors.append(f"noteId={note_id}: {str(e)[:100]}")
+
+            elapsed = round((time.time() - started) * 1000)
+
+            return {
+                "success": True,
+                "requestId": request_id,
+                "totalCards": len(req.cardIds),
+                "totalNotes": len(note_ids),
+                "updated": updated,
+                "skipped": skipped,
+                "failed": failed,
+                "errors": errors[:5] if errors else [],
+                "sourceField": req.sourceField,
+                "targetField": req.targetField,
+                "elapsedMs": elapsed
+            }
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "success": False,
+            "requestId": request_id,
+            "error": str(e)
+        })
+
+
 # =============================================================================
 # Translate via SLM/Ollama (traduz cards in-place preservando estrutura)
 # =============================================================================
