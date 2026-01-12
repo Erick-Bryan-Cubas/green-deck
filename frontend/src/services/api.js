@@ -698,11 +698,11 @@ async function extractDocumentPreview(file, maxPreviewChars = 2000) {
 }
 
 /**
- * Gets preview of each page in a PDF document
- * @param {File} file - PDF file
+ * Gets preview of each page in a document
+ * @param {File} file - Document file (PDF, DOCX, PPTX, etc.)
  * @returns {Promise<Object>} Preview result with page info
  */
-async function getPdfPagesPreview(file) {
+async function getDocumentPagesPreview(file) {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -724,14 +724,17 @@ async function getPdfPagesPreview(file) {
 
     return await response.json();
   } catch (error) {
-    console.error("Error getting PDF pages preview:", error);
+    console.error("Error getting document pages preview:", error);
     throw error;
   }
 }
 
+// Alias for backward compatibility
+const getPdfPagesPreview = getDocumentPagesPreview;
+
 /**
- * Extracts text from selected pages of a PDF
- * @param {File} file - PDF file
+ * Extracts text from selected pages of a document
+ * @param {File} file - Document file (PDF, DOCX, PPTX, etc.)
  * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
  * @param {string} quality - Extraction quality: 'raw', 'cleaned', or 'llm'
  * @returns {Promise<Object>} Extraction result with text from selected pages
@@ -836,7 +839,8 @@ export {
   getDocumentExtractionStatus,
   extractDocumentText,
   extractDocumentPreview,
-  getPdfPagesPreview,
+  getDocumentPagesPreview,
+  getPdfPagesPreview, // Alias for backward compatibility
   extractSelectedPages,
   getDefaultPrompts,
   rewriteCard,
