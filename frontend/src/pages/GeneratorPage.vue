@@ -37,7 +37,7 @@ import LazyQuillEditor from '@/components/LazyQuillEditor.vue'
 import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
-import PdfUpload from '@/components/PdfUpload.vue'
+import DocumentUpload from '@/components/DocumentUpload.vue'
 import PromptEditor from '@/components/PromptEditor.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
 import { useRouter } from 'vue-router'
@@ -2801,8 +2801,8 @@ const contextHasSelection = ref(false)
 const contextHasHighlight = ref(false)
 const contextSelectedText = ref('')
 
-// PDF Upload ref
-const pdfUploadRef = ref(null)
+// Document Upload ref
+const documentUploadRef = ref(null)
 
 function onEditorContextMenu(payload) {
   contextHasSelection.value = !!payload.hasSelection
@@ -2918,14 +2918,14 @@ function onContentChanged(payload) {
 }
 
 // ============================================================
-// PDF Upload Handlers
+// Document Upload Handlers
 // ============================================================
-// Dados das páginas do PDF para paginação no modo leitura
+// Dados das páginas do documento para paginação no modo leitura
 const pdfPagesContent = ref([])  // Array com { page_number, text, word_count }
-const usePdfPagination = ref(false)  // Se deve usar paginação baseada no PDF
+const usePdfPagination = ref(false)  // Se deve usar paginação baseada no documento
 
-function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metadata }) {
-  console.log('[onPdfExtracted] pagesContent:', pagesContent?.length, 'pages:', pages)
+function onDocumentExtracted({ text, filename, pages, wordCount, pagesContent, metadata }) {
+  console.log('[onDocumentExtracted] pagesContent:', pagesContent?.length, 'pages:', pages)
 
   // Seta flag para evitar que onContentChanged dispare segmentação duplicada
   isLoadingPdf.value = true
@@ -2934,49 +2934,67 @@ function onPdfExtracted({ text, filename, pages, wordCount, pagesContent, metada
   pdfPagesContent.value = pagesContent || []
   usePdfPagination.value = pagesContent && pagesContent.length > 0
 
-  console.log('[onPdfExtracted] usePdfPagination set to:', usePdfPagination.value)
+  console.log('[onDocumentExtracted] usePdfPagination set to:', usePdfPagination.value)
 
-  // Insere o texto extraído do PDF no editor
+  // Determina o tipo de documento para o emoji
+  const ext = filename.split('.').pop()?.toLowerCase() || ''
+  const formatEmoji = getFormatEmoji(ext)
+
+  // Insere o texto extraído no editor
   if (editorRef.value?.setContent) {
     editorRef.value.setContent(text)
-    notify(`PDF "${filename}" carregado: ${wordCount} palavras`, 'success', 4000)
-    
-    // Cria uma nova sessão para o PDF
+    notify(`${formatEmoji} "${filename}" carregado: ${wordCount} palavras`, 'success', 4000)
+
+    // Cria uma nova sessão para o documento
     const newSession = {
       id: safeId(),
-      title: `📄 ${filename}`,
+      title: `${formatEmoji} ${filename}`,
       createdAt: new Date().toISOString(),
       lastModifiedAt: new Date().toISOString(),
-      source: 'pdf',
-      pdfFilename: filename,
-      pdfPages: pages,
-      pdfPagesContent: pagesContent || []  // Armazena na sessão
+      source: 'document',
+      documentFilename: filename,
+      documentPages: pages,
+      documentPagesContent: pagesContent || []
     }
     activeSessionId.value = newSession.id
     sessions.value.unshift(newSession)
-    
+
     // Atualiza estatísticas do modo leitura se estiver ativo
     if (immersiveReader.value && usePdfPagination.value) {
       readerTotalPages.value = pagesContent.length
       readerPage.value = 1
     }
-    
+
     // Pergunta se quer marcar tópicos (após delay para não conflitar)
     setTimeout(() => {
-      isLoadingPdf.value = false  // Reseta flag para permitir futuras detecções de paste
+      isLoadingPdf.value = false
       if (text.length >= 200) {
         scheduleTopicSegmentation(text)
       }
     }, 800)
   } else {
-    isLoadingPdf.value = false  // Reseta flag mesmo em caso de erro
+    isLoadingPdf.value = false
     notify('Erro ao inserir texto no editor', 'error', 4000)
   }
 }
 
-function onPdfError(error) {
-  console.error('PDF extraction error:', error)
-  // Toast já é exibido pelo componente PdfUpload
+function getFormatEmoji(ext) {
+  const emojis = {
+    'pdf': '📄',
+    'docx': '📝', 'doc': '📝',
+    'pptx': '📊', 'ppt': '📊',
+    'xlsx': '📈', 'xls': '📈',
+    'html': '🌐', 'htm': '🌐',
+    'md': '📑', 'markdown': '📑',
+    'adoc': '📋', 'asciidoc': '📋',
+    'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️', 'tiff': '🖼️', 'tif': '🖼️', 'bmp': '🖼️'
+  }
+  return emojis[ext] || '📄'
+}
+
+function onDocumentError(error) {
+  console.error('Document extraction error:', error)
+  // Toast já é exibido pelo componente DocumentUpload
 }
 
 // ============================================================
@@ -3415,11 +3433,11 @@ onBeforeUnmount(() => {
                 :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
               />
 
-              <!-- PDF Upload Button -->
-              <PdfUpload 
-                ref="pdfUploadRef"
-                @extracted="onPdfExtracted"
-                @error="onPdfError"
+              <!-- Document Upload Button -->
+              <DocumentUpload
+                ref="documentUploadRef"
+                @extracted="onDocumentExtracted"
+                @error="onDocumentError"
               />
 
               <Select
