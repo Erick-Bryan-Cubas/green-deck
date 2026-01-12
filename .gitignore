@@ -1,3 +1,7 @@
+# venv
+.venv/
+srs-venv/
+
 # Logs
 logs
 *.log
