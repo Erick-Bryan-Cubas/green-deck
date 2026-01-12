@@ -29,6 +29,43 @@ const sidebarOpen = ref(true)
 const sidebarExpanded = ref(false)
 const expandedMenus = ref(new Set())
 
+// Hover state for mini-popups
+const hoveredItem = ref(null)
+const hoverPosition = ref({ top: 0, left: 0 })
+let hoverTimeout = null
+
+function handleMouseEnter(event, item) {
+  if (sidebarExpanded.value) return
+  if (hoverTimeout) {
+    clearTimeout(hoverTimeout)
+    hoverTimeout = null
+  }
+  const rect = event.currentTarget.getBoundingClientRect()
+  hoverPosition.value = {
+    top: item.submenu ? rect.top : rect.top + rect.height / 2,
+    left: rect.right + 12
+  }
+  hoveredItem.value = item
+}
+
+function handleMouseLeave() {
+  // Delay closing to allow mouse to move to popup
+  hoverTimeout = setTimeout(() => {
+    hoveredItem.value = null
+  }, 100)
+}
+
+function handlePopupMouseEnter() {
+  if (hoverTimeout) {
+    clearTimeout(hoverTimeout)
+    hoverTimeout = null
+  }
+}
+
+function handlePopupMouseLeave() {
+  hoveredItem.value = null
+}
+
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
@@ -89,11 +126,12 @@ defineExpose({
         <div v-if="item.separator" class="sidebar-separator"></div>
         
         <div v-else-if="item.submenu" class="sidebar-item has-submenu">
-          <button 
-            class="sidebar-link" 
+          <button
+            class="sidebar-link"
             :class="{ 'expanded': expandedMenus.has(item.key), 'active': item.active }"
             @click="toggleSubmenu(item.key)"
-            v-tooltip.right="!sidebarExpanded ? { value: item.tooltip || item.label, showDelay: 300 } : null"
+            @mouseenter="(e) => handleMouseEnter(e, item)"
+            @mouseleave="handleMouseLeave"
           >
             <span class="sidebar-icon-wrap" :style="{ '--icon-color': item.iconColor }">
               <i :class="item.icon" class="sidebar-icon"></i>
@@ -134,12 +172,13 @@ defineExpose({
           </Transition>
         </div>
 
-        <button 
-          v-else 
-          class="sidebar-link" 
+        <button
+          v-else
+          class="sidebar-link"
           :class="{ 'active': item.active }"
           @click="handleItemClick(item)"
-          v-tooltip.right="!sidebarExpanded ? { value: item.tooltip || item.label, showDelay: 300 } : null"
+          @mouseenter="(e) => handleMouseEnter(e, item)"
+          @mouseleave="handleMouseLeave"
         >
           <span class="sidebar-icon-wrap" :style="{ '--icon-color': item.iconColor }">
             <i :class="item.icon" class="sidebar-icon"></i>
@@ -173,6 +212,39 @@ defineExpose({
       </Transition>
     </div>
   </aside>
+
+  <!-- Mini popup rendered outside sidebar to avoid overflow clipping -->
+  <Teleport to="body">
+    <Transition name="popup">
+      <div
+        v-if="hoveredItem && !sidebarExpanded"
+        class="sidebar-popup-portal"
+        :class="{ 'has-submenu': hoveredItem.submenu }"
+        :style="{ top: hoverPosition.top + 'px', left: hoverPosition.left + 'px' }"
+        @mouseenter="handlePopupMouseEnter"
+        @mouseleave="handlePopupMouseLeave"
+      >
+        <!-- Header with label and badge -->
+        <div class="popup-header">
+          <span class="sidebar-popup-label">{{ hoveredItem.label }}</span>
+          <Tag v-if="hoveredItem.badge" :severity="hoveredItem.badge > 0 ? 'success' : 'secondary'" class="sidebar-popup-badge">{{ hoveredItem.badge }}</Tag>
+        </div>
+
+        <!-- Submenu items if present -->
+        <div v-if="hoveredItem.submenu" class="popup-submenu">
+          <button
+            v-for="(sub, subIdx) in hoveredItem.submenu"
+            :key="subIdx"
+            class="popup-submenu-item"
+            :class="{ 'active': sub.active, 'disabled': sub.disabled }"
+            @click="!sub.disabled && handleItemClick(sub)"
+          >
+            <span class="popup-submenu-label">{{ sub.label }}</span>
+          </button>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -189,13 +261,13 @@ defineExpose({
   backdrop-filter: blur(24px);
   border: 1px solid rgba(148, 163, 184, 0.15);
   border-radius: 24px;
-  box-shadow: 
+  box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.4),
     0 0 0 1px rgba(255, 255, 255, 0.05) inset;
   z-index: 1000;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -218,7 +290,7 @@ defineExpose({
 }
 
 .sidebar.expanded .sidebar-header {
-  padding: 18px 20px;
+  padding: 12px 16px;
 }
 
 .sidebar-logo {
@@ -271,10 +343,14 @@ defineExpose({
 .sidebar-nav {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: visible;
   padding: 12px 8px;
   scrollbar-width: thin;
   scrollbar-color: rgba(16, 185, 129, 0.3) transparent;
+}
+
+.sidebar.expanded .sidebar-nav {
+  overflow-x: hidden;
 }
 
 .sidebar-nav::-webkit-scrollbar {
@@ -631,5 +707,145 @@ defineExpose({
   color: rgba(255, 255, 255, 0.35);
   font-weight: 500;
   padding-right: 4px;
+}
+
+</style>
+
+<!-- Global styles for teleported popup -->
+<style>
+.sidebar-popup-portal {
+  position: fixed;
+  transform: translateY(-50%);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.98) 0%, rgba(30, 41, 59, 0.98) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+/* With submenu: vertical layout */
+.sidebar-popup-portal.has-submenu {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+  min-width: 160px;
+  pointer-events: auto;
+  transform: none;
+}
+
+.sidebar-popup-portal .popup-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-popup-portal.has-submenu .popup-header {
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.sidebar-popup-portal::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 24px;
+  border: 6px solid transparent;
+  border-right-color: rgba(148, 163, 184, 0.2);
+}
+
+.sidebar-popup-portal::after {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 24px;
+  border: 5px solid transparent;
+  border-right-color: rgba(15, 23, 42, 0.98);
+}
+
+/* Adjust arrow position for simple popups */
+.sidebar-popup-portal:not(.has-submenu)::before,
+.sidebar-popup-portal:not(.has-submenu)::after {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.sidebar-popup-portal .sidebar-popup-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.sidebar-popup-portal .sidebar-popup-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+/* Submenu styles */
+.sidebar-popup-portal .popup-submenu {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+.sidebar-popup-portal .popup-submenu-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.sidebar-popup-portal .popup-submenu-item:hover:not(.disabled) {
+  background: rgba(99, 102, 241, 0.15);
+  color: #fff;
+}
+
+.sidebar-popup-portal .popup-submenu-item.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+}
+
+.sidebar-popup-portal .popup-submenu-item.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sidebar-popup-portal .popup-submenu-label {
+  flex: 1;
+}
+
+/* Popup transition */
+.popup-enter-active,
+.popup-leave-active {
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.popup-enter-from,
+.popup-leave-to {
+  opacity: 0;
+  transform: translateY(-50%) translateX(-8px);
+}
+
+.popup-enter-to,
+.popup-leave-from {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
 }
 </style>
