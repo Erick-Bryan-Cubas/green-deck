@@ -101,7 +101,7 @@ Green Deck is an open-source AI-powered flashcard generator that automatically c
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/green-deck.git
+git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
 # Create and activate virtual environment
@@ -277,7 +277,7 @@ Green Deck é um gerador de flashcards open-source com inteligência artificial 
 
 ```bash
 # Clone o repositório
-git clone https://github.com/your-username/green-deck.git
+git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
 # Crie e ative o ambiente virtual
