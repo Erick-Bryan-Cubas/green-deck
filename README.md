@@ -105,13 +105,31 @@ git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
 # Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
+python3 -m venv srs-venv
+source srs-venv/bin/activate  # Linux/macOS
 # or
-.\venv\Scripts\activate  # Windows
+.\srs-venv\Scripts\activate  # Windows
 
-# Install Python dependencies
+# Install Python dependencies with PIP
 pip install -r requirements.txt
+
+# Poetry (optional)
+sudo apt install python3-poetry # Linux
+# or
+pipx install poetry # Windows
+
+
+poetry add fastapi "uvicorn[standard]>=0.32.0" httpx python-dotenv numpy langid duckdb python-multipart
+poetry add --group dev ruff pytest pytest-asyncio
+poetry source add --priority=explicit pytorch-cu124 https://download.pytorch.org/whl/cu124
+poetry add --source pytorch-cu124 torch torchvision torchaudio
+
+poetry install
+poetry run python run.py
+# or
+poetry self add poetry-plugin-shell
+poetry shell
+python run.py
 
 # Install frontend dependencies and build
 cd frontend
@@ -281,13 +299,32 @@ git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
 # Crie e ative o ambiente virtual
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
+python3 -m venv srs-venv
+source srs-venv/bin/activate  # Linux/macOS
 # ou
-.\venv\Scripts\activate  # Windows
+.\srs-venv\Scripts\activate  # Windows
 
-# Instale as dependências Python
+# Instale as dependências Python com PIP
 pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Poetry (opcional)
+sudo apt install python3-poetry # Linux
+# ou
+pipx install poetry # Windows
+
+
+poetry add fastapi "uvicorn[standard]>=0.32.0" httpx python-dotenv numpy langid duckdb python-multipart
+poetry add --group dev ruff pytest pytest-asyncio
+poetry source add --priority=explicit pytorch-cu124 https://download.pytorch.org/whl/cu124
+poetry add --source pytorch-cu124 torch torchvision torchaudio
+
+poetry install
+poetry run python run.py
+# Ou
+poetry self add poetry-plugin-shell
+poetry shell
+python run.py
 
 # Instale as dependências do frontend e faça o build
 cd frontend
