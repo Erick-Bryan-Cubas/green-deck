@@ -110,12 +110,18 @@ defineExpose({
   <aside v-if="sidebarOpen" class="sidebar" :class="{ 'expanded': sidebarExpanded }">
     <div class="sidebar-header">
       <img :src="logoSrc" alt="Logo" class="sidebar-logo" />
-      <Button 
-        :icon="sidebarExpanded ? 'pi pi-chevron-left' : 'pi pi-chevron-right'" 
-        text 
-        rounded 
+
+      <!-- Brand logo when expanded -->
+      <Transition name="fade">
+        <img v-if="sidebarExpanded" src="/green-header.svg" alt="Green Deck" class="sidebar-brand-logo" />
+      </Transition>
+
+      <Button
+        :icon="sidebarExpanded ? 'pi pi-chevron-left' : 'pi pi-chevron-right'"
+        text
+        rounded
         severity="secondary"
-        @click="toggleSidebarExpand" 
+        @click="toggleSidebarExpand"
         class="sidebar-toggle"
         v-tooltip.right="sidebarExpanded ? 'Recolher menu' : 'Expandir menu'"
       />
@@ -707,6 +713,13 @@ defineExpose({
   color: rgba(255, 255, 255, 0.35);
   font-weight: 500;
   padding-right: 4px;
+}
+
+/* Sidebar Brand Logo (expanded state) */
+.sidebar-brand-logo {
+  height: 26px;
+  width: auto;
+  flex: 1;
 }
 
 </style>

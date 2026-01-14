@@ -438,16 +438,6 @@ onUnmounted(() => {
         <div class="header-left">
           <Button icon="pi pi-bars" text rounded @click="sidebarRef?.toggleSidebar()" class="menu-toggle" title="Menu" v-if="!sidebarRef?.sidebarOpen" />
           
-          <div class="brand">
-            <div class="brand-text">
-              <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
-              <div class="brand-subtitle">
-                Estatísticas da Coleção · <span v-if="firstDay && lastDay">{{ firstDay }} → {{ lastDay }}</span>
-                <span v-else>histórico completo</span>
-              </div>
-            </div>
-          </div>
-
           <div class="header-badges">
             <Tag severity="success" class="pill">/dashboard</Tag>
           </div>
