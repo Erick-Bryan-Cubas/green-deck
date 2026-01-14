@@ -3245,13 +3245,6 @@ onBeforeUnmount(() => {
         <div class="header-left">
           <Button icon="pi pi-bars" text rounded @click="sidebarRef?.toggleSidebar()" class="menu-toggle" title="Menu" v-if="!sidebarRef?.sidebarOpen" />
           
-          <div class="brand">
-            <div class="brand-text">
-              <img class="brand-header-logo" src="/green-header.svg" alt="Green Deck" />
-              <div v-if="!immersiveReader" class="brand-subtitle">Flashcard generator powered by AI 🎈</div>
-            </div>
-          </div>
-
           <div v-if="!immersiveReader" class="header-badges">
             <Tag v-if="hasDocumentContext" severity="success" class="pill">
               <i class="pi pi-sparkles mr-2" /> Contexto pronto
