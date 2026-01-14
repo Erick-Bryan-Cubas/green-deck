@@ -1304,6 +1304,21 @@ const generateModalVisible = ref(false)
 const generateStep = ref('1') // '1': Quantidade, '2': Prompts (string for PrimeVue Stepper)
 const customPrompts = ref(null)
 
+// Prompts salvos persistentes (localStorage)
+const LS_CUSTOM_PROMPTS_KEY = 'spaced-rep.custom-prompts.v1'
+const savedCustomPrompts = ref(null) // { systemPrompt, guidelines, generationPrompt }
+const promptSettingsVisible = ref(false)
+const promptSettingsEditorRef = ref(null)
+const pendingPromptSettings = ref(null) // Prompts pendentes sendo editados no dialog
+const defaultPromptsData = ref(null) // Cache dos prompts padrão do servidor
+
+// Computed: verifica se há prompts personalizados salvos
+const hasCustomPromptsSaved = computed(() => {
+  const saved = savedCustomPrompts.value
+  if (!saved) return false
+  return !!(saved.systemPrompt || saved.guidelines || saved.generationPrompt)
+})
+
 // Quantity mode options for SelectButton
 const quantityModeOptions = [
   { label: 'Automático', value: 'auto', icon: 'pi pi-sparkles' },
@@ -1314,6 +1329,85 @@ const presetOptions = [5, 10, 15, 20, 30]
 
 function onCustomPromptsUpdate(prompts) {
   customPrompts.value = prompts
+}
+
+// ============================================================
+// Gerenciamento de Prompts Persistentes
+// ============================================================
+function loadSavedPrompts() {
+  try {
+    const raw = localStorage.getItem(LS_CUSTOM_PROMPTS_KEY)
+    if (raw) {
+      savedCustomPrompts.value = JSON.parse(raw)
+    }
+  } catch (e) {
+    console.error('Erro ao carregar prompts salvos:', e)
+  }
+}
+
+function savePromptSettings(prompts) {
+  try {
+    if (!prompts || Object.keys(prompts).length === 0) {
+      // Se não há prompts customizados, remove do localStorage
+      localStorage.removeItem(LS_CUSTOM_PROMPTS_KEY)
+      savedCustomPrompts.value = null
+    } else {
+      localStorage.setItem(LS_CUSTOM_PROMPTS_KEY, JSON.stringify(prompts))
+      savedCustomPrompts.value = prompts
+    }
+    notify('Prompts salvos com sucesso', 'success', 3000)
+    promptSettingsVisible.value = false
+  } catch (e) {
+    console.error('Erro ao salvar prompts:', e)
+    notify('Erro ao salvar prompts', 'error', 4000)
+  }
+}
+
+function resetPromptsToDefaults() {
+  try {
+    localStorage.removeItem(LS_CUSTOM_PROMPTS_KEY)
+    savedCustomPrompts.value = null
+    notify('Prompts restaurados aos padrões', 'success', 3000)
+    promptSettingsVisible.value = false
+  } catch (e) {
+    console.error('Erro ao restaurar prompts:', e)
+    notify('Erro ao restaurar prompts', 'error', 4000)
+  }
+}
+
+async function openPromptSettings() {
+  // Carrega prompts padrão do servidor se ainda não tem
+  if (!defaultPromptsData.value) {
+    try {
+      const { getDefaultPrompts } = await import('@/services/api.js')
+      defaultPromptsData.value = await getDefaultPrompts()
+    } catch (e) {
+      console.error('Erro ao carregar prompts padrão:', e)
+      notify('Erro ao carregar prompts padrão', 'error', 4000)
+      return
+    }
+  }
+  // Inicializa com os prompts já salvos (ou null)
+  pendingPromptSettings.value = savedCustomPrompts.value ? { ...savedCustomPrompts.value } : null
+  promptSettingsVisible.value = true
+}
+
+function onPromptSettingsUpdate(prompts) {
+  pendingPromptSettings.value = prompts
+}
+
+// Obtém os prompts efetivos para geração (prioridade: temporários > salvos > padrões)
+function getEffectivePrompts() {
+  // Se há prompts temporários da sessão (do modal de geração), usa eles
+  if (customPrompts.value) {
+    return customPrompts.value
+  }
+  // Se há prompts salvos no localStorage, usa eles
+  if (savedCustomPrompts.value && hasCustomPromptsSaved.value) {
+    return savedCustomPrompts.value
+  }
+  // Caso contrário, retorna null (usa padrões do servidor)
+  return null
 }
 
 function openGenerateModal() {
@@ -2165,7 +2259,7 @@ async function generateCardsFromSelection() {
       currentAnalysisId.value,
       selectedValidationModel.value,
       selectedAnalysisModel.value,
-      customPrompts.value,
+      getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
       numCardsEnabled.value ? numCardsSlider.value : null
     )
 
@@ -2388,9 +2482,9 @@ async function editGenerateCardConfirm() {
       currentAnalysisId.value,
       selectedValidationModel.value,
       selectedAnalysisModel.value,
-      customPrompts.value
+      getEffectivePrompts() // Prioridade: temporários > salvos > padrões
     )
-    
+
     newCards.forEach(card => {
       card.src = `Card #${sourceCardId + 1}`
     })
@@ -2777,6 +2871,14 @@ const sidebarMenuItems = computed(() => [
     tooltip: 'Ajustes e preferências',
     submenu: [
       { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: '#10B981', command: openModelSelection },
+      {
+        label: 'Prompts de Geração',
+        icon: 'pi pi-file-edit',
+        iconColor: '#8B5CF6',
+        command: openPromptSettings,
+        badge: hasCustomPromptsSaved.value ? '✓' : null,
+        badgeColor: '#8B5CF6'
+      },
       { label: 'Chaves de API', icon: 'pi pi-key', iconColor: '#F59E0B', command: openApiKeys }
     ]
   },
@@ -3074,6 +3176,9 @@ onMounted(async () => {
     const savedAnalysisModel = localStorage.getItem('spaced-rep.selected-analysis-model')
     if (savedAnalysisModel) selectedAnalysisModel.value = savedAnalysisModel
   } catch {}
+
+  // carrega prompts personalizados salvos
+  loadSavedPrompts()
 
   ensureActiveSession()
 
@@ -4678,6 +4783,65 @@ onBeforeUnmount(() => {
         <Button label="Atualizar Lista" icon="pi pi-refresh" severity="secondary" outlined @click="fetchAvailableModels" :loading="isLoadingModels" />
         <Button label="Cancelar" severity="secondary" outlined @click="modelSelectionVisible = false" />
         <Button label="Salvar" icon="pi pi-check" @click="saveModelSelection" />
+      </template>
+    </Dialog>
+
+    <!-- PROMPT SETTINGS -->
+    <Dialog
+      v-model:visible="promptSettingsVisible"
+      header="Prompts de Geração"
+      modal
+      class="modern-dialog"
+      style="width: min(860px, 96vw);"
+    >
+      <div class="prompt-settings-info mb-3">
+        <div class="flex align-items-center gap-2 mb-2">
+          <i class="pi pi-info-circle text-primary" />
+          <span class="font-semibold">Personalize os prompts de geração de flashcards</span>
+        </div>
+        <p class="text-color-secondary text-sm m-0">
+          Os prompts salvos aqui serão usados automaticamente em todas as gerações futuras.
+          <br />
+          No modal de geração, você ainda pode fazer ajustes temporários que não afetam os salvos.
+        </p>
+      </div>
+
+      <div v-if="hasCustomPromptsSaved" class="saved-indicator mb-3">
+        <Tag severity="success" class="pill">
+          <i class="pi pi-check-circle mr-2" />
+          Prompts personalizados ativos
+        </Tag>
+      </div>
+
+      <PromptEditor
+        ref="promptSettingsEditorRef"
+        :cardType="cardType"
+        :initialPrompts="savedCustomPrompts"
+        mode="settings"
+        @update:customPrompts="onPromptSettingsUpdate"
+      />
+
+      <template #footer>
+        <div class="flex justify-content-between w-full">
+          <Button
+            v-if="hasCustomPromptsSaved"
+            label="Restaurar Padrões"
+            icon="pi pi-refresh"
+            severity="warning"
+            outlined
+            @click="resetPromptsToDefaults"
+          />
+          <div v-else></div>
+
+          <div class="flex gap-2">
+            <Button label="Cancelar" severity="secondary" outlined @click="promptSettingsVisible = false" />
+            <Button
+              label="Salvar Prompts"
+              icon="pi pi-save"
+              @click="savePromptSettings(pendingPromptSettings)"
+            />
+          </div>
+        </div>
       </template>
     </Dialog>
 
