@@ -880,31 +880,55 @@ async function restoreSessionById(id) {
 function clearCurrentSession() {
   const id = activeSessionId.value
 
-  cards.value = []
-  documentContext.value = ''
-  lastFullText.value = ''
-  lastEditorDelta.value = null
-  lastEditorHtml.value = ''
-  lastTextForAnalysis.value = ''
-
-  // Limpa paginação do PDF
-  pdfPagesContent.value = []
-  usePdfPagination.value = false
-
-  // Limpa topic segmentation
-  topicSegments.value = []
-  topicDefinitions.value = []
-  showTopicLegend.value = false
-
-  editorRef.value?.setDelta?.(null)
-
-  if (id) {
-    deleteSessionById(id)
+  // Cancela qualquer persistência pendente para evitar re-salvar a sessão
+  if (persistSessionTimer) {
+    clearTimeout(persistSessionTimer)
+    persistSessionTimer = null
   }
+  if (saveStatusTimer) {
+    clearTimeout(saveStatusTimer)
+    saveStatusTimer = null
+  }
+  saveStatus.value = 'idle'
 
-  activeSessionId.value = null
-  persistActiveSessionId(null)
-  ensureActiveSession()
+  // Bloqueia watchers de disparar persistência durante a limpeza
+  isRestoringSession.value = true
+
+  try {
+    cards.value = []
+    documentContext.value = ''
+    lastFullText.value = ''
+    lastEditorDelta.value = null
+    lastEditorHtml.value = ''
+    lastTextForAnalysis.value = ''
+
+    // Limpa paginação do PDF
+    pdfPagesContent.value = []
+    usePdfPagination.value = false
+
+    // Limpa topic segmentation
+    topicSegments.value = []
+    topicDefinitions.value = []
+    showTopicLegend.value = false
+
+    editorRef.value?.setDelta?.(null)
+
+    // Primeiro limpa o activeSessionId para evitar que deleteSessionById tente definir outro
+    activeSessionId.value = null
+    persistActiveSessionId(null)
+
+    // Agora deleta a sessão da lista
+    if (id) {
+      deleteSessionById(id)
+    }
+
+    ensureActiveSession()
+  } finally {
+    // Reativa watchers após um tick para garantir que todas as mudanças foram processadas
+    setTimeout(() => {
+      isRestoringSession.value = false
+    }, 0)
+  }
 
   notify('Sessão atual limpa.', 'info', 3000)
 
@@ -1772,6 +1796,14 @@ async function saveApiKeys() {
   refreshStoredKeys()
   apiKeyVisible.value = false
   notify('API keys saved successfully', 'success')
+
+  // Se alguma chave foi configurada, abre o modal de seleção de modelos
+  if (aKey || oKey || pKey) {
+    // Pequeno delay para melhor UX (deixa o usuário ver a notificação de sucesso)
+    setTimeout(() => {
+      openModelSelection()
+    }, 300)
+  }
 }
 
 // ============================================================
