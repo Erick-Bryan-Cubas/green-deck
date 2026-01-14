@@ -1,17 +1,17 @@
 <template>
   <div class="prompt-editor">
-    <!-- Toggle para ativar/desativar prompts customizados -->
-    <div class="flex align-items-center gap-2 mb-3">
+    <!-- Toggle para ativar/desativar prompts customizados (oculto no modo settings) -->
+    <div v-if="!isSettingsMode" class="flex align-items-center gap-2 mb-3">
       <Checkbox v-model="useCustomPrompts" :binary="true" inputId="useCustom" />
       <label for="useCustom" class="cursor-pointer">
         <i class="pi pi-pencil mr-1" />
         Usar prompts personalizados
       </label>
-      <Button 
+      <Button
         v-if="useCustomPrompts && hasChanges"
-        icon="pi pi-refresh" 
-        severity="secondary" 
-        text 
+        icon="pi pi-refresh"
+        severity="secondary"
+        text
         size="small"
         v-tooltip.top="'Restaurar padrões'"
         @click="resetToDefaults"
@@ -19,7 +19,7 @@
     </div>
 
     <!-- Accordion com as seções de prompts -->
-    <Accordion v-if="useCustomPrompts" :multiple="true" :activeIndex="activeIndices">
+    <Accordion v-if="useCustomPrompts || isSettingsMode" :multiple="true" :activeIndex="activeIndices">
       <!-- System Prompt -->
       <AccordionTab>
         <template #header>
@@ -95,10 +95,10 @@
     </Accordion>
 
     <!-- Preview do que será usado -->
-    <div v-if="useCustomPrompts" class="mt-3 p-3 surface-ground border-round">
+    <div v-if="useCustomPrompts || isSettingsMode" class="mt-3 p-3 surface-ground border-round">
       <div class="flex align-items-center gap-2 mb-2">
         <i class="pi pi-info-circle text-primary" />
-        <span class="font-semibold text-sm">O que será usado:</span>
+        <span class="font-semibold text-sm">{{ isSettingsMode ? 'Status das alterações:' : 'O que será usado:' }}</span>
       </div>
       <ul class="text-sm text-color-secondary m-0 pl-4">
         <li>System: {{ isSystemModified ? 'Customizado' : 'Padrão' }}</li>
@@ -123,10 +123,24 @@ const props = defineProps({
   cardType: {
     type: String,
     default: 'basic'
+  },
+  // Prompts iniciais (salvos no localStorage) - usado no modo settings
+  initialPrompts: {
+    type: Object,
+    default: null
+  },
+  // Modo: 'inline' (dentro do modal de geração) ou 'settings' (configurações persistentes)
+  mode: {
+    type: String,
+    default: 'inline',
+    validator: (v) => ['inline', 'settings'].includes(v)
   }
 })
 
 const emit = defineEmits(['update:customPrompts'])
+
+// Computed: verifica se está no modo settings
+const isSettingsMode = computed(() => props.mode === 'settings')
 
 // Estado
 const useCustomPrompts = ref(false)
@@ -250,9 +264,51 @@ watch(useCustomPrompts, async (val) => {
   }
 })
 
-onMounted(() => {
+// Inicializa com prompts salvos quando estiver no modo settings
+async function initializeFromSavedPrompts() {
+  if (!props.initialPrompts) return
+
+  // Carrega os padrões primeiro para comparação
+  await loadDefaultPrompts()
+
+  // Preenche os campos com os prompts salvos
+  if (props.initialPrompts.systemPrompt) {
+    customSystemPrompt.value = props.initialPrompts.systemPrompt
+  }
+  if (props.initialPrompts.guidelines) {
+    customGuidelines.value = props.initialPrompts.guidelines
+  }
+  if (props.initialPrompts.generationPrompt) {
+    customGenerationPrompt.value = props.initialPrompts.generationPrompt
+  }
+
+  // Ativa a edição se houver algo customizado
+  if (props.initialPrompts.systemPrompt || props.initialPrompts.guidelines || props.initialPrompts.generationPrompt) {
+    useCustomPrompts.value = true
+  }
+}
+
+// Watch para quando initialPrompts mudar (ex: ao abrir o dialog de settings)
+watch(() => props.initialPrompts, async (newVal) => {
+  if (isSettingsMode.value && newVal) {
+    await initializeFromSavedPrompts()
+  }
+}, { immediate: false })
+
+onMounted(async () => {
   // Pré-carrega os prompts padrão
-  loadDefaultPrompts()
+  await loadDefaultPrompts()
+
+  // No modo settings, inicializa com prompts salvos e ativa edição automaticamente
+  if (isSettingsMode.value) {
+    useCustomPrompts.value = true
+    if (props.initialPrompts) {
+      await initializeFromSavedPrompts()
+    } else {
+      // Se não há prompts salvos, preenche com padrões
+      fillWithDefaults()
+    }
+  }
 })
 </script>
 
