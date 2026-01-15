@@ -24,6 +24,7 @@ import ContextMenu from 'primevue/contextmenu'
 import Toast from 'primevue/toast'
 import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
+import Message from 'primevue/message'
 import Stepper from 'primevue/stepper'
 import StepList from 'primevue/steplist'
 import StepPanels from 'primevue/steppanels'
@@ -50,6 +51,8 @@ import {
   getStoredApiKeys,
   storeApiKeys,
   validateAnthropicApiKey,
+  hasAnyApiKey,
+  fetchOllamaInfo,
   rewriteCard
 } from '@/services/api.js'
 
@@ -1434,7 +1437,15 @@ function getEffectivePrompts() {
   return null
 }
 
-function openGenerateModal() {
+async function openGenerateModal() {
+  // Atualizar info do Ollama antes de abrir (para GPU/VRAM)
+  if (getModelInfo(selectedModel.value)?.provider === 'ollama') {
+    try {
+      ollamaInfo.value = await fetchOllamaInfo()
+    } catch (e) {
+      console.error('Erro ao buscar info do Ollama:', e)
+    }
+  }
   generateStep.value = '1'
   quantityMode.value = numCardsEnabled.value ? 'manual' : 'auto'
   generateModalVisible.value = true
@@ -1448,11 +1459,16 @@ function confirmGenerate() {
 }
 
 // Model selection
-const selectedModel = ref('qwen-flashcard')           // Modelo para geração de cards
-const selectedValidationModel = ref('qwen-flashcard') // Modelo para validação de qualidade
-const selectedAnalysisModel = ref('qwen-flashcard')   // Modelo para análise de texto
+const selectedModel = ref(null)           // Modelo para geração de cards (dinâmico)
+const selectedValidationModel = ref(null) // Modelo para validação de qualidade
+const selectedAnalysisModel = ref(null)   // Modelo para análise de texto
 const availableModels = ref([])
 const isLoadingModels = ref(false)
+
+// Ollama info state (para fallback e info GPU/VRAM)
+const ollamaInfo = ref(null)
+const isLoadingOllamaInfo = ref(false)
+const ollamaModelSelectionVisible = ref(false) // Modal para seleção quando múltiplos modelos
 
 // Listas filtradas por tipo de modelo
 const llmModels = computed(() => availableModels.value.filter(m => m.type !== 'embedding'))
@@ -1481,6 +1497,131 @@ function getTypeLabel(type) {
 
 function getModelInfo(modelName) {
   return availableModels.value.find(m => m.name === modelName)
+}
+
+// Helper para detectar modelos de embedding
+function isEmbeddingModel(name) {
+  if (!name) return false
+  const patterns = ['embed', 'nomic', 'mxbai', 'bge-', 'gte-', 'e5-', 'sentence-', 'all-minilm']
+  return patterns.some(p => name.toLowerCase().includes(p))
+}
+
+// Computed: modelos LLM do Ollama (excluindo embeddings)
+const ollamaLlmModels = computed(() => {
+  if (!ollamaInfo.value?.models) return []
+  return ollamaInfo.value.models.filter(m => !isEmbeddingModel(m.name))
+})
+
+// Computed: info do modelo em execução (para GPU/VRAM)
+const runningModelInfo = computed(() => {
+  if (!ollamaInfo.value?.running_models || !selectedModel.value) return null
+  return ollamaInfo.value.running_models.find(m =>
+    m.name === selectedModel.value ||
+    m.name.startsWith(selectedModel.value.split(':')[0])
+  )
+})
+
+// Computed: info atual do modelo (running ou inferido)
+const currentModelInfo = computed(() => {
+  if (runningModelInfo.value) return runningModelInfo.value
+  // Se modelo Ollama não está rodando, assume CPU (conservador)
+  if (ollamaInfo.value?.connected && getModelInfo(selectedModel.value)?.provider === 'ollama') {
+    return { using_gpu: false, size_vram_mb: 0, name: selectedModel.value }
+  }
+  return null
+})
+
+// Helper para formatar tamanho do modelo
+function formatModelSize(bytes) {
+  if (!bytes) return ''
+  const gb = bytes / (1024 * 1024 * 1024)
+  if (gb >= 1) return `${gb.toFixed(1)} GB`
+  const mb = bytes / (1024 * 1024)
+  return `${mb.toFixed(0)} MB`
+}
+
+// Seleciona um modelo Ollama do modal de seleção
+function selectOllamaModel(modelName) {
+  selectedModel.value = modelName
+  selectedValidationModel.value = modelName
+  selectedAnalysisModel.value = modelName
+  ollamaModelSelectionVisible.value = false
+  saveModelSelection()
+  notify(`Modelo selecionado: ${modelName}`, 'success', 3000)
+}
+
+// Inicializa seleção de modelo com fallback para Ollama
+async function initializeModelSelection() {
+  // 0. Atualizar estado das API keys
+  refreshStoredKeys()
+
+  // 1. Buscar info do Ollama
+  try {
+    isLoadingOllamaInfo.value = true
+    ollamaInfo.value = await fetchOllamaInfo()
+  } catch (e) {
+    console.error('Erro ao buscar info do Ollama:', e)
+  } finally {
+    isLoadingOllamaInfo.value = false
+  }
+
+  // 2. Verificar modelo salvo no localStorage
+  const savedModel = localStorage.getItem('spaced-rep.selected-model')
+  const savedValidationModel = localStorage.getItem('spaced-rep.selected-validation-model')
+  const savedAnalysisModel = localStorage.getItem('spaced-rep.selected-analysis-model')
+
+  // Helper: verifica se modelo requer API key que não está mais disponível
+  const isModelAvailable = (modelName) => {
+    if (!modelName) return false
+    const lower = modelName.toLowerCase()
+    // Modelos que requerem API keys
+    if (lower.includes('sonar') && !storedKeys.value.perplexityApiKey) return false
+    if ((lower.includes('gpt') || lower.startsWith('o1-')) && !storedKeys.value.openaiApiKey) return false
+    if (lower.includes('claude') && !storedKeys.value.anthropicApiKey) return false
+    // Modelos Ollama: verificar se está na lista de modelos disponíveis
+    const isOllamaModel = ollamaInfo.value?.models?.some(m => m.name === modelName)
+    if (isOllamaModel) return true
+    // Se não é Ollama e não foi filtrado acima, assume que é API model com key válida
+    return true
+  }
+
+  if (savedModel && isModelAvailable(savedModel)) {
+    // Usuário já tem modelo salvo E ele está disponível - usar
+    selectedModel.value = savedModel
+    selectedValidationModel.value = (savedValidationModel && isModelAvailable(savedValidationModel)) ? savedValidationModel : savedModel
+    selectedAnalysisModel.value = (savedAnalysisModel && isModelAvailable(savedAnalysisModel)) ? savedAnalysisModel : savedModel
+    return
+  }
+
+  // Se modelo salvo não está mais disponível, limpar do localStorage
+  if (savedModel && !isModelAvailable(savedModel)) {
+    localStorage.removeItem('spaced-rep.selected-model')
+    localStorage.removeItem('spaced-rep.selected-validation-model')
+    localStorage.removeItem('spaced-rep.selected-analysis-model')
+    console.log(`Modelo salvo "${savedModel}" não está mais disponível, resetando...`)
+  }
+
+  // 3. Lógica de fallback: Ollama disponível (independente de API keys)
+  if (ollamaInfo.value?.connected) {
+    const llmModels = ollamaLlmModels.value
+
+    if (llmModels.length === 1) {
+      // Apenas 1 modelo LLM disponível - usar automaticamente
+      selectedModel.value = llmModels[0].name
+      selectedValidationModel.value = llmModels[0].name
+      selectedAnalysisModel.value = llmModels[0].name
+      notify(`Usando modelo Ollama: ${llmModels[0].name}`, 'info', 3000)
+    } else if (llmModels.length > 1) {
+      // Mais de 1 modelo - mostrar modal de seleção
+      ollamaModelSelectionVisible.value = true
+    } else if (!hasAnyApiKey()) {
+      // Nenhum modelo LLM disponível e sem API keys
+      notify('Nenhum modelo LLM disponível no Ollama. Instale um modelo ou configure uma API key.', 'warn', 6000)
+    }
+  } else if (!hasAnyApiKey()) {
+    // Ollama não conectado e sem API keys
+    notify('Ollama não conectado. Inicie o Ollama ou configure uma API key.', 'warn', 6000)
+  }
 }
 
 // Busca
@@ -1744,9 +1885,16 @@ function openModelSelection() {
 
 function saveModelSelection() {
   try {
-    localStorage.setItem('spaced-rep.selected-model', selectedModel.value)
-    localStorage.setItem('spaced-rep.selected-validation-model', selectedValidationModel.value)
-    localStorage.setItem('spaced-rep.selected-analysis-model', selectedAnalysisModel.value)
+    // Salva apenas se houver valor (evita salvar 'null' como string)
+    if (selectedModel.value) {
+      localStorage.setItem('spaced-rep.selected-model', selectedModel.value)
+    }
+    if (selectedValidationModel.value) {
+      localStorage.setItem('spaced-rep.selected-validation-model', selectedValidationModel.value)
+    }
+    if (selectedAnalysisModel.value) {
+      localStorage.setItem('spaced-rep.selected-analysis-model', selectedAnalysisModel.value)
+    }
     modelSelectionVisible.value = false
     notify('Modelos salvos com sucesso', 'success', 3000)
   } catch (e) {
@@ -1783,19 +1931,19 @@ async function saveApiKeys() {
   const pKey = perplexityApiKey.value.trim()
 
   if (aKey && !validateAnthropicApiKey(aKey)) {
-    anthropicApiKeyError.value = 'Required: Enter a valid Claude API key (starts with sk-ant-)'
+    anthropicApiKeyError.value = 'Chave inválida: deve começar com sk-ant-'
     return
   }
 
   const ok = storeApiKeys(aKey, oKey, pKey, storeLocally.value)
   if (!ok) {
-    notify('Failed to save API keys', 'error')
+    notify('Falha ao salvar chaves de API', 'error')
     return
   }
 
   refreshStoredKeys()
   apiKeyVisible.value = false
-  notify('API keys saved successfully', 'success')
+  notify('Chaves de API salvas com sucesso', 'success')
 
   // Se alguma chave foi configurada, abre o modal de seleção de modelos
   if (aKey || oKey || pKey) {
@@ -1804,6 +1952,21 @@ async function saveApiKeys() {
       openModelSelection()
     }, 300)
   }
+}
+
+// Verifica se há alguma chave API salva
+const hasStoredApiKeys = computed(() => {
+  return !!(storedKeys.value.anthropicApiKey || storedKeys.value.openaiApiKey || storedKeys.value.perplexityApiKey)
+})
+
+// Limpa todas as chaves de API salvas
+function clearApiKeys() {
+  storeApiKeys('', '', '', true)
+  anthropicApiKey.value = ''
+  openaiApiKey.value = ''
+  perplexityApiKey.value = ''
+  refreshStoredKeys()
+  notify('Chaves de API removidas', 'info')
 }
 
 // ============================================================
@@ -3199,15 +3362,8 @@ onMounted(async () => {
     showLineNumbers.value = saved.showLineNumbers ?? true
   } catch {}
 
-  // carrega modelo selecionado
-  try {
-    const savedModel = localStorage.getItem('spaced-rep.selected-model')
-    if (savedModel) selectedModel.value = savedModel
-    const savedValidationModel = localStorage.getItem('spaced-rep.selected-validation-model')
-    if (savedValidationModel) selectedValidationModel.value = savedValidationModel
-    const savedAnalysisModel = localStorage.getItem('spaced-rep.selected-analysis-model')
-    if (savedAnalysisModel) selectedAnalysisModel.value = savedAnalysisModel
-  } catch {}
+  // Inicializa seleção de modelo com fallback para Ollama
+  await initializeModelSelection()
 
   // carrega prompts personalizados salvos
   loadSavedPrompts()
@@ -4238,11 +4394,66 @@ onBeforeUnmount(() => {
       :style="{ width: 'min(640px, 96vw)' }"
     >
       <template #header>
-        <div class="flex align-items-center gap-2">
-          <i class="pi pi-bolt text-primary" style="font-size: 1.25rem" />
-          <span class="font-semibold text-lg">Configurar Geração</span>
+        <div class="flex align-items-center justify-content-between w-full">
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-bolt text-primary" style="font-size: 1.25rem" />
+            <span class="font-semibold text-lg">Configurar Geração</span>
+          </div>
+          <!-- GPU/CPU Badge no header -->
+          <div v-if="currentModelInfo && getModelInfo(selectedModel)?.provider === 'ollama'" class="flex align-items-center">
+            <Tag :severity="currentModelInfo.using_gpu ? 'success' : 'warning'" class="pill">
+              <i :class="currentModelInfo.using_gpu ? 'pi pi-bolt' : 'pi pi-desktop'" class="mr-1" />
+              {{ currentModelInfo.using_gpu ? 'GPU' : 'CPU' }}
+            </Tag>
+          </div>
         </div>
       </template>
+
+      <!-- Model Info Panel -->
+      <div v-if="selectedModel" class="model-info-panel surface-ground border-round p-3 mb-3">
+        <div class="flex align-items-center justify-content-between">
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-microchip text-primary" />
+            <div>
+              <div class="font-semibold">{{ selectedModel }}</div>
+              <div class="text-sm text-color-secondary" v-if="getModelInfo(selectedModel)">
+                <Tag :severity="getProviderSeverity(getModelInfo(selectedModel).provider)" class="pill mr-2">
+                  {{ getProviderLabel(getModelInfo(selectedModel).provider) }}
+                </Tag>
+              </div>
+            </div>
+          </div>
+
+          <!-- GPU/VRAM Info (apenas Ollama) -->
+          <div v-if="currentModelInfo && getModelInfo(selectedModel)?.provider === 'ollama'" class="text-right">
+            <div class="flex align-items-center gap-2 justify-content-end">
+              <i :class="currentModelInfo.using_gpu ? 'pi pi-bolt text-green-500' : 'pi pi-desktop text-yellow-500'" />
+              <span class="font-medium">
+                {{ currentModelInfo.using_gpu ? 'GPU' : 'CPU' }}
+              </span>
+            </div>
+            <div v-if="currentModelInfo.size_vram_mb > 0" class="text-sm text-color-secondary">
+              VRAM: {{ currentModelInfo.size_vram_mb }} MB
+            </div>
+          </div>
+        </div>
+
+        <!-- ALERTA CPU -->
+        <Message v-if="currentModelInfo && !currentModelInfo.using_gpu && getModelInfo(selectedModel)?.provider === 'ollama'" severity="warn" :closable="false" class="mt-3 mb-0">
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-exclamation-triangle" />
+            <span>Processamento via CPU pode ser significativamente mais lento.</span>
+          </div>
+        </Message>
+      </div>
+
+      <!-- Aviso se nenhum modelo selecionado -->
+      <Message v-if="!selectedModel" severity="error" :closable="false" class="mb-3">
+        <div class="flex align-items-center gap-2">
+          <i class="pi pi-times-circle" />
+          <span>Nenhum modelo selecionado. Configure um modelo em <strong>Configurações → Modelos</strong>.</span>
+        </div>
+      </Message>
 
       <Stepper v-model:value="generateStep" class="generate-stepper">
         <StepList>
@@ -4629,41 +4840,62 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- API KEYS -->
-    <Dialog v-model:visible="apiKeyVisible" header="API Key Setup" modal class="modern-dialog" style="width: min(760px, 96vw);">
-      <div class="disclaimer">
-        ⚠️ I vibe coded this whole thing. I know nothing about security. Please don't use API keys with large balances or
-        auto-refills.
+    <Dialog v-model:visible="apiKeyVisible" header="Configurar Chaves de API" modal class="modern-dialog" style="width: min(760px, 96vw);">
+      <div class="api-info surface-ground border-round p-3 mb-3">
+        <div class="flex align-items-start gap-2">
+          <i class="pi pi-info-circle text-primary mt-1" />
+          <div>
+            <span class="font-semibold">Chaves de API são opcionais</span>
+            <p class="text-color-secondary text-sm m-0 mt-1">
+              Se você possui modelos locais no Ollama, não é necessário configurar chaves de API.
+              As chaves são armazenadas apenas no seu navegador e nunca são enviadas a servidores externos.
+            </p>
+          </div>
+        </div>
       </div>
 
       <div class="grid">
         <div class="col-12">
-          <label class="font-semibold">Claude API Key <span class="opt">(Optional)</span></label>
+          <label class="font-semibold">Chave Claude (Anthropic) <span class="opt">(Opcional)</span></label>
           <InputText v-model="anthropicApiKey" class="w-full" placeholder="sk-ant-api03-..." autocomplete="off" />
-          <small class="text-color-secondary">Get your API key from console.anthropic.com/keys</small>
+          <small class="text-color-secondary">Obtenha em console.anthropic.com/keys</small>
           <div v-if="anthropicApiKeyError" class="err">{{ anthropicApiKeyError }}</div>
         </div>
 
         <div class="col-12 mt-3">
-          <label class="font-semibold">OpenAI API Key <span class="opt">(Optional)</span></label>
+          <label class="font-semibold">Chave OpenAI <span class="opt">(Opcional)</span></label>
           <InputText v-model="openaiApiKey" class="w-full" placeholder="sk-..." autocomplete="off" />
-          <small class="text-color-secondary">Get your API key from platform.openai.com/api-keys</small>
+          <small class="text-color-secondary">Obtenha em platform.openai.com/api-keys</small>
         </div>
 
         <div class="col-12 mt-3">
-          <label class="font-semibold">Perplexity API Key <span class="opt">(Optional)</span></label>
+          <label class="font-semibold">Chave Perplexity <span class="opt">(Opcional)</span></label>
           <InputText v-model="perplexityApiKey" class="w-full" placeholder="pplx-..." autocomplete="off" />
-          <small class="text-color-secondary">Get your API key from perplexity.ai/settings/api</small>
+          <small class="text-color-secondary">Obtenha em perplexity.ai/settings/api</small>
         </div>
 
         <div class="col-12 mt-3 flex align-items-center gap-2">
           <Checkbox v-model="storeLocally" :binary="true" />
-          <label>Remember API keys on this device</label>
+          <label>Lembrar chaves neste dispositivo</label>
         </div>
       </div>
 
       <template #footer>
-        <Button label="Cancel" severity="secondary" outlined @click="apiKeyVisible = false" />
-        <Button label="Save API Keys" icon="pi pi-save" @click="saveApiKeys" />
+        <div class="flex justify-content-between w-full">
+          <Button
+            v-if="hasStoredApiKeys"
+            label="Limpar Chaves"
+            icon="pi pi-trash"
+            severity="danger"
+            outlined
+            @click="clearApiKeys"
+          />
+          <div v-else></div>
+          <div class="flex gap-2">
+            <Button label="Cancelar" severity="secondary" outlined @click="apiKeyVisible = false" />
+            <Button label="Salvar" icon="pi pi-save" @click="saveApiKeys" />
+          </div>
+        </div>
       </template>
     </Dialog>
 
@@ -4875,6 +5107,50 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </template>
+    </Dialog>
+
+    <!-- OLLAMA MODEL SELECTION (fallback) -->
+    <Dialog
+      v-model:visible="ollamaModelSelectionVisible"
+      modal
+      :closable="false"
+      header="Selecione um Modelo"
+      class="modern-dialog"
+      :style="{ width: 'min(500px, 96vw)' }"
+    >
+      <div class="flex flex-column gap-3">
+        <div class="text-center mb-3">
+          <i class="pi pi-server text-primary" style="font-size: 2.5rem" />
+          <p class="text-color-secondary mt-2 mb-0">
+            Detectamos múltiplos modelos no Ollama.<br />
+            Selecione qual deseja usar para geração de flashcards:
+          </p>
+        </div>
+
+        <div
+          v-for="model in ollamaLlmModels"
+          :key="model.name"
+          class="surface-ground border-round p-3 cursor-pointer hover:surface-hover transition-colors"
+          @click="selectOllamaModel(model.name)"
+        >
+          <div class="flex align-items-center justify-content-between">
+            <div>
+              <span class="font-semibold">{{ model.name }}</span>
+              <div class="text-sm text-color-secondary mt-1">
+                <span v-if="model.size">{{ formatModelSize(model.size) }}</span>
+                <span v-if="model.parameter_size"> · {{ model.parameter_size }}</span>
+                <span v-if="model.family"> · {{ model.family }}</span>
+              </div>
+            </div>
+            <i class="pi pi-chevron-right text-color-secondary" />
+          </div>
+        </div>
+
+        <div v-if="ollamaLlmModels.length === 0" class="text-center text-color-secondary p-4">
+          <i class="pi pi-exclamation-circle text-xl mb-2" />
+          <p class="m-0">Nenhum modelo LLM encontrado no Ollama.</p>
+        </div>
+      </div>
     </Dialog>
 
     <!-- CLEAR ALL CARDS CONFIRMATION -->
@@ -5625,12 +5901,8 @@ onBeforeUnmount(() => {
 }
 
 /* Dialogs */
-.disclaimer {
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(255, 255, 255, 0.05);
-  margin-bottom: 14px;
+.api-info {
+  border: 1px solid rgba(99, 102, 241, 0.2);
 }
 .model-info {
   padding: 10px 12px;

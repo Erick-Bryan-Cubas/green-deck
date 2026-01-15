@@ -6,11 +6,11 @@ load_dotenv()
 # Ollama
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_GENERATE_URL = os.getenv("OLLAMA_URL", f"{OLLAMA_HOST}/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen-flashcard")
-# OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b-instruct")
-OLLAMA_ANALYSIS_MODEL = os.getenv("OLLAMA_ANALYSIS_MODEL", "embeddinggemma")
+# Modelo padrão: None força seleção dinâmica baseada nos modelos disponíveis
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", None)
+OLLAMA_ANALYSIS_MODEL = os.getenv("OLLAMA_ANALYSIS_MODEL", None)
 # Modelo para validação de qualidade de cards (pode ser mais rápido/barato que o de geração)
-OLLAMA_VALIDATION_MODEL = os.getenv("OLLAMA_VALIDATION_MODEL", "qwen-flashcard")
+OLLAMA_VALIDATION_MODEL = os.getenv("OLLAMA_VALIDATION_MODEL", None)
 OLLAMA_EMBED_URL = os.getenv("OLLAMA_EMBED_URL", f"{OLLAMA_HOST}/api/embed")
 
 # Anki

@@ -76,6 +76,43 @@ function hasApiKeys() {
 }
 
 /**
+ * Checks if ANY API key is configured (Anthropic, OpenAI or Perplexity)
+ * Used for fallback logic to Ollama
+ * @returns {boolean} Whether any key is available
+ */
+function hasAnyApiKey() {
+  const keys = getStoredApiKeys();
+  return !!(keys.anthropicApiKey || keys.openaiApiKey || keys.perplexityApiKey);
+}
+
+/**
+ * Fetches detailed Ollama information including models, running models, and GPU/VRAM usage
+ * @returns {Promise<Object>} Ollama info object
+ */
+async function fetchOllamaInfo() {
+  try {
+    const response = await fetch("/api/ollama-info");
+    if (!response.ok) {
+      return {
+        connected: false,
+        models: [],
+        running_models: [],
+        gpu_info: { using_gpu: false, vram_used_mb: 0 }
+      };
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Error fetching Ollama info:", error);
+    return {
+      connected: false,
+      models: [],
+      running_models: [],
+      gpu_info: { using_gpu: false, vram_used_mb: 0 }
+    };
+  }
+}
+
+/**
  * Helper function to truncate text to a reasonable size
  * @param {string} text - Text to truncate
  * @param {number} maxLength - Maximum length
@@ -836,6 +873,8 @@ export {
   storeApiKeys,
   validateAnthropicApiKey,
   hasApiKeys,
+  hasAnyApiKey,
+  fetchOllamaInfo,
   getDocumentExtractionStatus,
   extractDocumentText,
   extractDocumentPreview,
