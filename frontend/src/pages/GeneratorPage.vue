@@ -42,6 +42,7 @@ import DocumentUpload from '@/components/DocumentUpload.vue'
 import PromptEditor from '@/components/PromptEditor.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
 import { useRouter } from 'vue-router'
+import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 
 // Services
 import {
@@ -58,6 +59,9 @@ import {
 
 const toast = useToast()
 const router = useRouter()
+
+// WebSocket status do Ollama (para detectar quando fica disponível)
+const { status: ollamaWsStatus } = useOllamaStatus()
 
 // ============================================================
 // Helpers
@@ -117,6 +121,12 @@ function clamp(n, min, max) {
 }
 
 // ============================================================
+// localStorage Keys
+// ============================================================
+const INTRO_SHOWN_KEY = 'spaced-rep.intro-shown'
+const LS_READER_KEY = 'spaced-rep.reader.v2'
+
+// ============================================================
 // Modo Leitura (Kindle full-screen + paginação real)
 // Melhorias:
 // - scroller = .ql-container (padding no container)
@@ -124,7 +134,6 @@ function clamp(n, min, max) {
 // - snap suave após scroll
 // - tema kindle claro só no campo de leitura/edição (header intacto)
 // ============================================================
-const LS_READER_KEY = 'spaced-rep.reader.v2'
 const immersiveReader = ref(false)
 const readerTwoPage = ref(true) // "spread" (2 páginas) quando a tela permitir
 const readerFontScale = ref(1) // 1.0 = normal
@@ -1571,6 +1580,11 @@ function selectOllamaModel(modelName) {
   ollamaModelSelectionVisible.value = false
   saveModelSelection()
   notify(`Modelo selecionado: ${modelName}`, 'success', 3000)
+
+  // Se estiver no fluxo de onboarding, mostra modal de API keys em seguida (se necessário)
+  if (isOnboardingFlow.value) {
+    setTimeout(() => showApiKeysIfNeeded(), 300)
+  }
 }
 
 // Inicializa seleção de modelo com fallback para Ollama
@@ -1597,15 +1611,26 @@ async function initializeModelSelection() {
   const isModelAvailable = (modelName) => {
     if (!modelName) return false
     const lower = modelName.toLowerCase()
+
     // Modelos que requerem API keys
     if (lower.includes('sonar') && !storedKeys.value.perplexityApiKey) return false
     if ((lower.includes('gpt') || lower.startsWith('o1-')) && !storedKeys.value.openaiApiKey) return false
     if (lower.includes('claude') && !storedKeys.value.anthropicApiKey) return false
-    // Modelos Ollama: verificar se está na lista de modelos disponíveis
-    const isOllamaModel = ollamaInfo.value?.models?.some(m => m.name === modelName)
-    if (isOllamaModel) return true
-    // Se não é Ollama e não foi filtrado acima, assume que é API model com key válida
-    return true
+
+    // Se é um modelo de API (não-Ollama) e passou nas verificações acima, está disponível
+    const isApiModel = lower.includes('sonar') || lower.includes('gpt') ||
+                       lower.startsWith('o1-') || lower.includes('claude')
+    if (isApiModel) return true
+
+    // Para modelos Ollama: verificar se existe na lista (correspondência parcial)
+    // Extrai nome base sem tag de versão (ex: "llama3.2:latest" -> "llama3.2")
+    const baseName = modelName.split(':')[0].toLowerCase()
+    const isOllamaModel = ollamaInfo.value?.models?.some(m => {
+      const modelBaseName = m.name.split(':')[0].toLowerCase()
+      return modelBaseName === baseName || m.name === modelName
+    })
+
+    return isOllamaModel
   }
 
   if (savedModel && isModelAvailable(savedModel)) {
@@ -1625,6 +1650,16 @@ async function initializeModelSelection() {
   }
 
   // 3. Lógica de fallback: Ollama disponível (independente de API keys)
+  // NOTA: Se estamos no fluxo de intro (primeira execução), NÃO abre modal Ollama aqui
+  // O fluxo de intro vai disparar os modais na ordem correta ao finalizar
+  const introShown = localStorage.getItem(INTRO_SHOWN_KEY)
+  const isFirstRun = !introShown
+
+  // Se já temos um modelo selecionado em memória, não precisa fazer nada
+  if (selectedModel.value) {
+    return
+  }
+
   if (ollamaInfo.value?.connected) {
     const llmModels = ollamaLlmModels.value
 
@@ -1633,19 +1668,57 @@ async function initializeModelSelection() {
       selectedModel.value = llmModels[0].name
       selectedValidationModel.value = llmModels[0].name
       selectedAnalysisModel.value = llmModels[0].name
-      notify(`Usando modelo Ollama: ${llmModels[0].name}`, 'info', 3000)
-    } else if (llmModels.length > 1) {
-      // Mais de 1 modelo - mostrar modal de seleção
+      if (!isFirstRun) {
+        notify(`Usando modelo Ollama: ${llmModels[0].name}`, 'info', 3000)
+      }
+    } else if (llmModels.length > 1 && !isFirstRun) {
+      // Mais de 1 modelo - mostrar modal de seleção (apenas se não é primeira execução)
       ollamaModelSelectionVisible.value = true
-    } else if (!hasAnyApiKey()) {
+    } else if (!hasAnyApiKey() && !isFirstRun) {
       // Nenhum modelo LLM disponível e sem API keys
       notify('Nenhum modelo LLM disponível no Ollama. Instale um modelo ou configure uma API key.', 'warn', 6000)
     }
-  } else if (!hasAnyApiKey()) {
+  } else if (!hasAnyApiKey() && !isFirstRun) {
     // Ollama não conectado e sem API keys
     notify('Ollama não conectado. Inicie o Ollama ou configure uma API key.', 'warn', 6000)
   }
 }
+
+// Watcher: detecta quando Ollama fica disponível (via WebSocket)
+// Se não há modelo selecionado e não há API keys, mostra modal de seleção
+watch(
+  () => ollamaWsStatus.value.connected,
+  async (isConnected, wasConnected) => {
+    // Só reage quando Ollama FICA disponível (transição de false para true)
+    // E não estamos no fluxo de intro (primeira execução)
+    const introShown = localStorage.getItem(INTRO_SHOWN_KEY)
+    if (isConnected && !wasConnected && !selectedModel.value && !hasAnyApiKey() && introShown) {
+      console.log('[Ollama] Ficou disponível, buscando modelos...')
+
+      // Buscar info atualizada do Ollama
+      try {
+        ollamaInfo.value = await fetchOllamaInfo()
+      } catch (e) {
+        console.error('Erro ao buscar info do Ollama:', e)
+        return
+      }
+
+      const llmModels = ollamaLlmModels.value
+
+      if (llmModels.length === 1) {
+        // Apenas 1 modelo - usar automaticamente
+        selectedModel.value = llmModels[0].name
+        selectedValidationModel.value = llmModels[0].name
+        selectedAnalysisModel.value = llmModels[0].name
+        notify(`Ollama conectado! Usando modelo: ${llmModels[0].name}`, 'success', 4000)
+      } else if (llmModels.length > 1) {
+        // Múltiplos modelos - mostrar modal de seleção
+        notify('Ollama conectado! Selecione um modelo.', 'info', 3000)
+        ollamaModelSelectionVisible.value = true
+      }
+    }
+  }
+)
 
 // Busca
 const cardSearch = ref('')
@@ -1923,6 +1996,64 @@ function saveModelSelection() {
   } catch (e) {
     notify('Erro ao salvar modelos', 'error', 3000)
   }
+}
+
+// ============================================================
+// Intro Modal (Onboarding)
+// ============================================================
+const introModalVisible = ref(false)
+const introStep = ref(1)
+const dontShowIntroAgain = ref(false)
+const isOnboardingFlow = ref(false) // Flag para controlar fluxo de onboarding
+const TOTAL_INTRO_STEPS = 3
+
+function nextIntroStep() {
+  if (introStep.value < TOTAL_INTRO_STEPS) {
+    introStep.value++
+  } else {
+    finishIntro()
+  }
+}
+
+function prevIntroStep() {
+  if (introStep.value > 1) {
+    introStep.value--
+  }
+}
+
+function skipIntro() {
+  finishIntro()
+}
+
+function finishIntro() {
+  if (dontShowIntroAgain.value) {
+    localStorage.setItem(INTRO_SHOWN_KEY, 'true')
+  }
+  introModalVisible.value = false
+  // Mantém flag de onboarding ativa para controlar fluxo pós-intro
+  isOnboardingFlow.value = true
+  // Dispara fluxo pós-intro (Ollama selection -> API keys)
+  triggerPostIntroFlow()
+}
+
+function triggerPostIntroFlow() {
+  // 1. Se Ollama tem múltiplos modelos, mostra seleção
+  if (ollamaLlmModels.value.length > 1) {
+    ollamaModelSelectionVisible.value = true
+  } else {
+    // 2. Senão, verifica se precisa configurar API keys
+    showApiKeysIfNeeded()
+  }
+}
+
+function showApiKeysIfNeeded() {
+  const keys = getStoredApiKeys()
+  if (!keys.anthropicApiKey && !keys.openaiApiKey && !keys.perplexityApiKey) {
+    // Nenhuma chave configurada, mostra modal de API keys
+    apiKeyVisible.value = true
+  }
+  // Finaliza fluxo de onboarding
+  isOnboardingFlow.value = false
 }
 
 // ============================================================
@@ -3400,8 +3531,16 @@ onMounted(async () => {
     await fetchDecks()
   } catch {}
 
+  // Verifica se é primeira execução (intro não foi mostrada)
+  const introShown = localStorage.getItem(INTRO_SHOWN_KEY)
+  if (!introShown) {
+    // Mostra modal de introdução
+    introModalVisible.value = true
+    // O fluxo pós-intro (Ollama selection -> API keys) será disparado ao finalizar a intro
+  }
+
   if (sessions.value.length && !cards.value.length && !normalizePlainText(lastFullText.value)) {
-    notify('Sessões encontradas. Use “Sessões” para restaurar.', 'info', 4500)
+    notify('Sessões encontradas. Use "Sessões" para restaurar.', 'info', 4500)
   }
 
   // atalhos
@@ -5135,44 +5274,202 @@ onBeforeUnmount(() => {
       </template>
     </Dialog>
 
+    <!-- INTRO MODAL (Onboarding) -->
+    <Dialog
+      v-model:visible="introModalVisible"
+      :closable="false"
+      modal
+      class="intro-modal-dialog"
+      :style="{ width: 'min(520px, 94vw)' }"
+    >
+      <template #header>
+        <div class="flex justify-content-between align-items-center w-full">
+          <span class="text-sm font-medium" style="color: rgba(148, 163, 184, 0.7)">{{ introStep }}/{{ TOTAL_INTRO_STEPS }}</span>
+          <div class="flex gap-2 align-items-center">
+            <span
+              v-for="n in TOTAL_INTRO_STEPS"
+              :key="n"
+              class="inline-block border-round-sm transition-colors transition-duration-300"
+              :style="{
+                width: n === introStep ? '2rem' : '0.5rem',
+                height: '0.35rem',
+                background: n === introStep ? 'linear-gradient(90deg, #10b981, #34d399)' : 'rgba(148, 163, 184, 0.3)'
+              }"
+            />
+          </div>
+          <Button
+            label="Pular"
+            @click="skipIntro"
+            text
+            size="small"
+            class="p-1 text-xs"
+            style="color: rgba(148, 163, 184, 0.7)"
+          />
+        </div>
+      </template>
+
+      <!-- Step 1: Boas-vindas -->
+      <div v-if="introStep === 1" class="text-center py-5">
+        <div
+          class="flex align-items-center justify-content-center mx-auto mb-4 border-round-xl"
+          style="width: 5rem; height: 5rem; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3)"
+        >
+          <i class="pi pi-bolt text-white" style="font-size: 2.5rem" />
+        </div>
+        <h2 class="text-2xl font-bold mb-3 mt-0" style="color: #f1f5f9">Bem-vindo ao Green Deck!</h2>
+        <p class="line-height-3 m-0 px-3" style="color: rgba(148, 163, 184, 0.9)">
+          Transforme qualquer conteudo em flashcards inteligentes usando IA.<br />
+          Estude de forma eficiente com repeticao espacada.
+        </p>
+      </div>
+
+      <!-- Step 2: Como funciona -->
+      <div v-else-if="introStep === 2" class="py-4">
+        <h2 class="text-xl font-bold mb-5 text-center mt-0" style="color: #f1f5f9">Como usar</h2>
+        <div class="flex flex-column gap-3 px-2">
+          <div
+            class="flex align-items-center gap-3 p-3 border-round-lg"
+            style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
+          >
+            <div
+              class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
+              style="width: 3rem; height: 3rem; background: linear-gradient(135deg, #10b981, #059669)"
+            >
+              <i class="pi pi-file-edit text-xl text-white" />
+            </div>
+            <div>
+              <span class="font-medium" style="color: #f1f5f9">Cole ou digite seu conteudo</span>
+              <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">Use o editor para adicionar textos, PDFs ou documentos</p>
+            </div>
+          </div>
+          <div
+            class="flex align-items-center gap-3 p-3 border-round-lg"
+            style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
+          >
+            <div
+              class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
+              style="width: 3rem; height: 3rem; background: linear-gradient(135deg, #10b981, #059669)"
+            >
+              <i class="pi pi-sparkles text-xl text-white" />
+            </div>
+            <div>
+              <span class="font-medium" style="color: #f1f5f9">Gere flashcards com IA</span>
+              <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">A IA analisa e cria cards de alta qualidade</p>
+            </div>
+          </div>
+          <div
+            class="flex align-items-center gap-3 p-3 border-round-lg"
+            style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
+          >
+            <div
+              class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
+              style="width: 3rem; height: 3rem; background: linear-gradient(135deg, #10b981, #059669)"
+            >
+              <i class="pi pi-sync text-xl text-white" />
+            </div>
+            <div>
+              <span class="font-medium" style="color: #f1f5f9">Estude ou exporte para Anki</span>
+              <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">Use repeticao espacada ou exporte seus decks</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Comecar -->
+      <div v-else-if="introStep === 3" class="text-center py-5">
+        <div
+          class="flex align-items-center justify-content-center mx-auto mb-4 border-round-xl"
+          style="width: 5rem; height: 5rem; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3)"
+        >
+          <i class="pi pi-check text-white" style="font-size: 2.5rem" />
+        </div>
+        <h2 class="text-xl font-bold mb-3 mt-0" style="color: #f1f5f9">Tudo pronto!</h2>
+        <p class="mb-5 px-3" style="color: rgba(148, 163, 184, 0.9)">
+          A seguir, voce podera configurar os modelos de IA para geracao dos cards.
+        </p>
+        <div
+          class="flex align-items-center justify-content-center gap-2 p-3 border-round-lg mx-auto"
+          style="max-width: 20rem; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
+        >
+          <Checkbox v-model="dontShowIntroAgain" :binary="true" inputId="dontShowAgain" />
+          <label for="dontShowAgain" class="cursor-pointer text-sm" style="color: rgba(148, 163, 184, 0.9)">
+            Nao mostrar esta introducao novamente
+          </label>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-content-between align-items-center w-full">
+          <Button
+            v-if="introStep > 1"
+            label="Anterior"
+            @click="prevIntroStep"
+            text
+            icon="pi pi-arrow-left"
+            style="color: rgba(148, 163, 184, 0.8)"
+          />
+          <span v-else></span>
+          <Button
+            :label="introStep === TOTAL_INTRO_STEPS ? 'Comecar' : 'Proximo'"
+            @click="nextIntroStep"
+            :icon="introStep === TOTAL_INTRO_STEPS ? 'pi pi-check' : 'pi pi-arrow-right'"
+            iconPos="right"
+            class="px-4"
+            :style="{
+              background: 'linear-gradient(135deg, #10b981, #059669)',
+              border: 'none',
+              color: 'white'
+            }"
+          />
+        </div>
+      </template>
+    </Dialog>
+
     <!-- OLLAMA MODEL SELECTION (fallback) -->
     <Dialog
       v-model:visible="ollamaModelSelectionVisible"
       modal
       :closable="false"
-      header="Selecione um Modelo"
-      class="modern-dialog"
+      class="ollama-selection-dialog"
       :style="{ width: 'min(500px, 96vw)' }"
     >
-      <div class="flex flex-column gap-3">
-        <div class="text-center mb-3">
-          <i class="pi pi-server text-primary" style="font-size: 2.5rem" />
-          <p class="text-color-secondary mt-2 mb-0">
-            Detectamos múltiplos modelos no Ollama.<br />
-            Selecione qual deseja usar para geração de flashcards:
-          </p>
+      <template #header>
+        <div class="flex align-items-center gap-3 w-full">
+          <div
+            class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
+            style="width: 2.5rem; height: 2.5rem; background: linear-gradient(135deg, #10b981, #059669)"
+          >
+            <i class="pi pi-server text-white" style="font-size: 1.2rem" />
+          </div>
+          <span class="font-semibold" style="color: #f1f5f9">Selecione um Modelo</span>
         </div>
+      </template>
+
+      <div class="flex flex-column gap-3">
+        <p class="m-0 mb-2" style="color: rgba(148, 163, 184, 0.9)">
+          Detectamos multiplos modelos no Ollama.<br />
+          Selecione qual deseja usar para geracao de flashcards:
+        </p>
 
         <div
           v-for="model in ollamaLlmModels"
           :key="model.name"
-          class="surface-ground border-round p-3 cursor-pointer hover:surface-hover transition-colors"
+          class="ollama-model-item flex align-items-center justify-content-between p-3 border-round-lg cursor-pointer transition-all transition-duration-200"
+          style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
           @click="selectOllamaModel(model.name)"
         >
-          <div class="flex align-items-center justify-content-between">
-            <div>
-              <span class="font-semibold">{{ model.name }}</span>
-              <div class="text-sm text-color-secondary mt-1">
-                <span v-if="model.size">{{ formatModelSize(model.size) }}</span>
-                <span v-if="model.parameter_size"> · {{ model.parameter_size }}</span>
-                <span v-if="model.family"> · {{ model.family }}</span>
-              </div>
+          <div>
+            <span class="font-semibold" style="color: #f1f5f9">{{ model.name }}</span>
+            <div class="text-sm mt-1" style="color: rgba(148, 163, 184, 0.7)">
+              <span v-if="model.size">{{ formatModelSize(model.size) }}</span>
+              <span v-if="model.parameter_size"> · {{ model.parameter_size }}</span>
+              <span v-if="model.family"> · {{ model.family }}</span>
             </div>
-            <i class="pi pi-chevron-right text-color-secondary" />
           </div>
+          <i class="pi pi-chevron-right" style="color: rgba(148, 163, 184, 0.5)" />
         </div>
 
-        <div v-if="ollamaLlmModels.length === 0" class="text-center text-color-secondary p-4">
+        <div v-if="ollamaLlmModels.length === 0" class="text-center p-4" style="color: rgba(148, 163, 184, 0.7)">
           <i class="pi pi-exclamation-circle text-xl mb-2" />
           <p class="m-0">Nenhum modelo LLM encontrado no Ollama.</p>
         </div>
@@ -7537,5 +7834,79 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
+}
+
+/* =========================
+   Intro Modal (Onboarding)
+========================= */
+:deep(.intro-modal-dialog) {
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+}
+
+:deep(.intro-modal-dialog .p-dialog-header) {
+  background:
+    radial-gradient(600px 300px at 50% -50%, rgba(16, 185, 129, 0.15), transparent 70%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(15, 23, 42, 0.95));
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  padding: 1rem 1.5rem;
+}
+
+:deep(.intro-modal-dialog .p-dialog-content) {
+  background:
+    radial-gradient(800px 400px at 20% 100%, rgba(99, 102, 241, 0.08), transparent 60%),
+    radial-gradient(600px 300px at 80% 0%, rgba(16, 185, 129, 0.06), transparent 50%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(17, 24, 39, 0.98));
+  padding: 1.5rem;
+}
+
+:deep(.intro-modal-dialog .p-dialog-footer) {
+  background:
+    radial-gradient(600px 200px at 50% 150%, rgba(16, 185, 129, 0.1), transparent 70%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(17, 24, 39, 0.98));
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  padding: 1rem 1.5rem;
+}
+
+/* =========================
+   Ollama Selection Modal
+========================= */
+:deep(.ollama-selection-dialog) {
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+}
+
+:deep(.ollama-selection-dialog .p-dialog-header) {
+  background:
+    radial-gradient(600px 300px at 50% -50%, rgba(16, 185, 129, 0.15), transparent 70%),
+    linear-gradient(180deg, rgba(17, 24, 39, 0.98), rgba(15, 23, 42, 0.95));
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  padding: 1rem 1.5rem;
+}
+
+:deep(.ollama-selection-dialog .p-dialog-content) {
+  background:
+    radial-gradient(800px 400px at 20% 100%, rgba(99, 102, 241, 0.08), transparent 60%),
+    radial-gradient(600px 300px at 80% 0%, rgba(16, 185, 129, 0.06), transparent 50%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(17, 24, 39, 0.98));
+  padding: 1.5rem;
+}
+
+.ollama-model-item:hover {
+  background: rgba(16, 185, 129, 0.15) !important;
+  border-color: rgba(16, 185, 129, 0.3) !important;
+  transform: translateX(4px);
+}
+
+.ollama-model-item:hover .pi-chevron-right {
+  color: #10b981 !important;
 }
 </style>
