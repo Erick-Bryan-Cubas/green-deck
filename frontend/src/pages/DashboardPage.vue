@@ -81,7 +81,7 @@ const sidebarMenuItems = computed(() => [
 ])
 
 const sidebarFooterActions = computed(() => [
-  { icon: 'pi pi-question-circle', tooltip: 'Ajuda', command: () => notify('Documentação em breve!', 'info') },
+  { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
   { icon: 'pi pi-moon', tooltip: 'Tema', command: () => notify('Tema alternativo em breve!', 'info') }
 ])
 

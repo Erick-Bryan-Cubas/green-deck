@@ -19,6 +19,11 @@ export default createRouter({
       name: 'browser',
       component: () => import('../pages/BrowserPage.vue')
     },
+    {
+      path: '/docs',
+      name: 'docs',
+      component: () => import('../pages/DocsPage.vue')
+    },
     // fallback
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ],
