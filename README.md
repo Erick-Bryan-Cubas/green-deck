@@ -146,9 +146,8 @@ The application will be available at `http://localhost:3000`
 ### Ollama Setup
 
 ```bash
-# Pull recommended models
-ollama pull qwen2.5:7b          # For card generation
-ollama pull nomic-embed-text    # For embeddings/analysis
+# Pull the models you want to use
+# Check available models at https://ollama.ai/library
 
 # (Optional) Create custom flashcard model
 ollama create qwen-flashcard -f models/qwen_flashcard_finetuned/Modelfile
@@ -341,9 +340,8 @@ A aplicação estará disponível em `http://localhost:3000`
 ### Configuração do Ollama
 
 ```bash
-# Baixe os modelos recomendados
-ollama pull qwen2.5:7b          # Para geração de cartões
-ollama pull nomic-embed-text    # Para embeddings/análise
+# Baixe os modelos que deseja usar
+# Confira os modelos disponíveis em https://ollama.ai/library
 
 # (Opcional) Crie modelo personalizado para flashcards
 ollama create qwen-flashcard -f models/qwen_flashcard_finetuned/Modelfile
