@@ -106,6 +106,17 @@ async def _fetch_ollama_models() -> set[str]:
     return models
 
 
+async def get_first_available_ollama_llm() -> str | None:
+    """
+    Retorna o primeiro modelo LLM disponível no Ollama.
+    Usado como fallback quando nenhum modelo é especificado.
+    Exclui modelos de embedding.
+    """
+    models = await _fetch_ollama_models()
+    llm_models = [m for m in models if not is_embedding_model(m)]
+    return llm_models[0] if llm_models else None
+
+
 async def _fetch_openai_models(api_key: str) -> set[str]:
     """Busca modelos disponíveis na API OpenAI."""
     models = set()

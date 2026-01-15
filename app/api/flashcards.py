@@ -36,7 +36,7 @@ from app.services.storage import (
 
 from app.services.prompt_provider import PromptProvider, get_prompt_provider
 from app.api.prompts import get_default_prompts_for_ui
-from app.api.models import get_provider_for_model
+from app.api.models import get_provider_for_model, get_first_available_ollama_llm
 from app.api.topic_segmentation import (
     segment_with_langextract,
     is_langextract_available,
@@ -177,6 +177,11 @@ async def _validate_src_with_llm(
     # Usa modelo de validação se não especificado
     if not model:
         model = OLLAMA_VALIDATION_MODEL
+        if not model:
+            model = await get_first_available_ollama_llm()
+        if not model:
+            logger.warning("No model available for SRC validation, skipping")
+            return cards_input  # Retorna cards sem validar
 
     # Formata os cards para o prompt com front, back e src
     cards_text = ""
@@ -307,8 +312,12 @@ async def _filter_cards_by_content_relevance_llm(
         return []
 
     if not model:
-        logger.warning("No model specified for LLM relevance filter, using default OLLAMA_MODEL")
         model = OLLAMA_MODEL
+        if not model:
+            model = await get_first_available_ollama_llm()
+        if not model:
+            logger.warning("No model available for LLM relevance filter, skipping")
+            return cards_input  # Retorna cards sem filtrar
 
     cards_text = ""
     for i, c in enumerate(cards_input):
@@ -771,6 +780,14 @@ async def analyze_text_stream(
     async def generate():
         try:
             analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
+
+            # Fallback: buscar primeiro modelo Ollama disponível
+            if not analysis_model:
+                analysis_model = await get_first_available_ollama_llm()
+                if not analysis_model:
+                    yield f"event: error\ndata: {json.dumps({'error': 'Nenhum modelo disponível para análise.'})}\n\n"
+                    return
+
             analysis_mode = request.analysisMode or "auto"
 
             # Detecta provider baseado no modelo e chaves API
@@ -1304,6 +1321,13 @@ async def segment_topics(
         try:
             analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
 
+            # Fallback: buscar primeiro modelo Ollama disponível
+            if not analysis_model:
+                analysis_model = await get_first_available_ollama_llm()
+                if not analysis_model:
+                    yield f"event: error\ndata: {json.dumps({'error': 'Nenhum modelo disponível para segmentação.'})}\n\n"
+                    return
+
             # Detecta provider
             use_openai = request.openaiApiKey and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
             use_perplexity = request.perplexityApiKey and "sonar" in analysis_model.lower()
@@ -1455,6 +1479,15 @@ async def generate_cards_stream(
     async def generate():
         try:
             model = request.model or OLLAMA_MODEL
+
+            # Fallback: buscar primeiro modelo Ollama disponível se nenhum especificado
+            if not model:
+                model = await get_first_available_ollama_llm()
+                if not model:
+                    yield f"event: error\ndata: {json.dumps({'error': 'Nenhum modelo disponível. Configure uma API key ou instale um modelo no Ollama.'})}\n\n"
+                    return
+                logger.info("Using fallback Ollama model: %s", model)
+
             logger.info("Generation model: %s", model)
 
             use_openai = request.openaiApiKey and ("gpt" in model.lower() or model.startswith("o1-"))
@@ -1868,7 +1901,12 @@ async def rewrite_card(request: CardRewriteRequest):
     - simplify: Simplifica o card
     """
     try:
-        model = request.model or OLLAMA_MODEL or "qwen-flashcard"
+        model = request.model or OLLAMA_MODEL
+        # Fallback: buscar primeiro modelo Ollama disponível
+        if not model:
+            model = await get_first_available_ollama_llm()
+            if not model:
+                return {"success": False, "error": "Nenhum modelo disponível"}
 
         # Detecta provider
         use_openai = request.openaiApiKey and ("gpt" in model.lower() or model.startswith("o1-"))
