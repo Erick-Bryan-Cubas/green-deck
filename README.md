@@ -100,44 +100,46 @@ Green Deck is an open-source AI-powered flashcard generator that automatically c
 ### Quick Start
 
 ```bash
-# Clone the repository
+# 1. Clone the repository
 git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
-# Create and activate virtual environment
-python3 -m venv srs-venv
-source srs-venv/bin/activate  # Linux/macOS
-# or
-.\srs-venv\Scripts\activate  # Windows
-
-# Install Python dependencies with PIP
-pip install -r requirements.txt
-
-# Poetry (optional)
-sudo apt install python3-poetry # Linux
-# or
-pipx install poetry # Windows
-
-
-poetry add fastapi "uvicorn[standard]>=0.32.0" httpx python-dotenv numpy langid duckdb python-multipart
-poetry add --group dev ruff pytest pytest-asyncio
-poetry source add --priority=explicit pytorch-cu124 https://download.pytorch.org/whl/cu124
-poetry add --source pytorch-cu124 torch torchvision torchaudio
-
-poetry install
-poetry run python run.py
-# or
-poetry self add poetry-plugin-shell
-poetry shell
-python run.py
-
-# Install frontend dependencies and build
+# 2. Install frontend dependencies and build
 cd frontend
 npm install
 npm run build
 cd ..
 
-# Start the application
+# 3. Create and activate virtual environment
+python3 -m venv srs-venv
+source srs-venv/bin/activate  # Linux/macOS
+# or
+.\srs-venv\Scripts\activate  # Windows
+
+# Install Python dependencies 
+## 4. 1. PIP
+pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+## Poetry (optional)
+sudo apt install python3-poetry # Linux
+# or
+pipx install poetry # Windows
+
+poetry add fastapi "uvicorn[standard]>=0.32.0" httpx python-dotenv numpy langid duckdb python-multipart
+poetry add --group dev ruff pytest pytest-asyncio
+poetry source add --priority=explicit pytorch-cu124 https://download.pytorch.org/whl/cu124
+poetry add --source pytorch-cu124 torch torchvision torchaudio
+poetry install
+
+# 5. Start the application
+python run.py
+
+## with Poetry
+poetry run python run.py
+# Or
+poetry self add poetry-plugin-shell
+poetry shell
 python run.py
 ```
 
@@ -293,45 +295,46 @@ Green Deck é um gerador de flashcards open-source com inteligência artificial 
 ### Início Rápido
 
 ```bash
-# Clone o repositório
+# 1. Clone o repositório
 git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
-# Crie e ative o ambiente virtual
-python3 -m venv srs-venv
-source srs-venv/bin/activate  # Linux/macOS
-# ou
-.\srs-venv\Scripts\activate  # Windows
-
-# Instale as dependências Python com PIP
-pip install -r requirements.txt
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-# Poetry (opcional)
-sudo apt install python3-poetry # Linux
-# ou
-pipx install poetry # Windows
-
-
-poetry add fastapi "uvicorn[standard]>=0.32.0" httpx python-dotenv numpy langid duckdb python-multipart
-poetry add --group dev ruff pytest pytest-asyncio
-poetry source add --priority=explicit pytorch-cu124 https://download.pytorch.org/whl/cu124
-poetry add --source pytorch-cu124 torch torchvision torchaudio
-
-poetry install
-poetry run python run.py
-# Ou
-poetry self add poetry-plugin-shell
-poetry shell
-python run.py
-
-# Instale as dependências do frontend e faça o build
+# 2. Instale as dependências do frontend e faça o build
 cd frontend
 npm install
 npm run build
 cd ..
 
-# Inicie a aplicação
+# 3. Crie e ative o ambiente virtual
+python3 -m venv srs-venv
+source srs-venv/bin/activate  # Linux/macOS
+# ou
+.\srs-venv\Scripts\activate  # Windows
+
+# Instale as dependências Python 
+## 4. 1. PIP
+pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+## Poetry (opcional)
+sudo apt install python3-poetry # Linux
+# ou
+pipx install poetry # Windows
+
+poetry add fastapi "uvicorn[standard]>=0.32.0" httpx python-dotenv numpy langid duckdb python-multipart
+poetry add --group dev ruff pytest pytest-asyncio
+poetry source add --priority=explicit pytorch-cu124 https://download.pytorch.org/whl/cu124
+poetry add --source pytorch-cu124 torch torchvision torchaudio
+poetry install
+
+# 5. Inicie a aplicação
+python run.py
+
+## com Poetry
+poetry run python run.py
+# Ou
+poetry self add poetry-plugin-shell
+poetry shell
 python run.py
 ```
 
