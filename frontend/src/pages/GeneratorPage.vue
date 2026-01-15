@@ -1451,6 +1451,29 @@ async function openGenerateModal() {
   generateModalVisible.value = true
 }
 
+// Atualiza info do Ollama periodicamente durante a geração
+let ollamaInfoInterval = null
+
+function startOllamaInfoPolling() {
+  if (getModelInfo(selectedModel.value)?.provider !== 'ollama') return
+  
+  // Atualiza a cada 2 segundos durante a geração
+  ollamaInfoInterval = setInterval(async () => {
+    try {
+      ollamaInfo.value = await fetchOllamaInfo()
+    } catch (e) {
+      console.error('Erro ao atualizar info do Ollama:', e)
+    }
+  }, 2000)
+}
+
+function stopOllamaInfoPolling() {
+  if (ollamaInfoInterval) {
+    clearInterval(ollamaInfoInterval)
+    ollamaInfoInterval = null
+  }
+}
+
 function confirmGenerate() {
   numCardsEnabled.value = (quantityMode.value === 'manual')
   generateModalVisible.value = false
@@ -2328,6 +2351,7 @@ async function generateCardsFromSelection() {
   try {
     generating.value = true
     startTimer('Gerando...')
+    startOllamaInfoPolling() // Inicia polling de info do Ollama
     const sourceLabel = getSourceLabel()
     addLog(`Starting card generation (${cardType.value}) from: ${sourceLabel}`, 'info')
     console.log('Card type being sent:', cardType.value, '| Source:', resolved.source)
@@ -2477,6 +2501,7 @@ async function generateCardsFromSelection() {
     }
   } finally {
     stopTimer()
+    stopOllamaInfoPolling() // Para polling de info do Ollama
     generating.value = false
     progressVisible.value = false
   }
@@ -3489,6 +3514,7 @@ onBeforeUnmount(() => {
   if (analyzeDebounce) clearTimeout(analyzeDebounce)
   if (persistSessionTimer) clearTimeout(persistSessionTimer)
   if (globalKeyHandler) window.removeEventListener('keydown', globalKeyHandler)
+  if (ollamaInfoInterval) clearInterval(ollamaInfoInterval)
 
   if (readerScrollRaf) cancelAnimationFrame(readerScrollRaf)
   if (readerSnapTimer) clearTimeout(readerSnapTimer)
