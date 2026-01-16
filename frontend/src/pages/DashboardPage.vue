@@ -432,7 +432,7 @@ onUnmounted(() => {
     version="v1.0.0"
   />
 
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'sidebar-expanded': sidebarRef?.sidebarExpanded }">
     <Toolbar class="app-header">
       <template #start>
         <div class="header-left">
@@ -868,7 +868,7 @@ onUnmounted(() => {
     0 0 0 1px rgba(255, 255, 255, 0.03) inset;
 }
 
-:deep(.sidebar.expanded) ~ .app-shell {
+.app-shell.sidebar-expanded {
   margin-left: 324px;
 }
 
