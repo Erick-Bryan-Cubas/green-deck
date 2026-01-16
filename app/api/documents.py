@@ -23,6 +23,7 @@ import logging
 from app.services.document_extractor import (
     document_extractor,
     ExtractionQuality,
+    PdfExtractor,
     SUPPORTED_FORMATS,
 )
 
@@ -126,6 +127,10 @@ async def extract_document(
         default=None,
         description="Tamanho do chunk em palavras (opcional)"
     ),
+    pdf_extractor: str = Form(
+        default="docling",
+        description="Extrator para PDFs: 'docling' (melhor estrutura) ou 'pdfplumber' (mais rapido)"
+    ),
 ):
     """
     Extrai texto de um documento.
@@ -147,6 +152,9 @@ async def extract_document(
             - "cleaned": Texto limpo com heuristicas (padrao)
             - "llm": Refinamento via LLM (nao implementado ainda)
         chunk_size: Se especificado, divide o texto em chunks de N palavras
+        pdf_extractor: Extrator para PDFs
+            - "docling": Melhor estrutura, converte para Markdown (padrao)
+            - "pdfplumber": Mais rapido, melhor para tabelas
 
     Returns:
         ExtractionResponse com o texto extraido
@@ -175,6 +183,14 @@ async def extract_document(
         )
 
     try:
+        pdf_extractor_enum = PdfExtractor(pdf_extractor)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Extrator invalido: {pdf_extractor}. Use: docling ou pdfplumber"
+        )
+
+    try:
         content = await file.read()
     except Exception as e:
         logger.exception("Erro ao ler arquivo")
@@ -189,7 +205,7 @@ async def extract_document(
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Arquivo vazio")
 
-    logger.info(f"Extraindo texto de: {filename} ({len(content)} bytes)")
+    logger.info(f"Extraindo texto de: {filename} ({len(content)} bytes) com extrator: {pdf_extractor}")
 
     try:
         result = await document_extractor.extract_from_bytes(
@@ -197,6 +213,7 @@ async def extract_document(
             filename=filename,
             quality=quality_enum,
             chunk_size=chunk_size,
+            pdf_extractor=pdf_extractor_enum,
         )
     except Exception as e:
         logger.exception("Erro na extracao")
@@ -351,6 +368,10 @@ async def extract_selected_pages(
     file: UploadFile = File(..., description="Arquivo do documento"),
     page_numbers: str = Form(..., description="Numeros das paginas separados por virgula (ex: 1,2,5)"),
     quality: str = Form(default="cleaned"),
+    pdf_extractor: str = Form(
+        default="docling",
+        description="Extrator para PDFs: 'docling' (melhor estrutura) ou 'pdfplumber' (mais rapido)"
+    ),
 ):
     """
     Extrai texto apenas das paginas selecionadas.
@@ -362,6 +383,7 @@ async def extract_selected_pages(
         file: Arquivo para upload
         page_numbers: Numeros das paginas a extrair (1-indexed), separados por virgula
         quality: Nivel de limpeza do texto
+        pdf_extractor: Extrator para PDFs (docling ou pdfplumber)
 
     Returns:
         ExtractionResponse com o texto das paginas selecionadas
@@ -401,6 +423,14 @@ async def extract_selected_pages(
         )
 
     try:
+        pdf_extractor_enum = PdfExtractor(pdf_extractor)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Extrator invalido: {pdf_extractor}. Use: docling ou pdfplumber"
+        )
+
+    try:
         content = await file.read()
     except Exception as e:
         logger.exception("Erro ao ler arquivo")
@@ -415,7 +445,7 @@ async def extract_selected_pages(
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Arquivo vazio")
 
-    logger.info("Extraindo paginas %s de: %s", pages_list, filename)
+    logger.info("Extraindo paginas %s de: %s com extrator: %s", pages_list, filename, pdf_extractor)
 
     try:
         result = await document_extractor.extract_pages(
@@ -423,6 +453,7 @@ async def extract_selected_pages(
             page_numbers=pages_list,
             filename=filename,
             quality=quality_enum,
+            pdf_extractor=pdf_extractor_enum,
         )
     except Exception as e:
         logger.exception("Erro na extracao de paginas")
