@@ -1,0 +1,106 @@
+name: "✨ Feature Request / Solicitação de Funcionalidade"
+description: "Suggest a new feature or enhancement / Sugerir uma nova funcionalidade ou melhoria"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🇺🇸 English
+        Thanks for suggesting a new feature! Please fill out the form below.
+
+        ## 🇧🇷 Português
+        Obrigado por sugerir uma nova funcionalidade! Por favor, preencha o formulário abaixo.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem Description / Descrição do Problema"
+      description: |
+        🇺🇸 Is your feature request related to a problem? Please describe.
+        🇧🇷 Sua solicitação está relacionada a um problema? Por favor, descreva.
+      placeholder: |
+        🇺🇸 A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+        🇧🇷 Uma descrição clara e concisa do problema. Ex. Eu sempre fico frustrado quando [...]
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Proposed Solution / Solução Proposta"
+      description: |
+        🇺🇸 Describe the solution you'd like.
+        🇧🇷 Descreva a solução que você gostaria.
+      placeholder: |
+        🇺🇸 A clear and concise description of what you want to happen.
+        🇧🇷 Uma descrição clara e concisa do que você quer que aconteça.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternatives Considered / Alternativas Consideradas"
+      description: |
+        🇺🇸 Describe any alternative solutions or features you've considered.
+        🇧🇷 Descreva quaisquer soluções ou funcionalidades alternativas que você considerou.
+      placeholder: |
+        🇺🇸 Alternative approaches you've thought about...
+        🇧🇷 Abordagens alternativas que você pensou...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: "Feature Area / Área da Funcionalidade"
+      description: |
+        🇺🇸 What area of the application does this feature relate to?
+        🇧🇷 A qual área da aplicação esta funcionalidade se relaciona?
+      options:
+        - "Flashcard Generation / Geração de Flashcards"
+        - "Study Mode / Modo de Estudo"
+        - "LLM Integration / Integração com LLM"
+        - "User Interface / Interface do Usuário"
+        - "Data Export/Import / Exportação/Importação de Dados"
+        - "Settings / Configurações"
+        - "Other / Outro"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "Priority / Prioridade"
+      description: |
+        🇺🇸 How important is this feature to you?
+        🇧🇷 Quão importante é esta funcionalidade para você?
+      options:
+        - "Nice to have / Seria bom ter"
+        - "Important / Importante"
+        - "Critical / Crítico"
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: "Additional Context / Contexto Adicional"
+      description: |
+        🇺🇸 Add any other context, mockups, or screenshots about the feature request here.
+        🇧🇷 Adicione qualquer outro contexto, mockups ou capturas de tela sobre a solicitação aqui.
+      placeholder: "Additional information... / Informações adicionais..."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: "Contribution / Contribuição"
+      description: |
+        🇺🇸 Would you be willing to contribute to this feature?
+        🇧🇷 Você estaria disposto a contribuir com esta funcionalidade?
+      options:
+        - label: "I would like to work on this feature / Eu gostaria de trabalhar nesta funcionalidade"
+          required: false
