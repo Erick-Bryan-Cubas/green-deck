@@ -88,8 +88,8 @@ async def openai_generate_stream(
     temperature = options.get("temperature", 0.0) if options else 0.0
     max_tokens = options.get("num_predict", 4096) if options else 4096
     
-    # O1 models não suportam temperature
-    if model.startswith("o1-"):
+    # Reasoning models (o1, o3, gpt-5) não suportam temperature
+    if model.startswith(("o1-", "o1", "o3-", "o3", "gpt-5")):
         payload = {
             "model": model,
             "messages": messages,
@@ -102,7 +102,7 @@ async def openai_generate_stream(
             "messages": messages,
             "stream": True,
             "temperature": temperature,
-            "max_tokens": max_tokens
+            "max_completion_tokens": max_tokens
         }
     
     logger.debug("OpenAI request: model=%s, messages=%d", model, len(messages))
