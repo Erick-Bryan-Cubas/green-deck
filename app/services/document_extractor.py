@@ -23,6 +23,12 @@ class ExtractionQuality(str, Enum):
     LLM = "llm"          # Texto refinado via LLM
 
 
+class PdfExtractor(str, Enum):
+    """Extrator a ser usado para PDFs."""
+    DOCLING = "docling"       # Docling: melhor estrutura, converte para Markdown
+    PDFPLUMBER = "pdfplumber" # pdfplumber: mais rapido, melhor para tabelas
+
+
 # Formatos suportados pelo Docling
 # Referencia: https://ds4sd.github.io/docling/
 SUPPORTED_FORMATS = {
@@ -138,10 +144,12 @@ class DocumentExtractor:
 
     def __init__(self):
         self._docling_available = False
-        self._pypdf_available = False
+        self._pdfplumber_available = False
+        self._pikepdf_available = False
         self._converter = None
         self._check_docling()
-        self._check_pypdf()
+        self._check_pdfplumber()
+        self._check_pikepdf()
 
     def _check_docling(self):
         """Verifica se Docling esta disponivel."""
@@ -155,16 +163,28 @@ class DocumentExtractor:
                 "Docling nao instalado. Instale com: pip install docling"
             )
 
-    def _check_pypdf(self):
-        """Verifica se pypdf esta disponivel para manipulacao de PDFs."""
+    def _check_pdfplumber(self):
+        """Verifica se pdfplumber esta disponivel para extracao de texto de PDFs."""
         try:
-            from pypdf import PdfReader, PdfWriter  # noqa: F401
-            self._pypdf_available = True
-            logger.info("pypdf disponivel para manipulacao de PDFs")
+            import pdfplumber  # noqa: F401
+            self._pdfplumber_available = True
+            logger.info("pdfplumber disponivel para extracao de texto de PDFs")
         except ImportError:
-            self._pypdf_available = False
+            self._pdfplumber_available = False
             logger.warning(
-                "pypdf nao instalado. Instale com: pip install pypdf"
+                "pdfplumber nao instalado. Instale com: pip install pdfplumber"
+            )
+
+    def _check_pikepdf(self):
+        """Verifica se pikepdf esta disponivel para manipulacao de PDFs."""
+        try:
+            import pikepdf  # noqa: F401
+            self._pikepdf_available = True
+            logger.info("pikepdf disponivel para manipulacao de PDFs")
+        except ImportError:
+            self._pikepdf_available = False
+            logger.warning(
+                "pikepdf nao instalado. Instale com: pip install pikepdf"
             )
 
     def _get_converter(self):
@@ -212,31 +232,223 @@ class DocumentExtractor:
         Returns:
             Bytes do novo PDF com apenas as paginas selecionadas
         """
-        from pypdf import PdfReader, PdfWriter
+        import pikepdf
         from io import BytesIO
 
-        reader = PdfReader(BytesIO(pdf_bytes))
-        writer = PdfWriter()
+        with pikepdf.open(BytesIO(pdf_bytes)) as pdf:
+            new_pdf = pikepdf.Pdf.new()
+            total_pages = len(pdf.pages)
 
-        total_pages = len(reader.pages)
+            for page_num in sorted(page_numbers):
+                if 1 <= page_num <= total_pages:
+                    new_pdf.pages.append(pdf.pages[page_num - 1])
 
-        for page_num in sorted(page_numbers):
-            if 1 <= page_num <= total_pages:
-                writer.add_page(reader.pages[page_num - 1])
+            output = BytesIO()
+            new_pdf.save(output)
+            output.seek(0)
 
-        output = BytesIO()
-        writer.write(output)
-        output.seek(0)
-
-        return output.read()
+            return output.read()
 
     def _get_pdf_page_count(self, pdf_bytes: bytes) -> int:
         """Obtem o numero total de paginas do PDF."""
-        from pypdf import PdfReader
+        import pdfplumber
         from io import BytesIO
 
-        reader = PdfReader(BytesIO(pdf_bytes))
-        return len(reader.pages)
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            return len(pdf.pages)
+
+    async def _extract_pdf_with_pdfplumber(
+        self,
+        pdf_bytes: bytes,
+        filename: str,
+        quality: ExtractionQuality,
+        chunk_size: Optional[int] = None,
+    ) -> ExtractionResult:
+        """
+        Extrai texto de um PDF usando pdfplumber.
+
+        Mais rapido que Docling, melhor para tabelas e layouts simples.
+        Nao preserva estrutura Markdown como Docling.
+
+        Args:
+            pdf_bytes: Conteudo binario do PDF
+            filename: Nome do arquivo
+            quality: Nivel de qualidade da extracao
+            chunk_size: Se especificado, divide o texto em chunks
+
+        Returns:
+            ExtractionResult com o texto extraido
+        """
+        if not self._pdfplumber_available:
+            return ExtractionResult(
+                text="",
+                error="pdfplumber nao esta instalado. Execute: pip install pdfplumber"
+            )
+
+        try:
+            import pdfplumber
+            from io import BytesIO
+
+            all_texts: List[str] = []
+            pages_content: List[Dict[str, Any]] = []
+            total_words = 0
+
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                total_pages = len(pdf.pages)
+
+                for i, page in enumerate(pdf.pages):
+                    page_text = page.extract_text() or ""
+
+                    if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
+                        page_text = self._clean_text(page_text)
+
+                    page_word_count = len(page_text.split())
+                    total_words += page_word_count
+
+                    pages_content.append({
+                        "page_number": i + 1,
+                        "text": page_text,
+                        "word_count": page_word_count,
+                    })
+
+                    all_texts.append(page_text)
+
+            PAGE_BREAK_MARKER = "\n\n<!-- PAGE_BREAK -->\n\n"
+            combined_text = PAGE_BREAK_MARKER.join(all_texts)
+
+            # Divide em chunks se solicitado
+            chunks = []
+            if chunk_size and chunk_size > 0:
+                chunks = self._chunk_text(combined_text, chunk_size)
+
+            logger.info(
+                "Extracao pdfplumber concluida: %d paginas, %d palavras",
+                total_pages,
+                total_words
+            )
+
+            return ExtractionResult(
+                text=combined_text,
+                pages=total_pages,
+                word_count=total_words,
+                quality=quality,
+                metadata={
+                    "filename": filename,
+                    "file_size": len(pdf_bytes),
+                    "format_type": "PDF Document",
+                    "extractor": "pdfplumber",
+                    "page_break_marker": "<!-- PAGE_BREAK -->",
+                },
+                chunks=chunks,
+                pages_content=pages_content,
+            )
+
+        except Exception as e:
+            logger.exception("Erro na extracao com pdfplumber: %s", e)
+            return ExtractionResult(
+                text="",
+                error=f"Erro na extracao: {str(e)}"
+            )
+
+    async def _extract_pdf_pages_with_pdfplumber(
+        self,
+        pdf_bytes: bytes,
+        page_numbers: List[int],
+        filename: str,
+        quality: ExtractionQuality,
+    ) -> ExtractionResult:
+        """
+        Extrai paginas especificas de um PDF usando pdfplumber.
+
+        Args:
+            pdf_bytes: Conteudo binario do PDF
+            page_numbers: Lista de numeros de paginas (1-indexed)
+            filename: Nome do arquivo
+            quality: Nivel de qualidade da extracao
+
+        Returns:
+            ExtractionResult com o texto extraido
+        """
+        if not self._pdfplumber_available:
+            return ExtractionResult(
+                text="",
+                error="pdfplumber nao esta instalado. Execute: pip install pdfplumber"
+            )
+
+        if not page_numbers:
+            return ExtractionResult(
+                text="",
+                error="Nenhuma pagina selecionada"
+            )
+
+        try:
+            import pdfplumber
+            from io import BytesIO
+
+            all_texts: List[str] = []
+            pages_content: List[Dict[str, Any]] = []
+            total_words = 0
+
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                total_pages = len(pdf.pages)
+                valid_pages = sorted([p for p in page_numbers if 1 <= p <= total_pages])
+
+                if not valid_pages:
+                    return ExtractionResult(
+                        text="",
+                        error=f"Paginas invalidas. O documento tem {total_pages} paginas."
+                    )
+
+                for page_num in valid_pages:
+                    page = pdf.pages[page_num - 1]
+                    page_text = page.extract_text() or ""
+
+                    if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
+                        page_text = self._clean_text(page_text)
+
+                    page_word_count = len(page_text.split())
+                    total_words += page_word_count
+
+                    pages_content.append({
+                        "page_number": page_num,
+                        "text": page_text,
+                        "word_count": page_word_count,
+                    })
+
+                    all_texts.append(page_text)
+
+            PAGE_BREAK_MARKER = "\n\n<!-- PAGE_BREAK -->\n\n"
+            combined_text = PAGE_BREAK_MARKER.join(all_texts)
+
+            logger.info(
+                "Extracao pdfplumber (paginas selecionadas) concluida: %d paginas, %d palavras",
+                len(valid_pages),
+                total_words
+            )
+
+            return ExtractionResult(
+                text=combined_text,
+                pages=len(valid_pages),
+                word_count=total_words,
+                quality=quality,
+                metadata={
+                    "filename": filename,
+                    "file_size": len(pdf_bytes),
+                    "selected_pages": valid_pages,
+                    "total_pages": total_pages,
+                    "format_type": "PDF Document",
+                    "extractor": "pdfplumber",
+                    "page_break_marker": "<!-- PAGE_BREAK -->",
+                },
+                pages_content=pages_content,
+            )
+
+        except Exception as e:
+            logger.exception("Erro na extracao de paginas com pdfplumber: %s", e)
+            return ExtractionResult(
+                text="",
+                error=f"Erro na extracao: {str(e)}"
+            )
 
     def is_available(self) -> bool:
         """Retorna True se Docling esta disponivel."""
@@ -248,6 +460,7 @@ class DocumentExtractor:
         filename: str = "document",
         quality: ExtractionQuality = ExtractionQuality.CLEANED,
         chunk_size: Optional[int] = None,
+        pdf_extractor: PdfExtractor = PdfExtractor.DOCLING,
     ) -> ExtractionResult:
         """
         Extrai texto de bytes de um documento.
@@ -257,16 +470,11 @@ class DocumentExtractor:
             filename: Nome do arquivo (para determinar formato)
             quality: Nivel de qualidade da extracao
             chunk_size: Se especificado, divide o texto em chunks de N palavras
+            pdf_extractor: Extrator a usar para PDFs (docling ou pdfplumber)
 
         Returns:
             ExtractionResult com o texto extraido
         """
-        if not self._docling_available:
-            return ExtractionResult(
-                text="",
-                error="Docling nao esta instalado. Execute: pip install docling"
-            )
-
         ext = Path(filename).suffix.lower()
         if not ext:
             ext = ".pdf"  # Default para PDF
@@ -277,11 +485,24 @@ class DocumentExtractor:
                 error=f"Formato nao suportado: {ext}. Formatos validos: {', '.join(SUPPORTED_FORMATS.keys())}"
             )
 
+        # Para PDFs, permite escolher o extrator
+        if ext == ".pdf" and pdf_extractor == PdfExtractor.PDFPLUMBER:
+            return await self._extract_pdf_with_pdfplumber(
+                file_bytes, filename, quality, chunk_size
+            )
+
+        # Para outros formatos ou PDFs com Docling
+        if not self._docling_available:
+            return ExtractionResult(
+                text="",
+                error="Docling nao esta instalado. Execute: pip install docling"
+            )
+
         # Salva bytes em arquivo temporario (Docling precisa de path)
         with tempfile.NamedTemporaryFile(
             suffix=ext,
             delete=False,
-            prefix="spaced_rep_"
+            prefix="green_deck_doc_extract_"
         ) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
@@ -294,6 +515,7 @@ class DocumentExtractor:
             )
             result.metadata["original_filename"] = filename
             result.metadata["format_type"] = SUPPORTED_FORMATS.get(ext, "Unknown")
+            result.metadata["extractor"] = "docling"
             return result
         finally:
             try:
@@ -500,8 +722,8 @@ class DocumentExtractor:
         ext = Path(filename).suffix.lower()
         format_type = SUPPORTED_FORMATS.get(ext, "Unknown")
 
-        # Para PDFs, tenta usar pypdf para preview rapido
-        if ext == ".pdf" and self._pypdf_available:
+        # Para PDFs, tenta usar pdfplumber para preview rapido
+        if ext == ".pdf" and self._pdfplumber_available:
             return await self._get_pdf_preview(file_bytes, filename, preview_chars)
 
         # Para outros formatos, extrai com Docling
@@ -573,36 +795,36 @@ class DocumentExtractor:
         filename: str,
         preview_chars: int,
     ) -> DocumentPreviewResult:
-        """Preview especifico para PDFs usando pypdf."""
+        """Preview especifico para PDFs usando pdfplumber."""
         try:
-            from pypdf import PdfReader
+            import pdfplumber
             from io import BytesIO
 
-            reader = PdfReader(BytesIO(pdf_bytes))
-            total_pages = len(reader.pages)
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                total_pages = len(pdf.pages)
 
-            pages_info = []
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text() or ""
+                pages_info = []
+                for i, page in enumerate(pdf.pages):
+                    page_text = page.extract_text() or ""
 
-                word_count = len(page_text.split()) if page_text else 0
-                preview = page_text[:preview_chars].strip() if page_text else ""
-                if len(page_text) > preview_chars:
-                    preview += "..."
+                    word_count = len(page_text.split()) if page_text else 0
+                    preview = page_text[:preview_chars].strip() if page_text else ""
+                    if len(page_text) > preview_chars:
+                        preview += "..."
 
-                pages_info.append(PageInfo(
-                    page_number=i + 1,
-                    word_count=word_count,
-                    preview=preview,
-                ))
+                    pages_info.append(PageInfo(
+                        page_number=i + 1,
+                        word_count=word_count,
+                        preview=preview,
+                    ))
 
-            return DocumentPreviewResult(
-                total_pages=total_pages,
-                pages=pages_info,
-                filename=filename,
-                file_size=len(pdf_bytes),
-                format_type="PDF Document",
-            )
+                return DocumentPreviewResult(
+                    total_pages=total_pages,
+                    pages=pages_info,
+                    filename=filename,
+                    file_size=len(pdf_bytes),
+                    format_type="PDF Document",
+                )
 
         except Exception as e:
             logger.exception("Erro ao obter preview do PDF: %s", e)
@@ -667,6 +889,7 @@ class DocumentExtractor:
         page_numbers: List[int],
         filename: str = "document",
         quality: ExtractionQuality = ExtractionQuality.CLEANED,
+        pdf_extractor: PdfExtractor = PdfExtractor.DOCLING,
     ) -> ExtractionResult:
         """
         Extrai texto de paginas selecionadas.
@@ -679,6 +902,7 @@ class DocumentExtractor:
             page_numbers: Lista de numeros de paginas (1-indexed)
             filename: Nome do arquivo
             quality: Nivel de qualidade da extracao
+            pdf_extractor: Extrator a usar para PDFs (docling ou pdfplumber)
 
         Returns:
             ExtractionResult com o texto extraido
@@ -687,7 +911,9 @@ class DocumentExtractor:
 
         # Para PDFs, usa extracao por pagina
         if ext == ".pdf":
-            return await self._extract_pdf_pages(file_bytes, page_numbers, filename, quality)
+            return await self._extract_pdf_pages(
+                file_bytes, page_numbers, filename, quality, pdf_extractor
+            )
 
         # Para outros formatos, extrai o documento completo
         result = await self.extract_from_bytes(file_bytes, filename, quality)
@@ -707,18 +933,26 @@ class DocumentExtractor:
         page_numbers: List[int],
         filename: str,
         quality: ExtractionQuality,
+        pdf_extractor: PdfExtractor = PdfExtractor.DOCLING,
     ) -> ExtractionResult:
         """Extrai paginas especificas de um PDF."""
+        # Se usar pdfplumber, extrai diretamente as paginas selecionadas
+        if pdf_extractor == PdfExtractor.PDFPLUMBER:
+            return await self._extract_pdf_pages_with_pdfplumber(
+                pdf_bytes, page_numbers, filename, quality
+            )
+
+        # Docling: precisa criar PDF temporario com paginas selecionadas
         if not self._docling_available:
             return ExtractionResult(
                 text="",
                 error="Docling nao esta instalado. Execute: pip install docling"
             )
 
-        if not self._pypdf_available:
+        if not self._pikepdf_available:
             return ExtractionResult(
                 text="",
-                error="pypdf nao esta instalado. Execute: pip install pypdf"
+                error="pikepdf nao esta instalado. Execute: pip install pikepdf"
             )
 
         if not page_numbers:
@@ -751,7 +985,7 @@ class DocumentExtractor:
                 with tempfile.NamedTemporaryFile(
                     suffix=".pdf",
                     delete=False,
-                    prefix=f"spaced_rep_page_{page_num}_"
+                    prefix=f"green_deck_doc_extract_page_{page_num}_"
                 ) as tmp:
                     tmp.write(single_page_pdf)
                     tmp_path = tmp.name
@@ -829,6 +1063,7 @@ async def extract_document_text(
     filename: str = "document",
     quality: str = "cleaned",
     chunk_size: Optional[int] = None,
+    pdf_extractor: str = "docling",
 ) -> Dict[str, Any]:
     """
     Funcao de conveniencia para extracao de documentos.
@@ -838,16 +1073,19 @@ async def extract_document_text(
         filename: Nome do arquivo
         quality: "raw", "cleaned", ou "llm"
         chunk_size: Se especificado, divide em chunks
+        pdf_extractor: "docling" ou "pdfplumber"
 
     Returns:
         Dicionario com resultado da extracao
     """
     quality_enum = ExtractionQuality(quality)
+    pdf_extractor_enum = PdfExtractor(pdf_extractor)
     result = await document_extractor.extract_from_bytes(
         file_bytes,
         filename,
         quality_enum,
-        chunk_size
+        chunk_size,
+        pdf_extractor_enum,
     )
     return result.to_dict()
 
@@ -858,6 +1096,7 @@ async def extract_pdf_text(
     filename: str = "document.pdf",
     quality: str = "cleaned",
     chunk_size: Optional[int] = None,
+    pdf_extractor: str = "docling",
 ) -> Dict[str, Any]:
     """Alias para compatibilidade com codigo existente."""
-    return await extract_document_text(pdf_bytes, filename, quality, chunk_size)
+    return await extract_document_text(pdf_bytes, filename, quality, chunk_size, pdf_extractor)

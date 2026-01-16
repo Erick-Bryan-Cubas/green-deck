@@ -658,15 +658,17 @@ async function getDocumentExtractionStatus() {
  * @param {Object} options - Extraction options
  * @param {string} options.quality - Extraction quality: 'raw', 'cleaned', or 'llm'
  * @param {number} options.chunkSize - Optional chunk size in words
+ * @param {string} options.pdfExtractor - PDF extractor: 'docling' or 'pdfplumber'
  * @param {(progress: number) => void} onProgress - Progress callback (0-100)
  * @returns {Promise<Object>} Extraction result with text, pages, word_count, etc.
  */
 async function extractDocumentText(file, options = {}, onProgress = null) {
-  const { quality = "cleaned", chunkSize = null } = options;
+  const { quality = "cleaned", chunkSize = null, pdfExtractor = "docling" } = options;
 
   const formData = new FormData();
   formData.append("file", file);
   formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
   if (chunkSize) {
     formData.append("chunk_size", chunkSize.toString());
   }
@@ -774,13 +776,15 @@ const getPdfPagesPreview = getDocumentPagesPreview;
  * @param {File} file - Document file (PDF, DOCX, PPTX, etc.)
  * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
  * @param {string} quality - Extraction quality: 'raw', 'cleaned', or 'llm'
+ * @param {string} pdfExtractor - PDF extractor: 'docling' or 'pdfplumber'
  * @returns {Promise<Object>} Extraction result with text from selected pages
  */
-async function extractSelectedPages(file, pageNumbers, quality = "cleaned") {
+async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfExtractor = "docling") {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("page_numbers", pageNumbers.join(","));
   formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
 
   try {
     const response = await fetch("/api/documents/extract-pages", {

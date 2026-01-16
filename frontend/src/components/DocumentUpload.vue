@@ -7,6 +7,7 @@ import ProgressBar from 'primevue/progressbar'
 import Tag from 'primevue/tag'
 import Checkbox from 'primevue/checkbox'
 import Skeleton from 'primevue/skeleton'
+import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
 import { VuePDF, usePDF } from '@tato30/vue-pdf'
 import {
@@ -80,6 +81,13 @@ const thumbnailScale = ref(0.5)
 
 // Document preview (for non-PDF files)
 const documentPreview = ref(null)
+
+// PDF Extractor selection
+const selectedExtractor = ref('docling')
+const extractorOptions = ref([
+  { label: 'Docling', value: 'docling', icon: 'pi pi-file-edit', description: 'Melhor estrutura' },
+  { label: 'pdfplumber', value: 'pdfplumber', icon: 'pi pi-bolt', description: 'Mais rapido' }
+])
 
 // Lazy loading with Intersection Observer
 const visiblePages = ref(new Set())
@@ -210,6 +218,7 @@ function openDialog() {
   documentPreview.value = null
   loadedThumbnails.value = new Set()
   visiblePages.value = new Set()
+  selectedExtractor.value = 'docling'
   cleanupIntersectionObserver()
   checkServiceStatus()
 }
@@ -483,7 +492,8 @@ async function extractSelectedText() {
     const result = await extractSelectedPages(
       selectedFile.value,
       selectedPages.value,
-      'cleaned'
+      'cleaned',
+      isPdfFile.value ? selectedExtractor.value : 'docling'
     )
 
     extractedResult.value = result
@@ -864,6 +874,27 @@ defineExpose({
             @click="goBackToUpload"
             :disabled="isLoading"
           />
+
+          <!-- PDF Extractor Selection -->
+          <div v-if="isPdfFile" class="extractor-selector">
+            <SelectButton
+              v-model="selectedExtractor"
+              :options="extractorOptions"
+              optionLabel="label"
+              optionValue="value"
+              :allowEmpty="false"
+              :disabled="isLoading"
+            >
+              <template #option="{ option }">
+                <div class="extractor-option">
+                  <i :class="option.icon" />
+                  <span class="extractor-label">{{ option.label }}</span>
+                  <span class="extractor-desc">{{ option.description }}</span>
+                </div>
+              </template>
+            </SelectButton>
+          </div>
+
           <Button
             label="Extrair Texto"
             icon="pi pi-download"
@@ -1346,6 +1377,46 @@ defineExpose({
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 0.75rem;
+}
+
+/* Extractor Selector */
+.extractor-selector {
+  margin-right: auto;
+}
+
+.extractor-selector :deep(.p-selectbutton) {
+  display: flex;
+  gap: 0;
+}
+
+.extractor-selector :deep(.p-selectbutton .p-togglebutton) {
+  padding: 0.5rem 0.75rem;
+}
+
+.extractor-option {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.extractor-option i {
+  font-size: 0.875rem;
+}
+
+.extractor-label {
+  font-weight: 500;
+  font-size: 0.8125rem;
+}
+
+.extractor-desc {
+  font-size: 0.75rem;
+  color: var(--text-color-secondary);
+  margin-left: 0.25rem;
+}
+
+.extractor-selector :deep(.p-togglebutton.p-highlight) .extractor-desc {
+  color: var(--primary-100);
 }
 </style>
