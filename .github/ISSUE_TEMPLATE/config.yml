@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "💬 Discussions / Discussões"
+    url: https://github.com/Erick-Bryan-Cubas/green-deck/discussions
+    about: |
+      🇺🇸 Ask questions and discuss ideas
+      🇧🇷 Faça perguntas e discuta ideias
+  - name: "📖 Documentation / Documentação"
+    url: https://github.com/Erick-Bryan-Cubas/green-deck#readme
+    about: |
+      🇺🇸 Check out the documentation
+      🇧🇷 Confira a documentação
