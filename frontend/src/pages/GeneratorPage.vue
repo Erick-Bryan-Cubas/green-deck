@@ -123,8 +123,8 @@ function clamp(n, min, max) {
 // ============================================================
 // localStorage Keys
 // ============================================================
-const INTRO_SHOWN_KEY = 'spaced-rep.intro-shown'
-const LS_READER_KEY = 'spaced-rep.reader.v2'
+const INTRO_SHOWN_KEY = 'green-deck.intro-shown'
+const LS_READER_KEY = 'green-deck.reader.v2'
 
 // ============================================================
 // Modo Leitura (Kindle full-screen + paginação real)
@@ -658,8 +658,8 @@ watch(
 // ============================================================
 // Sessões (localStorage) — texto + marcações (Delta) + cards + contexto
 // ============================================================
-const LS_SESSIONS_KEY = 'spaced-rep.sessions.v1'
-const LS_ACTIVE_SESSION_KEY = 'spaced-rep.sessions.active.v1'
+const LS_SESSIONS_KEY = 'green-deck.sessions.v1'
+const LS_ACTIVE_SESSION_KEY = 'green-deck.sessions.active.v1'
 
 // Para evitar estourar o localStorage sem perceber
 const MAX_SESSIONS = 30
@@ -1341,7 +1341,7 @@ const generateStep = ref('1') // '1': Quantidade, '2': Prompts (string for Prime
 const customPrompts = ref(null)
 
 // Prompts salvos persistentes (localStorage)
-const LS_CUSTOM_PROMPTS_KEY = 'spaced-rep.custom-prompts.v1'
+const LS_CUSTOM_PROMPTS_KEY = 'green-deck.custom-prompts.v1'
 const savedCustomPrompts = ref(null) // { systemPrompt, guidelines, generationPrompt }
 const promptSettingsVisible = ref(false)
 const promptSettingsEditorRef = ref(null)
@@ -1603,9 +1603,9 @@ async function initializeModelSelection() {
   }
 
   // 2. Verificar modelo salvo no localStorage
-  const savedModel = localStorage.getItem('spaced-rep.selected-model')
-  const savedValidationModel = localStorage.getItem('spaced-rep.selected-validation-model')
-  const savedAnalysisModel = localStorage.getItem('spaced-rep.selected-analysis-model')
+  const savedModel = localStorage.getItem('green-deck.selected-model')
+  const savedValidationModel = localStorage.getItem('green-deck.selected-validation-model')
+  const savedAnalysisModel = localStorage.getItem('green-deck.selected-analysis-model')
 
   // Helper: verifica se modelo requer API key que não está mais disponível
   const isModelAvailable = (modelName) => {
@@ -1643,9 +1643,9 @@ async function initializeModelSelection() {
 
   // Se modelo salvo não está mais disponível, limpar do localStorage
   if (savedModel && !isModelAvailable(savedModel)) {
-    localStorage.removeItem('spaced-rep.selected-model')
-    localStorage.removeItem('spaced-rep.selected-validation-model')
-    localStorage.removeItem('spaced-rep.selected-analysis-model')
+    localStorage.removeItem('green-deck.selected-model')
+    localStorage.removeItem('green-deck.selected-validation-model')
+    localStorage.removeItem('green-deck.selected-analysis-model')
     console.log(`Modelo salvo "${savedModel}" não está mais disponível, resetando...`)
   }
 
@@ -1983,13 +1983,13 @@ function saveModelSelection() {
   try {
     // Salva apenas se houver valor (evita salvar 'null' como string)
     if (selectedModel.value) {
-      localStorage.setItem('spaced-rep.selected-model', selectedModel.value)
+      localStorage.setItem('green-deck.selected-model', selectedModel.value)
     }
     if (selectedValidationModel.value) {
-      localStorage.setItem('spaced-rep.selected-validation-model', selectedValidationModel.value)
+      localStorage.setItem('green-deck.selected-validation-model', selectedValidationModel.value)
     }
     if (selectedAnalysisModel.value) {
-      localStorage.setItem('spaced-rep.selected-analysis-model', selectedAnalysisModel.value)
+      localStorage.setItem('green-deck.selected-analysis-model', selectedAnalysisModel.value)
     }
     modelSelectionVisible.value = false
     notify('Modelos salvos com sucesso', 'success', 3000)

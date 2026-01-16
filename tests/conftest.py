@@ -1,5 +1,5 @@
 """
-Test fixtures for the spaced-rep application.
+Test fixtures for the green-deck application.
 """
 import pytest
 from fastapi.testclient import TestClient
