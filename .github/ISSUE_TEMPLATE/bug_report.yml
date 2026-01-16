@@ -1,0 +1,121 @@
+name: "🐛 Bug Report / Relatório de Bug"
+description: "Report a bug or unexpected behavior / Reportar um bug ou comportamento inesperado"
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🇺🇸 English
+        Thanks for taking the time to fill out this bug report!
+
+        ## 🇧🇷 Português
+        Obrigado por dedicar seu tempo para preencher este relatório de bug!
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Bug Description / Descrição do Bug"
+      description: |
+        🇺🇸 A clear and concise description of what the bug is.
+        🇧🇷 Uma descrição clara e concisa do bug.
+      placeholder: "Describe the bug... / Descreva o bug..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to Reproduce / Passos para Reproduzir"
+      description: |
+        🇺🇸 Steps to reproduce the behavior.
+        🇧🇷 Passos para reproduzir o comportamento.
+      placeholder: |
+        1. Go to '...' / Vá para '...'
+        2. Click on '...' / Clique em '...'
+        3. Scroll down to '...' / Role até '...'
+        4. See error / Veja o erro
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected Behavior / Comportamento Esperado"
+      description: |
+        🇺🇸 A clear and concise description of what you expected to happen.
+        🇧🇷 Uma descrição clara do que você esperava que acontecesse.
+      placeholder: "What should have happened? / O que deveria ter acontecido?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: "Actual Behavior / Comportamento Atual"
+      description: |
+        🇺🇸 What actually happened instead.
+        🇧🇷 O que realmente aconteceu.
+      placeholder: "What happened instead? / O que aconteceu?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Screenshots / Capturas de Tela"
+      description: |
+        🇺🇸 If applicable, add screenshots to help explain your problem.
+        🇧🇷 Se aplicável, adicione capturas de tela para ajudar a explicar o problema.
+      placeholder: "Drag and drop images here... / Arraste e solte imagens aqui..."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: "LLM Provider / Provedor LLM"
+      description: |
+        🇺🇸 Which LLM provider were you using?
+        🇧🇷 Qual provedor LLM você estava usando?
+      options:
+        - OpenAI
+        - Anthropic
+        - Google (Gemini)
+        - Ollama
+        - "Other / Outro"
+    validations:
+      required: false
+
+  - type: input
+    id: browser
+    attributes:
+      label: "Browser / Navegador"
+      description: |
+        🇺🇸 What browser are you using?
+        🇧🇷 Qual navegador você está usando?
+      placeholder: "e.g., Chrome 120, Firefox 121, Safari 17"
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: "Operating System / Sistema Operacional"
+      description: |
+        🇺🇸 What OS are you using?
+        🇧🇷 Qual sistema operacional você está usando?
+      placeholder: "e.g., Windows 11, macOS Sonoma, Ubuntu 22.04"
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: "Additional Context / Contexto Adicional"
+      description: |
+        🇺🇸 Add any other context about the problem here.
+        🇧🇷 Adicione qualquer outro contexto sobre o problema aqui.
+      placeholder: "Any additional information... / Qualquer informação adicional..."
+    validations:
+      required: false
