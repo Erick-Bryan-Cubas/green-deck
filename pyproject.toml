@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "green-deck"
-version = "1.0.0"
+version = "1.0.1-beta"
 description = "AI-Powered Intelligent Flashcard Generator"
 authors = ["Erick Bryan Cubas"]
 license = "MIT"
