@@ -689,16 +689,28 @@ async def generate_notes_multi_provider(
                 raise Exception("OpenAI API key não fornecida")
 
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=180.0)) as client:
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": 4096,
-                    "response_format": {"type": "json_object"},
-                }
+                # Reasoning models (o1, o3, gpt-5) não suportam temperature
+                if model.startswith(("o1-", "o1", "o3-", "o3", "gpt-5")):
+                    payload = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
+                        ],
+                        "max_completion_tokens": 4096,
+                        "response_format": {"type": "json_object"},
+                    }
+                else:
+                    payload = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
+                        ],
+                        "temperature": temperature,
+                        "max_completion_tokens": 4096,
+                        "response_format": {"type": "json_object"},
+                    }
 
                 r = await client.post(
                     "https://api.openai.com/v1/chat/completions",
@@ -1787,8 +1799,8 @@ async def _call_openai_translate(
         {"role": "user", "content": user},
     ]
 
-    # O1 models não suportam temperature
-    if model.startswith("o1-"):
+    # Reasoning models (o1, o3, gpt-5) não suportam temperature
+    if model.startswith(("o1-", "o1", "o3-", "o3", "gpt-5")):
         payload = {
             "model": model,
             "messages": messages,
@@ -1799,7 +1811,7 @@ async def _call_openai_translate(
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 4096
+            "max_completion_tokens": 4096
         }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
