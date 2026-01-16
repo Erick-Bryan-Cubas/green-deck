@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
     # Shutdown: stop WebSocket broadcaster
     await stop_broadcaster()
 
-app = FastAPI(title="Flash Card Generator", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Flash Card Generator", version="1.0.1-beta", lifespan=lifespan)
 
 # CORS
 app.add_middleware(
