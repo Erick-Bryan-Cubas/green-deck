@@ -5,6 +5,17 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.0.1-beta] - 2026-01-16
+
+### Alterado
+
+- Atualizado sistema de versionamento para indicar estágio beta
+- Adicionado badge visual "BETA" na interface (sidebar)
+- Centralizada configuração de versão no frontend (`frontend/src/config/version.ts`)
+- Sincronizada versão em todos os arquivos de configuração (pyproject.toml, package.json, app/__init__.py, app/main.py, run.py)
+
+---
+
 ## [1.0.0] - 2026-01-15
 
 ### Adicionado

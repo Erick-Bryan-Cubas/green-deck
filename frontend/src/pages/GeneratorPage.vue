@@ -3676,11 +3676,10 @@ onBeforeUnmount(() => {
   <Menu ref="exportTextMenuRef" :model="exportTextMenuItems" popup appendTo="body" />
 
   <!-- Sidebar -->
-  <SidebarMenu 
+  <SidebarMenu
     ref="sidebarRef"
     :menu-items="sidebarMenuItems"
     :footer-actions="sidebarFooterActions"
-    version="v1.0.0"
   />
 
   <div

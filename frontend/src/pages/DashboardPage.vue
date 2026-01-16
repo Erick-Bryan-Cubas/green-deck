@@ -425,11 +425,10 @@ onUnmounted(() => {
   <Toast />
 
   <!-- Sidebar -->
-  <SidebarMenu 
+  <SidebarMenu
     ref="sidebarRef"
     :menu-items="sidebarMenuItems"
     :footer-actions="sidebarFooterActions"
-    version="v1.0.0"
   />
 
   <div class="app-shell" :class="{ 'sidebar-expanded': sidebarRef?.sidebarExpanded }">
