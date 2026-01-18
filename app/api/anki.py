@@ -843,36 +843,63 @@ class AnkiUpload(BaseModel):
 
 @router.post("/upload-to-anki")
 async def upload_to_anki(request: AnkiUpload):
+    from fastapi.responses import JSONResponse
+    import logging
+    logger = logging.getLogger(__name__)
+
     results = []
     tags = [t.strip() for t in request.tags.split(",") if t.strip()] if request.tags else []
 
+    logger.info(f"[Anki Export] Starting export of {len(request.cards)} cards")
+    logger.info(f"[Anki Export] Model: {request.modelName}, Front: {request.frontField}, Back: {request.backField}, Deck: {request.deckName}")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for card in request.cards:
+        for i, card in enumerate(request.cards):
             try:
+                deck_name = request.deckName or card.deck or "Default"
                 note = {
-                    "deckName": request.deckName or card.deck or "Default",
+                    "deckName": deck_name,
                     "modelName": request.modelName,
                     "fields": {request.frontField: card.front, request.backField: card.back},
                     "options": {"allowDuplicate": False},
                     "tags": tags,
                 }
+                logger.info(f"[Anki Export] Card {i+1}: deck={deck_name}, fields={list(note['fields'].keys())}")
+
                 rr = await client.post(
                     ANKI_CONNECT_URL,
                     json={"action": "addNote", "version": 6, "params": {"note": note}},
                 )
                 data = rr.json()
+                logger.info(f"[Anki Export] Card {i+1} response: {data}")
+
                 if data.get("error"):
                     raise Exception(data["error"])
                 results.append({"success": True, "id": data["result"]})
             except Exception as e:
+                logger.error(f"[Anki Export] Card {i+1} failed: {str(e)}")
                 results.append({"success": False, "error": str(e)})
 
-    return {
-        "success": True,
+    total_success = sum(1 for r in results if r["success"])
+    total_cards = len(request.cards)
+
+    response_data = {
+        "success": total_success > 0,
         "results": results,
-        "totalSuccess": sum(1 for r in results if r["success"]),
-        "totalCards": len(request.cards),
+        "totalSuccess": total_success,
+        "totalCards": total_cards,
     }
+
+    # Retorna código HTTP apropriado
+    if total_success == 0:
+        # Nenhum card foi exportado - erro
+        return JSONResponse(status_code=422, content=response_data)
+    elif total_success < total_cards:
+        # Sucesso parcial - 207 Multi-Status
+        return JSONResponse(status_code=207, content=response_data)
+    else:
+        # Todos exportados com sucesso
+        return response_data
 
 @router.get("/anki-decks")
 async def get_anki_decks():
