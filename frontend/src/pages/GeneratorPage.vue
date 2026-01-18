@@ -3253,27 +3253,61 @@ async function exportToAnkiConfirm() {
       })
     })
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      throw new Error(err.error || 'Failed to upload to Anki')
+    // Traduz erros comuns do AnkiConnect
+    function translateAnkiError(error) {
+      if (!error) return 'Erro desconhecido'
+      if (error.includes('duplicate')) return 'Card já existe no Anki (duplicata)'
+      if (error.includes('model was not found')) return 'Tipo de nota não encontrado'
+      if (error.includes('deck was not found')) return 'Deck não encontrado'
+      if (error.includes('field') && error.includes('not in model')) return 'Campo não existe no tipo de nota'
+      return error
     }
 
+    // Aceita 200 (sucesso total), 207 (sucesso parcial) e 422 (falha total)
     const result = await resp.json()
     setProgress(100)
     completeProgress()
-    notify(`${result.totalSuccess} de ${result.totalCards} enviados ao Anki!`, 'success')
 
-    // Save preferences on successful export
-    saveAnkiPreferences()
-
-    ankiVisible.value = false
-
-    // Limpa seleção após exportar
-    if (cardsToExport.value !== null) {
-      clearSelection()
+    // Erro de conexão ou outro erro HTTP
+    if (!resp.ok && resp.status !== 207 && resp.status !== 422) {
+      throw new Error(result.error || 'Falha ao conectar com Anki')
     }
-    cardsToExport.value = null
+
+    // Show detailed error if some cards failed
+    if (result.totalSuccess === 0 && result.results?.length > 0) {
+      const firstError = result.results.find(r => r.error)?.error
+      const translatedError = translateAnkiError(firstError)
+      notify(`Nenhum card exportado: ${translatedError}`, 'error', 8000)
+      console.error('[Anki Export] All cards failed:', result.results)
+      return
+    } else if (result.totalSuccess < result.totalCards) {
+      const failedCount = result.totalCards - result.totalSuccess
+      const duplicateCount = result.results.filter(r => r.error?.includes('duplicate')).length
+
+      if (duplicateCount === failedCount) {
+        notify(`${result.totalSuccess} enviados, ${duplicateCount} já existiam no Anki`, 'warn', 5000)
+      } else {
+        const firstError = result.results.find(r => r.error)?.error
+        notify(`${result.totalSuccess} de ${result.totalCards} enviados. ${failedCount} falharam: ${translateAnkiError(firstError)}`, 'warn', 8000)
+      }
+      console.warn('[Anki Export] Some cards failed:', result.results)
+    } else {
+      notify(`${result.totalSuccess} card${result.totalSuccess > 1 ? 's' : ''} enviado${result.totalSuccess > 1 ? 's' : ''} ao Anki!`, 'success')
+    }
+
+    // Save preferences on successful export (only if at least one succeeded)
+    if (result.totalSuccess > 0) {
+      saveAnkiPreferences()
+      ankiVisible.value = false
+
+      // Limpa seleção após exportar
+      if (cardsToExport.value !== null) {
+        clearSelection()
+      }
+      cardsToExport.value = null
+    }
   } catch (e) {
+    console.error('[Anki Export] Error:', e)
     notify('Erro ao enviar ao Anki: ' + (e?.message || String(e)), 'error', 8000)
   } finally {
     ankiExporting.value = false
