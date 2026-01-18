@@ -42,6 +42,13 @@ import SidebarMenu from '@/components/SidebarMenu.vue'
 import DocumentUpload from '@/components/DocumentUpload.vue'
 import PromptEditor from '@/components/PromptEditor.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
+
+// Modal components
+import GenerateModal from '@/components/modals/GenerateModal.vue'
+import EditCardDialog from '@/components/modals/EditCardDialog.vue'
+import ModelSelectionDialog from '@/components/modals/ModelSelectionDialog.vue'
+import IntroModal from '@/components/modals/IntroModal.vue'
+import AnkiExportDialog from '@/components/modals/AnkiExportDialog.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 
@@ -1492,6 +1499,15 @@ function confirmGenerate() {
   generateCardsFromSelection()
 }
 
+// Handler para o novo componente GenerateModal
+function onGenerateModalConfirm({ quantityMode: qMode, numCards, customPrompts: prompts }) {
+  numCardsEnabled.value = (qMode === 'manual')
+  numCardsSlider.value = numCards
+  if (prompts) customPrompts.value = prompts
+  generateModalVisible.value = false
+  generateCardsFromSelection()
+}
+
 // Model selection
 const selectedModel = ref(null)           // Modelo para geração de cards (dinâmico)
 const selectedValidationModel = ref(null) // Modelo para validação de qualidade
@@ -2035,6 +2051,15 @@ function finishIntro() {
   // Mantém flag de onboarding ativa para controlar fluxo pós-intro
   isOnboardingFlow.value = true
   // Dispara fluxo pós-intro (Ollama selection -> API keys)
+  triggerPostIntroFlow()
+}
+
+// Handler para o componente IntroModal
+function onIntroComplete({ dontShowAgain }) {
+  if (dontShowAgain) {
+    localStorage.setItem(INTRO_SHOWN_KEY, 'true')
+  }
+  isOnboardingFlow.value = true
   triggerPostIntroFlow()
 }
 
@@ -2804,6 +2829,34 @@ function deleteEditCard() {
   notify('Card removido', 'info', 2000)
 }
 
+// Handlers para o componente EditCardDialog
+function onEditCardSave({ index, front, back, deck }) {
+  if (index < 0) return
+  cards.value[index] = {
+    ...cards.value[index],
+    front,
+    back,
+    deck: deck || 'General'
+  }
+  notify('Card atualizado', 'success', 2000)
+  schedulePersistActiveSession()
+}
+
+function onEditCardDelete(index) {
+  if (index < 0) return
+  cards.value.splice(index, 1)
+  notify('Card removido', 'info', 2000)
+  schedulePersistActiveSession()
+}
+
+function onEditCardDuplicate(index) {
+  if (index < 0) return
+  const c = cards.value[index]
+  cards.value.splice(index + 1, 0, { ...c })
+  notify('Card duplicado', 'success', 2000)
+  schedulePersistActiveSession()
+}
+
 // Estado e funcao para reescrita de cards com LLM
 const isRewriting = ref(false)
 
@@ -3313,6 +3366,18 @@ async function exportToAnkiConfirm() {
     ankiExporting.value = false
     progressVisible.value = false
   }
+}
+
+// Handler para o componente AnkiExportDialog
+async function onAnkiExport({ model, frontField, backField, deck, tags }) {
+  // Atualiza os valores locais
+  ankiModel.value = model
+  ankiFrontField.value = frontField
+  ankiBackField.value = backField
+  ankiDeckField.value = deck
+  ankiTags.value = tags
+  // Chama a exportação existente
+  await exportToAnkiConfirm()
 }
 
 // ============================================================
@@ -4695,341 +4760,35 @@ onBeforeUnmount(() => {
       </Splitter>
     </div>
 
-    <!-- GENERATE MODAL (PrimeVue Stepper) -->
-    <Dialog
+    <!-- GENERATE MODAL -->
+    <GenerateModal
       v-model:visible="generateModalVisible"
-      modal
-      appendTo="body"
-      :draggable="false"
-      :dismissableMask="true"
-      class="modern-dialog"
-      :style="{ width: 'min(640px, 96vw)' }"
-    >
-      <template #header>
-        <div class="flex align-items-center justify-content-between w-full">
-          <div class="flex align-items-center gap-2">
-            <i class="pi pi-bolt text-primary" style="font-size: 1.25rem" />
-            <span class="font-semibold text-lg">Configurar Geração</span>
-          </div>
-          <!-- GPU/CPU Badge no header -->
-          <div v-if="currentModelInfo && getModelInfo(selectedModel)?.provider === 'ollama'" class="flex align-items-center">
-            <Tag :severity="currentModelInfo.using_gpu ? 'success' : 'warning'" class="pill">
-              <i :class="currentModelInfo.using_gpu ? 'pi pi-bolt' : 'pi pi-desktop'" class="mr-1" />
-              {{ currentModelInfo.using_gpu ? 'GPU' : 'CPU' }}
-            </Tag>
-          </div>
-        </div>
-      </template>
-
-      <!-- Model Info Panel -->
-      <div v-if="selectedModel" class="model-info-panel surface-ground border-round p-3 mb-3">
-        <div class="flex align-items-center justify-content-between">
-          <div class="flex align-items-center gap-2">
-            <i class="pi pi-microchip text-primary" />
-            <div>
-              <div class="font-semibold">{{ selectedModel }}</div>
-              <div class="text-sm text-color-secondary" v-if="getModelInfo(selectedModel)">
-                <Tag :severity="getProviderSeverity(getModelInfo(selectedModel).provider)" class="pill mr-2">
-                  {{ getProviderLabel(getModelInfo(selectedModel).provider) }}
-                </Tag>
-              </div>
-            </div>
-          </div>
-
-          <!-- GPU/VRAM Info (apenas Ollama) -->
-          <div v-if="currentModelInfo && getModelInfo(selectedModel)?.provider === 'ollama'" class="text-right">
-            <div class="flex align-items-center gap-2 justify-content-end">
-              <i :class="currentModelInfo.using_gpu ? 'pi pi-bolt text-green-500' : 'pi pi-desktop text-yellow-500'" />
-              <span class="font-medium">
-                {{ currentModelInfo.using_gpu ? 'GPU' : 'CPU' }}
-              </span>
-            </div>
-            <div v-if="currentModelInfo.size_vram_mb > 0" class="text-sm text-color-secondary">
-              VRAM: {{ currentModelInfo.size_vram_mb }} MB
-            </div>
-          </div>
-        </div>
-
-        <!-- ALERTA CPU -->
-        <Message v-if="currentModelInfo && !currentModelInfo.using_gpu && getModelInfo(selectedModel)?.provider === 'ollama'" severity="warn" :closable="false" class="mt-3 mb-0">
-          <div class="flex align-items-center gap-2">
-            <i class="pi pi-exclamation-triangle" />
-            <span>Processamento via CPU pode ser significativamente mais lento.</span>
-          </div>
-        </Message>
-      </div>
-
-      <!-- Aviso se nenhum modelo selecionado -->
-      <Message v-if="!selectedModel" severity="error" :closable="false" class="mb-3">
-        <div class="flex align-items-center gap-2">
-          <i class="pi pi-times-circle" />
-          <span>Nenhum modelo selecionado. Configure um modelo em <strong>Configurações → Modelos</strong>.</span>
-        </div>
-      </Message>
-
-      <Stepper v-model:value="generateStep" class="generate-stepper">
-        <StepList>
-          <Step value="1">Quantidade</Step>
-          <Step value="2">Prompts</Step>
-        </StepList>
-        <StepPanels>
-          <!-- STEP 1: Quantidade -->
-          <StepPanel value="1">
-            <div class="flex flex-column gap-4 p-3">
-              <div class="text-center">
-                <h4 class="m-0 mb-2">Quantos cards criar?</h4>
-                <p class="text-color-secondary m-0 text-sm">
-                  Escolha o modo de definição
-                </p>
-              </div>
-
-              <SelectButton
-                v-model="quantityMode"
-                :options="quantityModeOptions"
-                optionLabel="label"
-                optionValue="value"
-                class="w-full justify-content-center"
-              />
-
-              <Transition name="slide-fade">
-                <div v-if="quantityMode === 'manual'" class="flex flex-column gap-3">
-                  <div class="flex align-items-center justify-content-center gap-3">
-                    <InputNumber
-                      v-model="numCardsSlider"
-                      :min="1"
-                      :max="50"
-                      showButtons
-                      buttonLayout="horizontal"
-                      :inputStyle="{ width: '4rem', textAlign: 'center', fontWeight: 'bold', fontSize: '1.25rem' }"
-                    >
-                      <template #decrementbuttonicon>
-                        <i class="pi pi-minus" />
-                      </template>
-                      <template #incrementbuttonicon>
-                        <i class="pi pi-plus" />
-                      </template>
-                    </InputNumber>
-                    <span class="text-color-secondary font-medium">cards</span>
-                  </div>
-
-                  <Slider v-model="numCardsSlider" :min="1" :max="50" class="w-full" />
-
-                  <div class="flex justify-content-center gap-2 flex-wrap">
-                    <Button
-                      v-for="preset in presetOptions"
-                      :key="preset"
-                      :label="String(preset)"
-                      :outlined="numCardsSlider !== preset"
-                      :severity="numCardsSlider === preset ? undefined : 'secondary'"
-                      size="small"
-                      @click="numCardsSlider = preset"
-                    />
-                  </div>
-                </div>
-              </Transition>
-
-              <div v-if="quantityMode === 'auto'" class="surface-ground border-round p-3 text-center">
-                <i class="pi pi-info-circle text-primary mr-2" />
-                <span class="text-color-secondary text-sm">
-                  A IA calculará automaticamente baseado no texto
-                </span>
-              </div>
-            </div>
-          </StepPanel>
-
-          <!-- STEP 2: Prompts -->
-          <StepPanel value="2">
-            <div class="flex flex-column gap-3 p-3">
-              <div class="flex align-items-center justify-content-between mb-2">
-                <span class="font-medium">Instruções de Geração</span>
-                <Tag
-                  :severity="customPrompts ? 'warning' : 'secondary'"
-                  :value="customPrompts ? 'Customizado' : 'Padrão'"
-                  :icon="customPrompts ? 'pi pi-pencil' : 'pi pi-check'"
-                />
-              </div>
-              <PromptEditor
-                :cardType="cardType"
-                @update:customPrompts="onCustomPromptsUpdate"
-              />
-            </div>
-          </StepPanel>
-        </StepPanels>
-      </Stepper>
-
-      <template #footer>
-        <div class="flex justify-content-between w-full">
-          <Button
-            v-if="generateStep === '1'"
-            label="Cancelar"
-            severity="secondary"
-            text
-            @click="generateModalVisible = false"
-          />
-          <Button
-            v-else
-            label="Voltar"
-            icon="pi pi-arrow-left"
-            severity="secondary"
-            text
-            @click="generateStep = '1'"
-          />
-
-          <Button
-            v-if="generateStep === '1'"
-            label="Próximo"
-            icon="pi pi-arrow-right"
-            iconPos="right"
-            @click="generateStep = '2'"
-          />
-          <Button
-            v-else
-            label="Gerar Cards"
-            icon="pi pi-bolt"
-            severity="success"
-            :loading="generating"
-            @click="confirmGenerate"
-          />
-        </div>
-      </template>
-    </Dialog>
+      :selectedModel="selectedModel"
+      :currentModelInfo="currentModelInfo"
+      :generating="generating"
+      :cardType="cardType"
+      :numCardsEnabled="numCardsEnabled"
+      :numCardsSlider="numCardsSlider"
+      :getModelInfo="getModelInfo"
+      :getProviderSeverity="getProviderSeverity"
+      :getProviderLabel="getProviderLabel"
+      @update:numCardsSlider="numCardsSlider = $event"
+      @customPromptsUpdate="onCustomPromptsUpdate"
+      @confirm="onGenerateModalConfirm"
+    />
 
     <!-- EDIT DIALOG -->
-    <Dialog
+    <EditCardDialog
       v-model:visible="editVisible"
-      modal
-      appendTo="body"
-      :draggable="false"
-      :dismissableMask="true"
-      class="modern-dialog edit-card-dialog"
-      style="width: min(900px, 96vw);"
-    >
-      <template #header>
-        <div class="edit-dialog-header">
-          <div class="edit-header-left">
-            <span class="edit-card-number">#{{ editIndex + 1 }}</span>
-            <Tag
-              :severity="getCardType(editDraft.front) === 'cloze' ? 'warning' : 'info'"
-              class="edit-type-tag"
-            >
-              <i :class="getCardType(editDraft.front) === 'cloze' ? 'pi pi-pencil' : 'pi pi-file'" class="mr-1" />
-              {{ getCardType(editDraft.front) === 'cloze' ? 'Cloze' : 'Básico' }}
-            </Tag>
-          </div>
-          <div class="edit-header-right">
-            <i class="pi pi-tag mr-2 text-color-secondary" />
-            <Select
-              v-model="editDraft.deck"
-              :options="availableDeckNames.map((x) => ({ label: x, value: x }))"
-              optionLabel="label"
-              optionValue="value"
-              class="deck-select-compact"
-              filter
-              placeholder="Deck"
-            />
-            <Button
-              icon="pi pi-refresh"
-              severity="secondary"
-              text
-              rounded
-              @click="fetchDecks"
-              title="Atualizar decks"
-              class="ml-2"
-            />
-          </div>
-        </div>
-      </template>
-
-      <ContextMenu ref="editContextMenuRef" :model="editContextMenuModel" appendTo="body" />
-
-      <div class="edit-card-content">
-        <div class="edit-field">
-          <div class="edit-field-header">
-            <i class="pi pi-comment" />
-            <span>Frente</span>
-          </div>
-          <div class="edit-card-quill">
-            <LazyQuillEditor
-              ref="editFrontRef"
-              placeholder="Frente do card..."
-              @content-changed="editDraft.front = $event.html"
-              @editor-ready="onEditFrontReady"
-            />
-          </div>
-        </div>
-
-        <div class="edit-field">
-          <div class="edit-field-header">
-            <i class="pi pi-comments" />
-            <span>Verso</span>
-          </div>
-          <div class="edit-card-quill">
-            <LazyQuillEditor
-              ref="editBackRef"
-              placeholder="Verso do card..."
-              @content-changed="editDraft.back = $event.html"
-              @editor-ready="onEditBackReady"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- AI Rewrite Section -->
-      <div class="edit-ai-section">
-        <div class="edit-ai-header">
-          <i class="pi pi-sparkles" />
-          <span>Reescrever com IA</span>
-        </div>
-        <div class="edit-ai-buttons">
-          <Button
-            label="Mais denso"
-            icon="pi pi-plus"
-            severity="secondary"
-            outlined
-            size="small"
-            :loading="isRewriting"
-            :disabled="isRewriting"
-            @click="handleRewriteCard('densify')"
-            title="Adiciona mais lacunas cloze ao card"
-          />
-          <Button
-            label="Dividir cloze"
-            icon="pi pi-clone"
-            severity="secondary"
-            outlined
-            size="small"
-            :loading="isRewriting"
-            :disabled="isRewriting"
-            @click="handleRewriteCard('split_cloze')"
-            title="Divide o conteudo em varias lacunas"
-          />
-          <Button
-            label="Simplificar"
-            icon="pi pi-minus"
-            severity="secondary"
-            outlined
-            size="small"
-            :loading="isRewriting"
-            :disabled="isRewriting"
-            @click="handleRewriteCard('simplify')"
-            title="Reduz complexidade do card"
-          />
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="edit-footer">
-          <div class="edit-footer-left">
-            <Button label="Excluir" icon="pi pi-trash" severity="danger" text @click="deleteEditCard" />
-          </div>
-          <div class="edit-footer-right">
-            <Button label="Duplicar" icon="pi pi-copy" severity="secondary" outlined @click="duplicateEditCard" />
-            <Button label="Cancelar" icon="pi pi-times" severity="secondary" text @click="editVisible = false" />
-            <Button label="Salvar" icon="pi pi-check" severity="success" @click="saveEditCard" />
-          </div>
-        </div>
-      </template>
-    </Dialog>
+      :card="editIndex >= 0 ? cards[editIndex] : null"
+      :cardIndex="editIndex"
+      :availableDeckNames="availableDeckNames"
+      :selectedModel="selectedModel"
+      @save="onEditCardSave"
+      @delete="onEditCardDelete"
+      @duplicate="onEditCardDuplicate"
+      @fetchDecks="fetchDecks"
+    />
 
     <!-- CUSTOM INSTRUCTION DIALOG -->
     <Dialog
@@ -5223,155 +4982,19 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- MODEL SELECTION -->
-    <Dialog v-model:visible="modelSelectionVisible" header="Configurar Modelos" modal class="modern-dialog" style="width: min(860px, 96vw);">
-      <div class="model-info">
-        <i class="pi pi-info-circle mr-2" />
-        Configure os modelos para cada etapa do pipeline. Modelos Ollama são locais (privacidade total). Modelos de API requerem chaves configuradas.
-      </div>
-
-      <div class="grid mt-3">
-        <!-- Modelo de Geração -->
-        <div class="col-12 md:col-6">
-          <label class="font-semibold"><i class="pi pi-sparkles mr-2" />Modelo de Geração</label>
-          <Select 
-            v-model="selectedModel" 
-            :options="llmModels" 
-            optionLabel="name" 
-            optionValue="name" 
-            class="w-full mt-2" 
-            filter
-            :loading="isLoadingModels"
-            placeholder="Selecione um modelo"
-          >
-            <template #option="{ option }">
-              <div class="model-option">
-                <span class="model-name">{{ option.name }}</span>
-                <div class="model-tags">
-                  <Tag :severity="getProviderSeverity(option.provider)" class="pill model-tag">
-                    {{ getProviderLabel(option.provider) }}
-                  </Tag>
-                  <Tag :severity="getTypeSeverity(option.type)" class="pill model-tag">
-                    {{ getTypeLabel(option.type) }}
-                  </Tag>
-                </div>
-              </div>
-            </template>
-            <template #value="{ value }">
-              <div v-if="value" class="model-selected">
-                <span class="model-name">{{ value }}</span>
-                <div v-if="getModelInfo(value)" class="model-tags">
-                  <Tag :severity="getProviderSeverity(getModelInfo(value).provider)" class="pill model-tag">
-                    {{ getProviderLabel(getModelInfo(value).provider) }}
-                  </Tag>
-                </div>
-              </div>
-            </template>
-          </Select>
-          <small class="text-color-secondary mt-1 block">
-            Cria os flashcards a partir do texto
-          </small>
-        </div>
-
-        <!-- Modelo de Análise -->
-        <div class="col-12 md:col-6">
-          <label class="font-semibold"><i class="pi pi-search mr-2" />Modelo de Análise</label>
-          <Select 
-            v-model="selectedAnalysisModel" 
-            :options="availableModels" 
-            optionLabel="name" 
-            optionValue="name" 
-            class="w-full mt-2" 
-            filter
-            :loading="isLoadingModels"
-            placeholder="Selecione um modelo"
-          >
-            <template #option="{ option }">
-              <div class="model-option">
-                <span class="model-name">{{ option.name }}</span>
-                <div class="model-tags">
-                  <Tag :severity="getProviderSeverity(option.provider)" class="pill model-tag">
-                    {{ getProviderLabel(option.provider) }}
-                  </Tag>
-                  <Tag :severity="getTypeSeverity(option.type)" class="pill model-tag">
-                    {{ getTypeLabel(option.type) }}
-                  </Tag>
-                </div>
-              </div>
-            </template>
-            <template #value="{ value }">
-              <div v-if="value" class="model-selected">
-                <span class="model-name">{{ value }}</span>
-                <div v-if="getModelInfo(value)" class="model-tags">
-                  <Tag :severity="getProviderSeverity(getModelInfo(value).provider)" class="pill model-tag">
-                    {{ getProviderLabel(getModelInfo(value).provider) }}
-                  </Tag>
-                  <Tag :severity="getTypeSeverity(getModelInfo(value).type)" class="pill model-tag">
-                    {{ getTypeLabel(getModelInfo(value).type) }}
-                  </Tag>
-                </div>
-              </div>
-            </template>
-          </Select>
-          <small class="text-color-secondary mt-1 block">
-            Extrai conceitos-chave do texto (Embedding: rápido | LLM: preciso)
-          </small>
-        </div>
-
-        <!-- Modelo de Validação -->
-        <div class="col-12 mt-3">
-          <label class="font-semibold"><i class="pi pi-check-circle mr-2" />Modelo de Validação</label>
-          <Select 
-            v-model="selectedValidationModel" 
-            :options="llmModels" 
-            optionLabel="name" 
-            optionValue="name" 
-            class="w-full mt-2" 
-            filter
-            :loading="isLoadingModels"
-            placeholder="Selecione um modelo"
-          >
-            <template #option="{ option }">
-              <div class="model-option">
-                <span class="model-name">{{ option.name }}</span>
-                <div class="model-tags">
-                  <Tag :severity="getProviderSeverity(option.provider)" class="pill model-tag">
-                    {{ getProviderLabel(option.provider) }}
-                  </Tag>
-                  <Tag :severity="getTypeSeverity(option.type)" class="pill model-tag">
-                    {{ getTypeLabel(option.type) }}
-                  </Tag>
-                </div>
-              </div>
-            </template>
-            <template #value="{ value }">
-              <div v-if="value" class="model-selected">
-                <span class="model-name">{{ value }}</span>
-                <div v-if="getModelInfo(value)" class="model-tags">
-                  <Tag :severity="getProviderSeverity(getModelInfo(value).provider)" class="pill model-tag">
-                    {{ getProviderLabel(getModelInfo(value).provider) }}
-                  </Tag>
-                </div>
-              </div>
-            </template>
-          </Select>
-          <small class="text-color-secondary mt-1 block">
-            Verifica se os cards gerados estão ancorados no texto selecionado usando LLM
-          </small>
-        </div>
-      </div>
-
-      <Divider />
-      
-      <div class="model-tips">
-        <p><strong>💡 Dica:</strong> Use modelos menores/mais rápidos para validação (ex: llama3.2:3b, gemma2:2b) para economizar tokens.</p>
-      </div>
-
-      <template #footer>
-        <Button label="Atualizar Lista" icon="pi pi-refresh" severity="secondary" outlined @click="fetchAvailableModels" :loading="isLoadingModels" />
-        <Button label="Cancelar" severity="secondary" outlined @click="modelSelectionVisible = false" />
-        <Button label="Salvar" icon="pi pi-check" @click="saveModelSelection" />
-      </template>
-    </Dialog>
+    <ModelSelectionDialog
+      v-model:visible="modelSelectionVisible"
+      :availableModels="availableModels"
+      :selectedModel="selectedModel"
+      :selectedValidationModel="selectedValidationModel"
+      :selectedAnalysisModel="selectedAnalysisModel"
+      :isLoadingModels="isLoadingModels"
+      @update:selectedModel="selectedModel = $event"
+      @update:selectedValidationModel="selectedValidationModel = $event"
+      @update:selectedAnalysisModel="selectedAnalysisModel = $event"
+      @save="saveModelSelection"
+      @refresh="fetchAvailableModels"
+    />
 
     <!-- PROMPT SETTINGS -->
     <Dialog
@@ -5433,155 +5056,10 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- INTRO MODAL (Onboarding) -->
-    <Dialog
+    <IntroModal
       v-model:visible="introModalVisible"
-      :closable="false"
-      modal
-      class="intro-modal-dialog"
-      :style="{ width: 'min(520px, 94vw)' }"
-    >
-      <template #header>
-        <div class="flex justify-content-between align-items-center w-full">
-          <span class="text-sm font-medium" style="color: rgba(148, 163, 184, 0.7)">{{ introStep }}/{{ TOTAL_INTRO_STEPS }}</span>
-          <div class="flex gap-2 align-items-center">
-            <span
-              v-for="n in TOTAL_INTRO_STEPS"
-              :key="n"
-              class="inline-block border-round-sm transition-colors transition-duration-300"
-              :style="{
-                width: n === introStep ? '2rem' : '0.5rem',
-                height: '0.35rem',
-                background: n === introStep ? 'linear-gradient(90deg, #10b981, #34d399)' : 'rgba(148, 163, 184, 0.3)'
-              }"
-            />
-          </div>
-          <Button
-            label="Pular"
-            @click="skipIntro"
-            text
-            size="small"
-            class="p-1 text-xs"
-            style="color: rgba(148, 163, 184, 0.7)"
-          />
-        </div>
-      </template>
-
-      <!-- Step 1: Boas-vindas -->
-      <div v-if="introStep === 1" class="text-center py-5">
-        <div
-          class="flex align-items-center justify-content-center mx-auto mb-4 border-round-xl"
-          style="width: 5rem; height: 5rem; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3)"
-        >
-          <i class="pi pi-bolt text-white" style="font-size: 2.5rem" />
-        </div>
-        <h2 class="text-2xl font-bold mb-3 mt-0" style="color: #f1f5f9">Bem-vindo ao Green Deck!</h2>
-        <p class="line-height-3 m-0 px-3" style="color: rgba(148, 163, 184, 0.9)">
-          Transforme qualquer conteudo em flashcards inteligentes usando IA.<br />
-          Estude de forma eficiente com repeticao espacada.
-        </p>
-      </div>
-
-      <!-- Step 2: Como funciona -->
-      <div v-else-if="introStep === 2" class="py-4">
-        <h2 class="text-xl font-bold mb-5 text-center mt-0" style="color: #f1f5f9">Como usar</h2>
-        <div class="flex flex-column gap-3 px-2">
-          <div
-            class="flex align-items-center gap-3 p-3 border-round-lg"
-            style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
-          >
-            <div
-              class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
-              style="width: 3rem; height: 3rem; background: linear-gradient(135deg, #10b981, #059669)"
-            >
-              <i class="pi pi-file-edit text-xl text-white" />
-            </div>
-            <div>
-              <span class="font-medium" style="color: #f1f5f9">Cole ou digite seu conteudo</span>
-              <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">Use o editor para adicionar textos, PDFs ou documentos</p>
-            </div>
-          </div>
-          <div
-            class="flex align-items-center gap-3 p-3 border-round-lg"
-            style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
-          >
-            <div
-              class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
-              style="width: 3rem; height: 3rem; background: linear-gradient(135deg, #10b981, #059669)"
-            >
-              <i class="pi pi-sparkles text-xl text-white" />
-            </div>
-            <div>
-              <span class="font-medium" style="color: #f1f5f9">Gere flashcards com IA</span>
-              <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">A IA analisa e cria cards de alta qualidade</p>
-            </div>
-          </div>
-          <div
-            class="flex align-items-center gap-3 p-3 border-round-lg"
-            style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
-          >
-            <div
-              class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
-              style="width: 3rem; height: 3rem; background: linear-gradient(135deg, #10b981, #059669)"
-            >
-              <i class="pi pi-sync text-xl text-white" />
-            </div>
-            <div>
-              <span class="font-medium" style="color: #f1f5f9">Estude ou exporte para Anki</span>
-              <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">Use repeticao espacada ou exporte seus decks</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Step 3: Comecar -->
-      <div v-else-if="introStep === 3" class="text-center py-5">
-        <div
-          class="flex align-items-center justify-content-center mx-auto mb-4 border-round-xl"
-          style="width: 5rem; height: 5rem; background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3)"
-        >
-          <i class="pi pi-check text-white" style="font-size: 2.5rem" />
-        </div>
-        <h2 class="text-xl font-bold mb-3 mt-0" style="color: #f1f5f9">Tudo pronto!</h2>
-        <p class="mb-5 px-3" style="color: rgba(148, 163, 184, 0.9)">
-          A seguir, voce podera configurar os modelos de IA para geracao dos cards.
-        </p>
-        <div
-          class="flex align-items-center justify-content-center gap-2 p-3 border-round-lg mx-auto"
-          style="max-width: 20rem; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
-        >
-          <Checkbox v-model="dontShowIntroAgain" :binary="true" inputId="dontShowAgain" />
-          <label for="dontShowAgain" class="cursor-pointer text-sm" style="color: rgba(148, 163, 184, 0.9)">
-            Nao mostrar esta introducao novamente
-          </label>
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="flex justify-content-between align-items-center w-full">
-          <Button
-            v-if="introStep > 1"
-            label="Anterior"
-            @click="prevIntroStep"
-            text
-            icon="pi pi-arrow-left"
-            style="color: rgba(148, 163, 184, 0.8)"
-          />
-          <span v-else></span>
-          <Button
-            :label="introStep === TOTAL_INTRO_STEPS ? 'Comecar' : 'Proximo'"
-            @click="nextIntroStep"
-            :icon="introStep === TOTAL_INTRO_STEPS ? 'pi pi-check' : 'pi pi-arrow-right'"
-            iconPos="right"
-            class="px-4"
-            :style="{
-              background: 'linear-gradient(135deg, #10b981, #059669)',
-              border: 'none',
-              color: 'white'
-            }"
-          />
-        </div>
-      </template>
-    </Dialog>
+      @complete="onIntroComplete"
+    />
 
     <!-- OLLAMA MODEL SELECTION (fallback) -->
     <Dialog
@@ -5660,66 +5138,16 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- ANKI CONFIG -->
-    <Dialog v-model:visible="ankiVisible" header="Exportar para Anki" modal class="modern-dialog" style="width: min(760px, 96vw);">
-      <div class="anki-export-content">
-        <div class="anki-export-section">
-          <label class="anki-export-label">
-            <i class="pi pi-file"></i>
-            Tipo de Nota (Modelo)
-          </label>
-          <Select v-model="ankiModel" :options="ankiModelOptions" optionLabel="label" optionValue="value" class="w-full" filter placeholder="Selecione um modelo" />
-        </div>
-
-        <div class="anki-export-row">
-          <div class="anki-export-section">
-            <label class="anki-export-label">
-              <i class="pi pi-arrow-right"></i>
-              Campo Frente
-            </label>
-            <Select v-model="ankiFrontField" :options="ankiFieldOptions" optionLabel="label" optionValue="value" class="w-full" placeholder="Selecione o campo" />
-          </div>
-
-          <div class="anki-export-section">
-            <label class="anki-export-label">
-              <i class="pi pi-arrow-left"></i>
-              Campo Verso
-            </label>
-            <Select v-model="ankiBackField" :options="ankiFieldOptions" optionLabel="label" optionValue="value" class="w-full" placeholder="Selecione o campo" />
-          </div>
-        </div>
-
-        <div class="anki-export-section">
-          <label class="anki-export-label">
-            <i class="pi pi-folder"></i>
-            Baralho
-            <span class="anki-export-optional">(opcional)</span>
-          </label>
-          <Select v-model="ankiDeckField" :options="ankiDeckOptions" optionLabel="label" optionValue="value" class="w-full" filter placeholder="Selecione um baralho" />
-        </div>
-
-        <div class="anki-export-section">
-          <label class="anki-export-label">
-            <i class="pi pi-tags"></i>
-            Tags
-          </label>
-          <AutoComplete
-            v-model="ankiTags"
-            :suggestions="ankiTagSuggestions"
-            @complete="searchAnkiTags"
-            multiple
-            :completeOnFocus="true"
-            class="w-full"
-            placeholder="Selecione ou digite novas tags"
-          />
-          <small class="anki-export-hint">Selecione tags existentes ou digite para criar novas</small>
-        </div>
-      </div>
-
-      <template #footer>
-        <Button label="Cancelar" severity="secondary" outlined @click="ankiVisible = false" />
-        <Button label="Exportar para Anki" icon="pi pi-send" :loading="ankiExporting" @click="exportToAnkiConfirm" />
-      </template>
-    </Dialog>
+    <AnkiExportDialog
+      v-model:visible="ankiVisible"
+      :ankiModelsData="ankiModelsData"
+      :exporting="ankiExporting"
+      :allTags="ankiAllTags"
+      :initialModel="ankiModel"
+      :initialDeck="ankiDeckField"
+      :initialTags="ankiTags"
+      @export="onAnkiExport"
+    />
   </div>
 </template>
 
