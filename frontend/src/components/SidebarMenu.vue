@@ -3,6 +3,7 @@
 import { ref } from 'vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
+import { APP_VERSION, IS_BETA } from '@/config/version'
 
 defineProps({
   menuItems: {
@@ -15,7 +16,11 @@ defineProps({
   },
   version: {
     type: String,
-    default: 'v1.0.0'
+    default: APP_VERSION
+  },
+  showBetaBadge: {
+    type: Boolean,
+    default: IS_BETA
   },
   logoSrc: {
     type: String,
@@ -214,6 +219,7 @@ defineExpose({
       <Transition name="fade">
         <div v-if="sidebarExpanded" class="sidebar-version">
           <span>{{ version }}</span>
+          <Tag v-if="showBetaBadge" severity="warn" class="beta-badge">BETA</Tag>
         </div>
       </Transition>
     </div>
@@ -713,6 +719,16 @@ defineExpose({
   color: rgba(255, 255, 255, 0.35);
   font-weight: 500;
   padding-right: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.beta-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
 }
 
 /* Sidebar Brand Logo (expanded state) */

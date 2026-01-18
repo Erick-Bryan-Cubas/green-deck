@@ -3,8 +3,8 @@
  */
 import { computed, ref, watch } from 'vue'
 
-const LS_SESSIONS_KEY = 'spaced-rep.sessions.v1'
-const LS_ACTIVE_SESSION_KEY = 'spaced-rep.sessions.active.v1'
+const LS_SESSIONS_KEY = 'green-deck.sessions.v1'
+const LS_ACTIVE_SESSION_KEY = 'green-deck.sessions.active.v1'
 const MAX_SESSIONS = 30
 const MAX_LOCALSTORAGE_CHARS = 4_000_000
 

@@ -15,7 +15,22 @@ export default defineConfig({
   },
   build: {
     outDir: '../static/dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('pdfjs-dist')) return 'pdf-worker'
+            if (id.includes('vue-pdf') || id.includes('@tato30')) return 'pdf-viewer'
+            if (id.includes('primevue') || id.includes('primeuix')) return 'primevue'
+            if (id.includes('chart.js')) return 'chart'
+            if (id.includes('quill')) return 'editor'
+            if (id.includes('vue-router')) return 'vue-router'
+            if (id.includes('vue')) return 'vue'
+          }
+        }
+      }
+    }
   },
   server: {
     proxy: {
