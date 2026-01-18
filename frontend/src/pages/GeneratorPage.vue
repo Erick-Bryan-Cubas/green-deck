@@ -31,6 +31,7 @@ import StepPanels from 'primevue/steppanels'
 import Step from 'primevue/step'
 import StepPanel from 'primevue/steppanel'
 import SelectButton from 'primevue/selectbutton'
+import AutoComplete from 'primevue/autocomplete'
 import { useToast } from 'primevue/usetoast'
 
 // App components - with lazy loading for performance
@@ -125,6 +126,7 @@ function clamp(n, min, max) {
 // ============================================================
 const INTRO_SHOWN_KEY = 'green-deck.intro-shown'
 const LS_READER_KEY = 'green-deck.reader.v2'
+const LS_ANKI_PREFS_KEY = 'green-deck.anki-export-prefs'
 
 // ============================================================
 // Modo Leitura (Kindle full-screen + paginação real)
@@ -3057,9 +3059,48 @@ const ankiModel = ref('')
 const ankiFrontField = ref('')
 const ankiBackField = ref('')
 const ankiDeckField = ref('')
-const ankiTags = ref('')
+const ankiTags = ref([])
 const ankiExporting = ref(false)
 const clearCardsVisible = ref(false)
+
+// Tag autocomplete
+const ankiAllTags = ref([])
+const ankiTagSuggestions = ref([])
+
+// Anki preferences persistence
+function loadAnkiPreferences() {
+  try {
+    const raw = localStorage.getItem(LS_ANKI_PREFS_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch (e) {
+    console.warn('Failed to load Anki preferences:', e)
+  }
+  return {}
+}
+
+function saveAnkiPreferences() {
+  try {
+    const prefs = {
+      model: ankiModel.value,
+      deck: ankiDeckField.value,
+      tags: ankiTags.value
+    }
+    localStorage.setItem(LS_ANKI_PREFS_KEY, JSON.stringify(prefs))
+  } catch (e) {
+    console.warn('Failed to save Anki preferences:', e)
+  }
+}
+
+function searchAnkiTags(event) {
+  const query = (event.query || '').toLowerCase().trim()
+  if (!query) {
+    ankiTagSuggestions.value = [...ankiAllTags.value]
+  } else {
+    ankiTagSuggestions.value = ankiAllTags.value.filter(
+      tag => tag.toLowerCase().includes(query)
+    )
+  }
+}
 
 const ankiModelOptions = computed(() => {
   const d = ankiModelsData.value
@@ -3097,7 +3138,7 @@ async function exportToAnkiOpenConfig(selectedIndices = null) {
     // Se passar índices, exporta apenas esses; senão, exporta todos
     cardsToExport.value = Array.isArray(selectedIndices) ? selectedIndices : null
     const cardsCount = cardsToExport.value ? cardsToExport.value.length : cards.value.length
-    
+
     if (cardsCount === 0) {
       notify('Nenhum card para exportar', 'info')
       return
@@ -3105,12 +3146,37 @@ async function exportToAnkiOpenConfig(selectedIndices = null) {
     showProgress('Carregando modelos do Anki...')
     setProgress(30)
 
-    const resp = await fetch('/api/anki-models')
-    if (!resp.ok) throw new Error('Não foi possível conectar no Anki. Verifique Anki + AnkiConnect.')
+    // Fetch models and tags in parallel
+    const [modelsResp, tagsResp] = await Promise.all([
+      fetch('/api/anki-models'),
+      fetch('/api/anki-tags')
+    ])
 
-    const data = await resp.json()
+    if (!modelsResp.ok) throw new Error('Não foi possível conectar no Anki. Verifique Anki + AnkiConnect.')
+
+    const data = await modelsResp.json()
     ankiModelsData.value = data
-    ankiModel.value = Object.keys(data.models || {})[0] || ''
+
+    // Handle tags response
+    if (tagsResp.ok) {
+      const tagsData = await tagsResp.json()
+      ankiAllTags.value = tagsData.tags || []
+    }
+
+    // Load saved preferences from localStorage
+    const savedPrefs = loadAnkiPreferences()
+    const modelKeys = Object.keys(data.models || {})
+
+    // Use saved model if it exists in available models, otherwise use first
+    if (savedPrefs.model && modelKeys.includes(savedPrefs.model)) {
+      ankiModel.value = savedPrefs.model
+    } else {
+      ankiModel.value = modelKeys[0] || ''
+    }
+
+    // Restore other saved preferences
+    if (savedPrefs.deck !== undefined) ankiDeckField.value = savedPrefs.deck
+    if (Array.isArray(savedPrefs.tags)) ankiTags.value = savedPrefs.tags
 
     setProgress(100)
     completeProgress()
@@ -3129,7 +3195,10 @@ async function exportToAnkiConfirm() {
     setProgress(20)
 
     const cardsData = exportableCards.value
-    
+
+    // Convert tags array to comma-separated string for backend
+    const tagsString = Array.isArray(ankiTags.value) ? ankiTags.value.join(', ') : ankiTags.value
+
     const resp = await fetch('/api/upload-to-anki', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3139,7 +3208,7 @@ async function exportToAnkiConfirm() {
         frontField: ankiFrontField.value,
         backField: ankiBackField.value,
         deckName: ankiDeckField.value,
-        tags: ankiTags.value
+        tags: tagsString
       })
     })
 
@@ -3152,8 +3221,12 @@ async function exportToAnkiConfirm() {
     setProgress(100)
     completeProgress()
     notify(`${result.totalSuccess} de ${result.totalCards} enviados ao Anki!`, 'success')
+
+    // Save preferences on successful export
+    saveAnkiPreferences()
+
     ankiVisible.value = false
-    
+
     // Limpa seleção após exportar
     if (cardsToExport.value !== null) {
       clearSelection()
@@ -5524,8 +5597,17 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="col-12 mt-3">
-          <label class="font-semibold">Tags (comma-separated, optional)</label>
-          <InputText v-model="ankiTags" class="w-full" placeholder="tag1, tag2" autocomplete="off" />
+          <label class="font-semibold">Tags</label>
+          <AutoComplete
+            v-model="ankiTags"
+            :suggestions="ankiTagSuggestions"
+            @complete="searchAnkiTags"
+            multiple
+            :completeOnFocus="true"
+            class="w-full"
+            placeholder="Selecione ou digite novas tags"
+          />
+          <small class="text-color-secondary">Selecione tags existentes ou digite para criar novas</small>
         </div>
       </div>
 
