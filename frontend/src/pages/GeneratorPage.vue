@@ -49,6 +49,12 @@ import EditCardDialog from '@/components/modals/EditCardDialog.vue'
 import ModelSelectionDialog from '@/components/modals/ModelSelectionDialog.vue'
 import IntroModal from '@/components/modals/IntroModal.vue'
 import AnkiExportDialog from '@/components/modals/AnkiExportDialog.vue'
+import ApiKeysDialog from '@/components/modals/ApiKeysDialog.vue'
+import PromptSettingsDialog from '@/components/modals/PromptSettingsDialog.vue'
+import ProgressDialog from '@/components/modals/ProgressDialog.vue'
+import OllamaSelectionDialog from '@/components/modals/OllamaSelectionDialog.vue'
+import TopicConfirmDialog from '@/components/modals/TopicConfirmDialog.vue'
+import CustomInstructionDialog from '@/components/modals/CustomInstructionDialog.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 
@@ -3380,6 +3386,53 @@ async function onAnkiExport({ model, frontField, backField, deck, tags }) {
   await exportToAnkiConfirm()
 }
 
+// Handler: ApiKeysDialog
+function onApiKeysSave({ anthropicApiKey: aKey, openaiApiKey: oKey, perplexityApiKey: pKey, storeLocally: store }) {
+  const ok = storeApiKeys(aKey, oKey, pKey, store)
+  if (ok) {
+    notify('Chaves de API salvas com sucesso!', 'success')
+    fetchAvailableModels()
+  } else {
+    notify('Erro ao salvar as chaves', 'error')
+  }
+  apiKeyVisible.value = false
+}
+
+function onApiKeysClear() {
+  storeApiKeys('', '', '', false)
+  notify('Chaves removidas', 'info')
+  fetchAvailableModels()
+}
+
+// Handler: PromptSettingsDialog
+function onPromptSettingsSave(prompts) {
+  savePromptSettings(prompts)
+}
+
+function onPromptSettingsReset() {
+  resetPromptsToDefaults()
+}
+
+// Handler: OllamaSelectionDialog
+function onOllamaModelSelect(modelName) {
+  selectOllamaModel(modelName)
+}
+
+// Handler: TopicConfirmDialog
+function onTopicConfirm() {
+  confirmTopicSegmentation()
+}
+
+function onTopicCancel() {
+  cancelTopicSegmentation()
+}
+
+// Handler: CustomInstructionDialog
+function onCustomInstructionConfirm(instruction) {
+  editCustomInstruction.value = instruction
+  editGenerateCardConfirm()
+}
+
 // ============================================================
 // Sidebar Menu
 // ============================================================
@@ -4791,33 +4844,11 @@ onBeforeUnmount(() => {
     />
 
     <!-- CUSTOM INSTRUCTION DIALOG -->
-    <Dialog
+    <CustomInstructionDialog
       v-model:visible="editCustomInstructionVisible"
-      header="Instrução Customizada"
-      modal
-      appendTo="body"
-      class="modern-dialog"
-      style="width: min(640px, 96vw);"
-    >
-      <div class="mb-3">
-        <label class="font-semibold">Instrução para o LLM (opcional)</label>
-        <Textarea 
-          v-model="editCustomInstruction" 
-          autoResize 
-          class="w-full mt-2" 
-          rows="4"
-          placeholder="Ex: Foque em conceitos técnicos, use linguagem formal..."
-        />
-        <small class="text-color-secondary mt-2 block">
-          Deixe em branco para usar o contexto padrão do documento.
-        </small>
-      </div>
-
-      <template #footer>
-        <Button label="Cancelar" severity="secondary" outlined @click="editCustomInstructionVisible = false" />
-        <Button label="Gerar" icon="pi pi-bolt" @click="editGenerateCardConfirm" />
-      </template>
-    </Dialog>
+      :initialInstruction="editCustomInstruction"
+      @confirm="onCustomInstructionConfirm"
+    />
 
     <!-- LOGS -->
     <Dialog v-model:visible="logsVisible" header="🔍 Logs" modal class="modern-dialog" style="width: min(980px, 96vw);">
@@ -4838,148 +4869,30 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- PROGRESS -->
-    <Dialog
+    <ProgressDialog
       v-model:visible="progressVisible"
-      :header="progressTitle"
-      modal
-      :closable="false"
-      class="modern-dialog progress-dialog"
-      style="width: min(560px, 95vw);"
-    >
-      <div class="progress-content">
-        <ProgressBar :value="progressValue" :showValue="false" style="height: 8px;" />
-        
-        <div class="progress-info mt-3">
-          <div class="progress-stage" v-if="progressStage">
-            <i v-if="progressIcon" :class="progressIcon" class="progress-stage-icon"></i>
-            {{ progressStage }}
-          </div>
-          <div class="progress-percent">{{ progressValue }}%</div>
-        </div>
-        
-        <!-- Pipeline summary -->
-        <div class="progress-pipeline mt-3" v-if="Object.keys(progressDetails).length > 0">
-          <div class="pipeline-stats">
-            <div v-if="progressDetails.parsed" class="stat-item">
-              <span class="stat-label">Parseados:</span>
-              <span class="stat-value">{{ progressDetails.parsed }} cards</span>
-            </div>
-            <div v-if="progressDetails.srcKept !== undefined" class="stat-item">
-              <span class="stat-label">Validação SRC:</span>
-              <span class="stat-value success"><i class="pi pi-check"></i> {{ progressDetails.srcKept }}</span>
-              <span class="stat-value danger" v-if="progressDetails.srcDropped"><i class="pi pi-times"></i> {{ progressDetails.srcDropped }}</span>
-            </div>
-            <div v-if="progressDetails.relevanceKept !== undefined" class="stat-item">
-              <span class="stat-label">Relevância:</span>
-              <span class="stat-value success"><i class="pi pi-check"></i> {{ progressDetails.relevanceKept }}</span>
-              <span class="stat-value danger" v-if="progressDetails.relevanceDropped"><i class="pi pi-times"></i> {{ progressDetails.relevanceDropped }}</span>
-            </div>
-            <div v-if="progressDetails.totalCards" class="stat-item total">
-              <span class="stat-label">Total Final:</span>
-              <span class="stat-value">{{ progressDetails.totalCards }} cards</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Dialog>
+      :title="progressTitle"
+      :value="progressValue"
+      :stage="progressStage"
+      :icon="progressIcon"
+      :details="progressDetails"
+    />
 
     <!-- TOPIC SEGMENTATION CONFIRM -->
-    <Dialog
+    <TopicConfirmDialog
       v-model:visible="showTopicConfirmModal"
-      header="Marcar Tópicos Automaticamente?"
-      modal
-      class="modern-dialog"
-      style="width: min(480px, 95vw);"
-    >
-      <div class="topic-confirm-content">
-        <div class="confirm-icon">
-          <i class="pi pi-palette" style="font-size: 2.5rem; color: var(--p-primary-500);"></i>
-        </div>
-        <p class="confirm-text">
-          Deseja que o modelo identifique e marque automaticamente os diferentes tópicos no texto com cores?
-        </p>
-        <p class="confirm-subtext">
-          <i class="pi pi-info-circle"></i>
-          Serão identificados: definições, exemplos, conceitos, fórmulas, procedimentos e comparações.
-        </p>
-      </div>
-      <template #footer>
-        <div class="topic-confirm-footer">
-          <Button
-            label="Não, obrigado"
-            icon="pi pi-times"
-            severity="secondary"
-            text
-            @click="cancelTopicSegmentation"
-          />
-          <Button
-            label="Sim, marcar tópicos"
-            icon="pi pi-palette"
-            @click="confirmTopicSegmentation"
-          />
-        </div>
-      </template>
-    </Dialog>
+      @confirm="onTopicConfirm"
+      @cancel="onTopicCancel"
+    />
 
     <!-- API KEYS -->
-    <Dialog v-model:visible="apiKeyVisible" header="Configurar Chaves de API" modal class="modern-dialog" style="width: min(760px, 96vw);">
-      <div class="api-info surface-ground border-round p-3 mb-3">
-        <div class="flex align-items-start gap-2">
-          <i class="pi pi-info-circle text-primary mt-1" />
-          <div>
-            <span class="font-semibold">Chaves de API são opcionais</span>
-            <p class="text-color-secondary text-sm m-0 mt-1">
-              Se você possui modelos locais no Ollama, não é necessário configurar chaves de API.
-              As chaves são armazenadas apenas no seu navegador e nunca são enviadas a servidores externos.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div class="grid">
-        <div class="col-12">
-          <label class="font-semibold">Chave Claude (Anthropic) <span class="opt">(Opcional)</span></label>
-          <InputText v-model="anthropicApiKey" class="w-full" placeholder="sk-ant-api03-..." autocomplete="off" />
-          <small class="text-color-secondary">Obtenha em console.anthropic.com/keys</small>
-          <div v-if="anthropicApiKeyError" class="err">{{ anthropicApiKeyError }}</div>
-        </div>
-
-        <div class="col-12 mt-3">
-          <label class="font-semibold">Chave OpenAI <span class="opt">(Opcional)</span></label>
-          <InputText v-model="openaiApiKey" class="w-full" placeholder="sk-..." autocomplete="off" />
-          <small class="text-color-secondary">Obtenha em platform.openai.com/api-keys</small>
-        </div>
-
-        <div class="col-12 mt-3">
-          <label class="font-semibold">Chave Perplexity <span class="opt">(Opcional)</span></label>
-          <InputText v-model="perplexityApiKey" class="w-full" placeholder="pplx-..." autocomplete="off" />
-          <small class="text-color-secondary">Obtenha em perplexity.ai/settings/api</small>
-        </div>
-
-        <div class="col-12 mt-3 flex align-items-center gap-2">
-          <Checkbox v-model="storeLocally" :binary="true" />
-          <label>Lembrar chaves neste dispositivo</label>
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="flex justify-content-between w-full">
-          <Button
-            v-if="hasStoredApiKeys"
-            label="Limpar Chaves"
-            icon="pi pi-trash"
-            severity="danger"
-            outlined
-            @click="clearApiKeys"
-          />
-          <div v-else></div>
-          <div class="flex gap-2">
-            <Button label="Cancelar" severity="secondary" outlined @click="apiKeyVisible = false" />
-            <Button label="Salvar" icon="pi pi-save" @click="saveApiKeys" />
-          </div>
-        </div>
-      </template>
-    </Dialog>
+    <ApiKeysDialog
+      v-model:visible="apiKeyVisible"
+      :storedKeys="storedKeys"
+      :hasStoredKeys="hasStoredApiKeys"
+      @save="onApiKeysSave"
+      @clear="onApiKeysClear"
+    />
 
     <!-- MODEL SELECTION -->
     <ModelSelectionDialog
@@ -4997,63 +4910,14 @@ onBeforeUnmount(() => {
     />
 
     <!-- PROMPT SETTINGS -->
-    <Dialog
+    <PromptSettingsDialog
       v-model:visible="promptSettingsVisible"
-      header="Prompts de Geração"
-      modal
-      class="modern-dialog"
-      style="width: min(860px, 96vw);"
-    >
-      <div class="prompt-settings-info mb-3">
-        <div class="flex align-items-center gap-2 mb-2">
-          <i class="pi pi-info-circle text-primary" />
-          <span class="font-semibold">Personalize os prompts de geração de flashcards</span>
-        </div>
-        <p class="text-color-secondary text-sm m-0">
-          Os prompts salvos aqui serão usados automaticamente em todas as gerações futuras.
-          <br />
-          No modal de geração, você ainda pode fazer ajustes temporários que não afetam os salvos.
-        </p>
-      </div>
-
-      <div v-if="hasCustomPromptsSaved" class="saved-indicator mb-3">
-        <Tag severity="success" class="pill">
-          <i class="pi pi-check-circle mr-2" />
-          Prompts personalizados ativos
-        </Tag>
-      </div>
-
-      <PromptEditor
-        ref="promptSettingsEditorRef"
-        :cardType="cardType"
-        :initialPrompts="savedCustomPrompts"
-        mode="settings"
-        @update:customPrompts="onPromptSettingsUpdate"
-      />
-
-      <template #footer>
-        <div class="flex justify-content-between w-full">
-          <Button
-            v-if="hasCustomPromptsSaved"
-            label="Restaurar Padrões"
-            icon="pi pi-refresh"
-            severity="warning"
-            outlined
-            @click="resetPromptsToDefaults"
-          />
-          <div v-else></div>
-
-          <div class="flex gap-2">
-            <Button label="Cancelar" severity="secondary" outlined @click="promptSettingsVisible = false" />
-            <Button
-              label="Salvar Prompts"
-              icon="pi pi-save"
-              @click="savePromptSettings(pendingPromptSettings)"
-            />
-          </div>
-        </div>
-      </template>
-    </Dialog>
+      :cardType="cardType"
+      :savedPrompts="savedCustomPrompts"
+      :hasCustomPrompts="hasCustomPromptsSaved"
+      @save="onPromptSettingsSave"
+      @reset="onPromptSettingsReset"
+    />
 
     <!-- INTRO MODAL (Onboarding) -->
     <IntroModal
@@ -5062,55 +4926,11 @@ onBeforeUnmount(() => {
     />
 
     <!-- OLLAMA MODEL SELECTION (fallback) -->
-    <Dialog
+    <OllamaSelectionDialog
       v-model:visible="ollamaModelSelectionVisible"
-      modal
-      :closable="false"
-      class="ollama-selection-dialog"
-      :style="{ width: 'min(500px, 96vw)' }"
-    >
-      <template #header>
-        <div class="flex align-items-center gap-3 w-full">
-          <div
-            class="flex align-items-center justify-content-center border-round-lg flex-shrink-0"
-            style="width: 2.5rem; height: 2.5rem; background: linear-gradient(135deg, #10b981, #059669)"
-          >
-            <i class="pi pi-server text-white" style="font-size: 1.2rem" />
-          </div>
-          <span class="font-semibold" style="color: #f1f5f9">Selecione um Modelo</span>
-        </div>
-      </template>
-
-      <div class="flex flex-column gap-3">
-        <p class="m-0 mb-2" style="color: rgba(148, 163, 184, 0.9)">
-          Detectamos multiplos modelos no Ollama.<br />
-          Selecione qual deseja usar para geracao de flashcards:
-        </p>
-
-        <div
-          v-for="model in ollamaLlmModels"
-          :key="model.name"
-          class="ollama-model-item flex align-items-center justify-content-between p-3 border-round-lg cursor-pointer transition-all transition-duration-200"
-          style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(148, 163, 184, 0.1)"
-          @click="selectOllamaModel(model.name)"
-        >
-          <div>
-            <span class="font-semibold" style="color: #f1f5f9">{{ model.name }}</span>
-            <div class="text-sm mt-1" style="color: rgba(148, 163, 184, 0.7)">
-              <span v-if="model.size">{{ formatModelSize(model.size) }}</span>
-              <span v-if="model.parameter_size"> · {{ model.parameter_size }}</span>
-              <span v-if="model.family"> · {{ model.family }}</span>
-            </div>
-          </div>
-          <i class="pi pi-chevron-right" style="color: rgba(148, 163, 184, 0.5)" />
-        </div>
-
-        <div v-if="ollamaLlmModels.length === 0" class="text-center p-4" style="color: rgba(148, 163, 184, 0.7)">
-          <i class="pi pi-exclamation-circle text-xl mb-2" />
-          <p class="m-0">Nenhum modelo LLM encontrado no Ollama.</p>
-        </div>
-      </div>
-    </Dialog>
+      :models="ollamaLlmModels"
+      @select="onOllamaModelSelect"
+    />
 
     <!-- CLEAR ALL CARDS CONFIRMATION -->
     <Dialog
