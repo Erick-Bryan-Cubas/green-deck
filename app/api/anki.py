@@ -907,6 +907,23 @@ async def get_anki_models():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+
+@router.get("/anki-tags")
+async def get_anki_tags():
+    """
+    Fetch all tags from Anki using AnkiConnect's getTags action.
+    Returns sorted list of tags.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tags = await ankiconnect(client, "getTags", None)
+            tags = list(tags or [])
+            tags.sort(key=lambda x: str(x).lower())
+            return {"success": True, "tags": tags}
+    except Exception as e:
+        return {"success": False, "error": str(e), "tags": []}
+
+
 @router.get("/anki-note-types")
 async def get_anki_note_types():
     try:
@@ -1453,23 +1470,60 @@ async def anki_note_info(noteId: int = Query(..., ge=1)):
 class AnkiNoteUpdateRequest(BaseModel):
     noteId: int
     fields: Dict[str, str] = Field(default_factory=dict)
+    tags: Optional[List[str]] = None
+
 
 @router.post("/anki-note-update")
 async def anki_note_update(req: AnkiNoteUpdateRequest):
     """
-    Atualiza fields da nota via updateNoteFields.
+    Atualiza fields e/ou tags da nota.
+    - fields: via updateNoteFields
+    - tags: via addTags/removeTags (calcula diff)
     """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             note_id = int(req.noteId)
             fields = {str(k): str(v) for k, v in (req.fields or {}).items()}
+            updated_fields = 0
+            updated_tags = False
 
-            if not fields:
-                return JSONResponse(status_code=400, content={"success": False, "error": "fields vazio."})
+            # Update fields if provided
+            if fields:
+                payload = {"note": {"id": note_id, "fields": fields}}
+                await ankiconnect(client, "updateNoteFields", payload)
+                updated_fields = len(fields)
 
-            payload = {"note": {"id": note_id, "fields": fields}}
-            await ankiconnect(client, "updateNoteFields", payload)
-            return {"success": True, "noteId": note_id, "updatedFields": len(fields)}
+            # Update tags if provided (not None)
+            if req.tags is not None:
+                # Get current tags from note
+                info = await ankiconnect(client, "notesInfo", {"notes": [note_id]})
+                current_tags = set(info[0].get("tags", []) if info else [])
+                new_tags = set(str(t).strip() for t in req.tags if str(t).strip())
+
+                # Calculate diff
+                tags_to_add = list(new_tags - current_tags)
+                tags_to_remove = list(current_tags - new_tags)
+
+                # Add new tags
+                if tags_to_add:
+                    await ankiconnect(client, "addTags", {
+                        "notes": [note_id],
+                        "tags": " ".join(tags_to_add)
+                    })
+
+                # Remove old tags
+                if tags_to_remove:
+                    await ankiconnect(client, "removeTags", {
+                        "notes": [note_id],
+                        "tags": " ".join(tags_to_remove)
+                    })
+
+                updated_tags = True
+
+            if not fields and req.tags is None:
+                return JSONResponse(status_code=400, content={"success": False, "error": "Nenhum campo ou tag para atualizar."})
+
+            return {"success": True, "noteId": note_id, "updatedFields": updated_fields, "updatedTags": updated_tags}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
