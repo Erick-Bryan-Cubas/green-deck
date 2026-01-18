@@ -843,36 +843,63 @@ class AnkiUpload(BaseModel):
 
 @router.post("/upload-to-anki")
 async def upload_to_anki(request: AnkiUpload):
+    from fastapi.responses import JSONResponse
+    import logging
+    logger = logging.getLogger(__name__)
+
     results = []
     tags = [t.strip() for t in request.tags.split(",") if t.strip()] if request.tags else []
 
+    logger.info(f"[Anki Export] Starting export of {len(request.cards)} cards")
+    logger.info(f"[Anki Export] Model: {request.modelName}, Front: {request.frontField}, Back: {request.backField}, Deck: {request.deckName}")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for card in request.cards:
+        for i, card in enumerate(request.cards):
             try:
+                deck_name = request.deckName or card.deck or "Default"
                 note = {
-                    "deckName": request.deckName or card.deck or "Default",
+                    "deckName": deck_name,
                     "modelName": request.modelName,
                     "fields": {request.frontField: card.front, request.backField: card.back},
                     "options": {"allowDuplicate": False},
                     "tags": tags,
                 }
+                logger.info(f"[Anki Export] Card {i+1}: deck={deck_name}, fields={list(note['fields'].keys())}")
+
                 rr = await client.post(
                     ANKI_CONNECT_URL,
                     json={"action": "addNote", "version": 6, "params": {"note": note}},
                 )
                 data = rr.json()
+                logger.info(f"[Anki Export] Card {i+1} response: {data}")
+
                 if data.get("error"):
                     raise Exception(data["error"])
                 results.append({"success": True, "id": data["result"]})
             except Exception as e:
+                logger.error(f"[Anki Export] Card {i+1} failed: {str(e)}")
                 results.append({"success": False, "error": str(e)})
 
-    return {
-        "success": True,
+    total_success = sum(1 for r in results if r["success"])
+    total_cards = len(request.cards)
+
+    response_data = {
+        "success": total_success > 0,
         "results": results,
-        "totalSuccess": sum(1 for r in results if r["success"]),
-        "totalCards": len(request.cards),
+        "totalSuccess": total_success,
+        "totalCards": total_cards,
     }
+
+    # Retorna código HTTP apropriado
+    if total_success == 0:
+        # Nenhum card foi exportado - erro
+        return JSONResponse(status_code=422, content=response_data)
+    elif total_success < total_cards:
+        # Sucesso parcial - 207 Multi-Status
+        return JSONResponse(status_code=207, content=response_data)
+    else:
+        # Todos exportados com sucesso
+        return response_data
 
 @router.get("/anki-decks")
 async def get_anki_decks():
@@ -906,6 +933,23 @@ async def get_anki_models():
             return {"success": True, "models": models, "decks": decks}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.get("/anki-tags")
+async def get_anki_tags():
+    """
+    Fetch all tags from Anki using AnkiConnect's getTags action.
+    Returns sorted list of tags.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tags = await ankiconnect(client, "getTags", None)
+            tags = list(tags or [])
+            tags.sort(key=lambda x: str(x).lower())
+            return {"success": True, "tags": tags}
+    except Exception as e:
+        return {"success": False, "error": str(e), "tags": []}
+
 
 @router.get("/anki-note-types")
 async def get_anki_note_types():
@@ -1453,23 +1497,60 @@ async def anki_note_info(noteId: int = Query(..., ge=1)):
 class AnkiNoteUpdateRequest(BaseModel):
     noteId: int
     fields: Dict[str, str] = Field(default_factory=dict)
+    tags: Optional[List[str]] = None
+
 
 @router.post("/anki-note-update")
 async def anki_note_update(req: AnkiNoteUpdateRequest):
     """
-    Atualiza fields da nota via updateNoteFields.
+    Atualiza fields e/ou tags da nota.
+    - fields: via updateNoteFields
+    - tags: via addTags/removeTags (calcula diff)
     """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             note_id = int(req.noteId)
             fields = {str(k): str(v) for k, v in (req.fields or {}).items()}
+            updated_fields = 0
+            updated_tags = False
 
-            if not fields:
-                return JSONResponse(status_code=400, content={"success": False, "error": "fields vazio."})
+            # Update fields if provided
+            if fields:
+                payload = {"note": {"id": note_id, "fields": fields}}
+                await ankiconnect(client, "updateNoteFields", payload)
+                updated_fields = len(fields)
 
-            payload = {"note": {"id": note_id, "fields": fields}}
-            await ankiconnect(client, "updateNoteFields", payload)
-            return {"success": True, "noteId": note_id, "updatedFields": len(fields)}
+            # Update tags if provided (not None)
+            if req.tags is not None:
+                # Get current tags from note
+                info = await ankiconnect(client, "notesInfo", {"notes": [note_id]})
+                current_tags = set(info[0].get("tags", []) if info else [])
+                new_tags = set(str(t).strip() for t in req.tags if str(t).strip())
+
+                # Calculate diff
+                tags_to_add = list(new_tags - current_tags)
+                tags_to_remove = list(current_tags - new_tags)
+
+                # Add new tags
+                if tags_to_add:
+                    await ankiconnect(client, "addTags", {
+                        "notes": [note_id],
+                        "tags": " ".join(tags_to_add)
+                    })
+
+                # Remove old tags
+                if tags_to_remove:
+                    await ankiconnect(client, "removeTags", {
+                        "notes": [note_id],
+                        "tags": " ".join(tags_to_remove)
+                    })
+
+                updated_tags = True
+
+            if not fields and req.tags is None:
+                return JSONResponse(status_code=400, content={"success": False, "error": "Nenhum campo ou tag para atualizar."})
+
+            return {"success": True, "noteId": note_id, "updatedFields": updated_fields, "updatedTags": updated_tags}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
