@@ -5660,30 +5660,48 @@ onBeforeUnmount(() => {
     </Dialog>
 
     <!-- ANKI CONFIG -->
-    <Dialog v-model:visible="ankiVisible" header="Anki Export Configuration" modal class="modern-dialog" style="width: min(760px, 96vw);">
-      <div class="grid">
-        <div class="col-12">
-          <label class="font-semibold">Note Type (Model)</label>
-          <Select v-model="ankiModel" :options="ankiModelOptions" optionLabel="label" optionValue="value" class="w-full" filter />
+    <Dialog v-model:visible="ankiVisible" header="Exportar para Anki" modal class="modern-dialog" style="width: min(760px, 96vw);">
+      <div class="anki-export-content">
+        <div class="anki-export-section">
+          <label class="anki-export-label">
+            <i class="pi pi-file"></i>
+            Tipo de Nota (Modelo)
+          </label>
+          <Select v-model="ankiModel" :options="ankiModelOptions" optionLabel="label" optionValue="value" class="w-full" filter placeholder="Selecione um modelo" />
         </div>
 
-        <div class="col-12 md:col-6 mt-3">
-          <label class="font-semibold">Front Field</label>
-          <Select v-model="ankiFrontField" :options="ankiFieldOptions" optionLabel="label" optionValue="value" class="w-full" />
+        <div class="anki-export-row">
+          <div class="anki-export-section">
+            <label class="anki-export-label">
+              <i class="pi pi-arrow-right"></i>
+              Campo Frente
+            </label>
+            <Select v-model="ankiFrontField" :options="ankiFieldOptions" optionLabel="label" optionValue="value" class="w-full" placeholder="Selecione o campo" />
+          </div>
+
+          <div class="anki-export-section">
+            <label class="anki-export-label">
+              <i class="pi pi-arrow-left"></i>
+              Campo Verso
+            </label>
+            <Select v-model="ankiBackField" :options="ankiFieldOptions" optionLabel="label" optionValue="value" class="w-full" placeholder="Selecione o campo" />
+          </div>
         </div>
 
-        <div class="col-12 md:col-6 mt-3">
-          <label class="font-semibold">Back Field</label>
-          <Select v-model="ankiBackField" :options="ankiFieldOptions" optionLabel="label" optionValue="value" class="w-full" />
+        <div class="anki-export-section">
+          <label class="anki-export-label">
+            <i class="pi pi-folder"></i>
+            Baralho
+            <span class="anki-export-optional">(opcional)</span>
+          </label>
+          <Select v-model="ankiDeckField" :options="ankiDeckOptions" optionLabel="label" optionValue="value" class="w-full" filter placeholder="Selecione um baralho" />
         </div>
 
-        <div class="col-12 mt-3">
-          <label class="font-semibold">Deck (optional)</label>
-          <Select v-model="ankiDeckField" :options="ankiDeckOptions" optionLabel="label" optionValue="value" class="w-full" filter />
-        </div>
-
-        <div class="col-12 mt-3">
-          <label class="font-semibold">Tags</label>
+        <div class="anki-export-section">
+          <label class="anki-export-label">
+            <i class="pi pi-tags"></i>
+            Tags
+          </label>
           <AutoComplete
             v-model="ankiTags"
             :suggestions="ankiTagSuggestions"
@@ -5693,13 +5711,13 @@ onBeforeUnmount(() => {
             class="w-full"
             placeholder="Selecione ou digite novas tags"
           />
-          <small class="text-color-secondary">Selecione tags existentes ou digite para criar novas</small>
+          <small class="anki-export-hint">Selecione tags existentes ou digite para criar novas</small>
         </div>
       </div>
 
       <template #footer>
-        <Button label="Cancel" severity="secondary" outlined @click="ankiVisible = false" />
-        <Button label="Export to Anki" icon="pi pi-send" :loading="ankiExporting" @click="exportToAnkiConfirm" />
+        <Button label="Cancelar" severity="secondary" outlined @click="ankiVisible = false" />
+        <Button label="Exportar para Anki" icon="pi pi-send" :loading="ankiExporting" @click="exportToAnkiConfirm" />
       </template>
     </Dialog>
   </div>
@@ -8234,5 +8252,58 @@ onBeforeUnmount(() => {
 
 .ollama-model-item:hover .pi-chevron-right {
   color: #10b981 !important;
+}
+
+/* =========================
+   Anki Export Modal
+========================= */
+.anki-export-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.anki-export-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.anki-export-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 640px) {
+  .anki-export-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.anki-export-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.anki-export-label i {
+  color: #10b981;
+  font-size: 0.875rem;
+}
+
+.anki-export-optional {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.anki-export-hint {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 0.25rem;
 }
 </style>
