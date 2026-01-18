@@ -5,6 +5,52 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.0.1-beta] - 2026-01-16
+
+### Adicionado
+
+- **Suporte a pdfplumber para extração de PDF**
+  - Nova opção de extração com pdfplumber como alternativa ao Docling
+  - Seleção de páginas específicas para extração
+  - Melhor performance em PDFs simples
+
+- **Autocompletar e edição de tags do Anki**
+  - Autocomplete de tags existentes ao adicionar cartões
+  - Suporte a edição de tags em cartões existentes
+
+- **Componentes de modal separados**
+  - `AnkiExportDialog.vue` - Diálogo de exportação para Anki redesenhado
+  - `ApiKeysDialog.vue` - Gerenciamento de chaves de API
+  - `CustomInstructionDialog.vue` - Instruções personalizadas
+  - `EditCardDialog.vue` - Edição de cartões com Quill editor
+  - `GenerateModal.vue` - Modal de geração de cartões
+  - `IntroModal.vue` - Modal de introdução
+  - `ModelSelectionDialog.vue` - Seleção de modelos LLM
+  - `OllamaSelectionDialog.vue` - Seleção de modelos Ollama
+  - `ProgressDialog.vue` - Progresso de operações
+  - `PromptSettingsDialog.vue` - Configurações de prompts
+  - `TopicConfirmDialog.vue` - Confirmação de tópicos
+
+### Alterado
+
+- Atualizado sistema de versionamento para indicar estágio beta
+- Adicionado badge visual "BETA" na interface (sidebar)
+- Centralizada configuração de versão no frontend (`frontend/src/config/version.ts`)
+- Sincronizada versão em todos os arquivos de configuração (pyproject.toml, package.json, app/__init__.py, app/main.py, run.py)
+- Renomeado app para "green-deck" em todos os arquivos de configuração
+- Removidos arquivos package.json e package-lock.json da raiz (movidos para frontend/)
+- Atualizadas dependências do frontend
+- Refatorado `GeneratorPage.vue` para usar componentes de modal dedicados (redução significativa de código)
+- Refatorado `EditCardDialog` para usar Quill editor com melhor UI
+- Redesenhado modal de exportação Anki com UI melhorada e localização
+
+### Corrigido
+
+- Corrigido estado expandido do sidebar nas páginas
+- Melhorado tratamento de erros e feedback na exportação para Anki
+
+---
+
 ## [1.0.0] - 2026-01-15
 
 ### Adicionado

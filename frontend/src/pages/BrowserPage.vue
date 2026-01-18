@@ -21,6 +21,7 @@ import Divider from 'primevue/divider'
 import Textarea from 'primevue/textarea'
 import ProgressBar from 'primevue/progressbar'
 import Popover from 'primevue/popover'
+import AutoComplete from 'primevue/autocomplete'
 import { useToast } from 'primevue/usetoast'
 
 // App components
@@ -660,6 +661,20 @@ const editSaving = ref(false)
 const editRow = ref(null)
 const editFields = ref([]) // [{order,name,value}]
 const editTags = ref([])
+const editTagsOriginal = ref([])
+const editAllTags = ref([])
+const editTagSuggestions = ref([])
+
+function searchEditTags(event) {
+  const query = (event.query || '').toLowerCase().trim()
+  if (!query) {
+    editTagSuggestions.value = [...editAllTags.value]
+  } else {
+    editTagSuggestions.value = editAllTags.value.filter(
+      tag => tag.toLowerCase().includes(query)
+    )
+  }
+}
 
 // -------- Migração de Campos (Lote) --------
 const migrateDialogVisible = ref(false)
@@ -804,11 +819,22 @@ async function openEditDialog(row) {
   editLoading.value = true
   editFields.value = []
   editTags.value = []
+  editTagsOriginal.value = []
 
   try {
-    const url = `/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`
-    const r = await fetch(url)
-    const data = await readJsonSafe(r)
+    // Fetch note info and all tags in parallel
+    const [noteResp, tagsResp] = await Promise.all([
+      fetch(`/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`),
+      fetch('/api/anki-tags')
+    ])
+
+    // Process tags response
+    if (tagsResp.ok) {
+      const tagsData = await tagsResp.json()
+      editAllTags.value = tagsData.tags || []
+    }
+
+    const data = await readJsonSafe(noteResp)
 
     if (data?.__nonJson) {
       addLog(`Note info: non-JSON head="${data.__head}"`, 'error')
@@ -820,8 +846,8 @@ async function openEditDialog(row) {
       notify('Falha ao ler JSON do backend.', 'error', 9000)
       return
     }
-    if (r.status >= 400 || data?.success === false) {
-      const msg = data?.error || `Falha ao buscar note info (HTTP ${r.status}).`
+    if (noteResp.status >= 400 || data?.success === false) {
+      const msg = data?.error || `Falha ao buscar note info (HTTP ${noteResp.status}).`
       addLog(`Note info error: ${msg}`, 'error')
       notify(msg, 'error', 9000)
       return
@@ -834,9 +860,12 @@ async function openEditDialog(row) {
       name: String(f?.name ?? ''),
       value: String(f?.value ?? '')
     }))
-    editTags.value = Array.isArray(note?.tags) ? note.tags : []
 
-    addLog(`Note info loaded: noteId=${nid} fields=${editFields.value.length}`, 'success')
+    const noteTags = Array.isArray(note?.tags) ? note.tags : []
+    editTags.value = [...noteTags]
+    editTagsOriginal.value = [...noteTags]
+
+    addLog(`Note info loaded: noteId=${nid} fields=${editFields.value.length} tags=${editTags.value.length}`, 'success')
   } catch (e) {
     addLog(`Note info exception: ${e?.message || String(e)}`, 'error')
     notify(e?.message || String(e), 'error', 9000)
@@ -861,8 +890,17 @@ async function saveNoteEdits() {
   const startedAt = performance.now()
 
   try {
-    const payload = { noteId: nid, fields: editFieldsMap() }
-    addLog(`Note update start: noteId=${nid} fields=${Object.keys(payload.fields).length}`, 'info')
+    // Check if tags changed
+    const tagsChanged = JSON.stringify([...editTags.value].sort()) !==
+                        JSON.stringify([...editTagsOriginal.value].sort())
+
+    const payload = {
+      noteId: nid,
+      fields: editFieldsMap(),
+      ...(tagsChanged && { tags: editTags.value })
+    }
+
+    addLog(`Note update start: noteId=${nid} fields=${Object.keys(payload.fields).length} tagsChanged=${tagsChanged}`, 'info')
 
     const r = await fetch('/api/anki-note-update', {
       method: 'POST',
@@ -1627,14 +1665,13 @@ onUnmounted(() => {
   <Toast />
 
   <!-- Sidebar -->
-  <SidebarMenu 
+  <SidebarMenu
     ref="sidebarRef"
     :menu-items="sidebarMenuItems"
     :footer-actions="sidebarFooterActions"
-    version="v1.0.0"
   />
 
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'sidebar-expanded': sidebarRef?.sidebarExpanded }">
     <Toolbar class="app-header">
       <template #start>
         <div class="header-left">
@@ -2036,11 +2073,18 @@ onUnmounted(() => {
                 <div class="kv"><span class="muted">noteId</span><b>{{ editMeta.noteId }}</b></div>
               </div>
 
-              <div class="editnote-tags" v-if="editTags?.length">
-                <span class="muted">Tags:</span>
-                <div class="tags-chips">
-                  <Tag v-for="(t, i) in editTags" :key="i" class="pill" severity="secondary">{{ t }}</Tag>
-                </div>
+              <div class="editnote-tags">
+                <label class="muted font-semibold">Tags:</label>
+                <AutoComplete
+                  v-model="editTags"
+                  :suggestions="editTagSuggestions"
+                  @complete="searchEditTags"
+                  multiple
+                  :completeOnFocus="true"
+                  class="w-full mt-2"
+                  placeholder="Selecione ou digite novas tags"
+                />
+                <small class="text-color-secondary">Selecione tags existentes ou digite para criar novas</small>
               </div>
             </div>
 
@@ -2990,7 +3034,7 @@ onUnmounted(() => {
     0 0 0 1px rgba(255, 255, 255, 0.03) inset;
 }
 
-:deep(.sidebar.expanded) ~ .app-shell {
+.app-shell.sidebar-expanded {
   margin-left: 324px;
 }
 
