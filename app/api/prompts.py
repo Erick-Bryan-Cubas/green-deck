@@ -360,6 +360,52 @@ Responda APENAS no formato acima, sem explicacoes:
         "NAO adicione explicacoes ou comentarios.\n"
     ),
 
+    # =========================
+    # Exam/Quiz Mode — instruções para textos de simulados e provas
+    # =========================
+    "FLASHCARDS_EXAM_MODE_INSTRUCTIONS": """<EXAM_MODE_CONTEXT>
+O texto de origem é de um simulado ou prova, contendo:
+- Questões com enunciados
+- Alternativas múltiplas (geralmente A, B, C, D, E)
+- Marcação de resposta correta (✅ ou indicação textual)
+- Explicações do por quê a resposta está correta ou incorreta
+
+APROVEITAMENTO PEDAGÓGICO:
+1. **Alternativas incorretas são valiosas**: Elas revelam conceitos comumente confundidos
+2. **Contraste é aprendizado**: "Por que A está correto e B está incorreto?" é uma pergunta excelente
+3. **Explicações fornecem contexto**: Use-as para enriquecer os cards
+
+ESTRATÉGIAS DE GERAÇÃO:
+- Crie cards que contraponham alternativas corretas vs incorretas
+- Explore explicações para cards do tipo "O que diferencia X de Y?"
+- Mantenha contexto da questão original (cite o enunciado quando relevante)
+- Evite copiar alternativas literalmente - reformule como conceitos
+
+EXEMPLOS:
+❌ EVITE (cópia literal):
+Q: "Qual é a resposta correta? A, B, C ou D?"
+R: "C"
+
+✅ BOM (conceitual):
+Q: "Por que a criptografia de dados em repouso E em trânsito é essencial para conformidade com GDPR no Amazon Bedrock?"
+R: "Porque protege informações sensíveis em ambos os estados (armazenado e transmitido), garantindo conformidade com regulamentações de proteção de dados."
+
+✅ EXCELENTE (contrastivo):
+Q: "Qual a diferença entre usar escalamento automático e criptografia de dados para garantir conformidade com GDPR no Amazon Bedrock?"
+R: "Escalamento automático é sobre performance/recursos, não proteção de dados. Criptografia (em repouso e trânsito) é a funcionalidade crucial para conformidade com GDPR, pois protege informações sensíveis contra acessos não autorizados."
+</EXAM_MODE_CONTEXT>
+""",
+
+    "FLASHCARDS_EXAM_MODE_ADDITIONAL_GUIDELINES": """
+DIRETRIZES ADICIONAIS PARA MODO SIMULADO/PROVA:
+- **Foco em diferenciação**: Muitos cards devem explorar "Por que X e não Y?"
+- **Use explicações**: Incorpore insights das explicações fornecidas
+- **Contexto do enunciado**: Quando relevante, mencione o cenário da questão
+- **Evite trivialidade**: Não crie cards que apenas repetem "qual alternativa está certa"
+- **Profundidade conceitual**: Extraia o conceito subjacente, não apenas a resposta da prova
+- **Aproveite os distratores**: Alternativas incorretas revelam erros comuns - crie cards que previnam esses erros
+""",
+
 }
 
 

@@ -43,6 +43,7 @@ import ProgressDialog from '@/components/modals/ProgressDialog.vue'
 import OllamaSelectionDialog from '@/components/modals/OllamaSelectionDialog.vue'
 import TopicConfirmDialog from '@/components/modals/TopicConfirmDialog.vue'
 import CustomInstructionDialog from '@/components/modals/CustomInstructionDialog.vue'
+import ExamModeInfoDialog from '@/components/modals/ExamModeInfoDialog.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 
@@ -778,7 +779,9 @@ function buildActiveSessionSnapshot() {
     documentContext: documentContext.value,
     // Topic segmentation data
     topicSegments: topicSegments.value,
-    topicDefinitions: topicDefinitions.value
+    topicDefinitions: topicDefinitions.value,
+    // Exam mode
+    isExamMode: isExamMode.value
   }
 }
 
@@ -842,6 +845,9 @@ async function restoreSessionById(id) {
     topicDefinitions.value = s.topicDefinitions || []
     showTopicLegend.value = topicSegments.value.length > 0
 
+    // Restaura exam mode
+    isExamMode.value = s.isExamMode || false
+
     await nextTick()
 
     // Reaplicar highlights dos tópicos se existirem
@@ -899,6 +905,9 @@ function clearCurrentSession() {
     topicDefinitions.value = []
     showTopicLegend.value = false
 
+    // Limpa exam mode
+    isExamMode.value = false
+
     editorRef.value?.setDelta?.(null)
 
     // Primeiro limpa o activeSessionId para evitar que deleteSessionById tente definir outro
@@ -942,6 +951,9 @@ function newSession() {
   topicDefinitions.value = []
   showTopicLegend.value = false
 
+  // Limpa exam mode
+  isExamMode.value = false
+
   editorRef.value?.setDelta?.(null)
 
   activeSessionId.value = safeId()
@@ -957,7 +969,8 @@ function newSession() {
     cards: [],
     documentContext: '',
     topicSegments: [],
-    topicDefinitions: []
+    topicDefinitions: [],
+    isExamMode: false
   })
 
   notify('Nova sessão criada.', 'success', 2200)
@@ -978,6 +991,10 @@ const selectedText = ref('')
 const documentContext = ref('')
 const currentAnalysisId = ref(null)
 const isAnalyzing = ref(false)
+
+// Exam/Quiz mode (textos de simulados/provas)
+const isExamMode = ref(false)
+const showExamModeInfo = ref(false)
 
 const decks = ref({})
 const currentDeck = ref(null)
@@ -2483,7 +2500,8 @@ async function generateCardsFromSelection() {
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      numCardsEnabled.value ? numCardsSlider.value : null
+      numCardsEnabled.value ? numCardsSlider.value : null,
+      isExamMode.value
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')
@@ -2677,7 +2695,9 @@ async function editGenerateCardConfirm() {
       currentAnalysisId.value,
       selectedValidationModel.value,
       selectedAnalysisModel.value,
-      getEffectivePrompts() // Prioridade: temporários > salvos > padrões
+      getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
+      null, // numCards
+      isExamMode.value
     )
 
     newCards.forEach(card => {
@@ -3474,6 +3494,11 @@ watch(documentContext, () => {
   schedulePersistActiveSession()
 })
 
+watch(isExamMode, () => {
+  if (isRestoringSession.value) return
+  schedulePersistActiveSession()
+})
+
 // ============================================================
 // Lifecycle
 // ============================================================
@@ -3892,6 +3917,35 @@ onBeforeUnmount(() => {
                   </div>
                 </template>
               </Select>
+
+              <!-- Exam Mode Toggle -->
+              <div class="exam-mode-toggle flex items-center gap-2">
+                <Checkbox
+                  v-model="isExamMode"
+                  inputId="examMode"
+                  :binary="true"
+                  :disabled="generating || isAnalyzing"
+                />
+                <label
+                  for="examMode"
+                  class="cursor-pointer select-none text-sm whitespace-nowrap"
+                  :class="{ 'opacity-50': generating || isAnalyzing }"
+                >
+                  <i class="pi pi-book mr-1" />
+                  Simulado
+                </label>
+                <Button
+                  v-if="isExamMode"
+                  icon="pi pi-info-circle"
+                  severity="secondary"
+                  text
+                  rounded
+                  size="small"
+                  class="p-0 w-6 h-6"
+                  @click="showExamModeInfo = true"
+                  v-tooltip.top="'Como funciona o modo simulado'"
+                />
+              </div>
 
               <!-- Analyze Button -->
               <Button
@@ -4634,6 +4688,11 @@ onBeforeUnmount(() => {
     <IntroModal
       v-model:visible="introModalVisible"
       @complete="onIntroComplete"
+    />
+
+    <!-- EXAM MODE INFO DIALOG -->
+    <ExamModeInfoDialog
+      v-model:visible="showExamModeInfo"
     />
 
     <!-- OLLAMA MODEL SELECTION (fallback) -->
