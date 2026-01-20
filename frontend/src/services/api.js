@@ -518,7 +518,8 @@ async function generateCardsWithStream(
   validationModel = null,
   analysisModel = null,
   customPrompts = null,
-  numCards = null
+  numCards = null,
+  isExamMode = false
 ) {
   const keys = getStoredApiKeys();
 
@@ -540,6 +541,11 @@ async function generateCardsWithStream(
   // Adiciona quantidade de cards se especificada
   if (numCards && numCards > 0) {
     requestBody.numCards = numCards;
+  }
+
+  // Adiciona modo de simulado/prova se ativo
+  if (isExamMode) {
+    requestBody.isExamMode = true;
   }
 
   // Adiciona prompts customizados se fornecidos
