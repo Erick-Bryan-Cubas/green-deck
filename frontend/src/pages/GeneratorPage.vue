@@ -11,7 +11,6 @@ import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
-import InputNumber from 'primevue/inputnumber'
 import Slider from 'primevue/slider'
 import Textarea from 'primevue/textarea'
 import Card from 'primevue/card'
@@ -24,14 +23,7 @@ import ContextMenu from 'primevue/contextmenu'
 import Toast from 'primevue/toast'
 import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
-import Message from 'primevue/message'
-import Stepper from 'primevue/stepper'
-import StepList from 'primevue/steplist'
-import StepPanels from 'primevue/steppanels'
-import Step from 'primevue/step'
-import StepPanel from 'primevue/steppanel'
 import SelectButton from 'primevue/selectbutton'
-import AutoComplete from 'primevue/autocomplete'
 import { useToast } from 'primevue/usetoast'
 
 // App components - with lazy loading for performance
@@ -65,7 +57,6 @@ import {
   segmentTopics,
   getStoredApiKeys,
   storeApiKeys,
-  validateAnthropicApiKey,
   hasAnyApiKey,
   fetchOllamaInfo,
   rewriteCard
@@ -1359,8 +1350,6 @@ const customPrompts = ref(null)
 const LS_CUSTOM_PROMPTS_KEY = 'green-deck.custom-prompts.v1'
 const savedCustomPrompts = ref(null) // { systemPrompt, guidelines, generationPrompt }
 const promptSettingsVisible = ref(false)
-const promptSettingsEditorRef = ref(null)
-const pendingPromptSettings = ref(null) // Prompts pendentes sendo editados no dialog
 const defaultPromptsData = ref(null) // Cache dos prompts padrão do servidor
 
 // Computed: verifica se há prompts personalizados salvos
@@ -1438,13 +1427,7 @@ async function openPromptSettings() {
       return
     }
   }
-  // Inicializa com os prompts já salvos (ou null)
-  pendingPromptSettings.value = savedCustomPrompts.value ? { ...savedCustomPrompts.value } : null
   promptSettingsVisible.value = true
-}
-
-function onPromptSettingsUpdate(prompts) {
-  pendingPromptSettings.value = prompts
 }
 
 // Obtém os prompts efetivos para geração (prioridade: temporários > salvos > padrões)
@@ -1586,15 +1569,6 @@ const currentModelInfo = computed(() => {
   }
   return null
 })
-
-// Helper para formatar tamanho do modelo
-function formatModelSize(bytes) {
-  if (!bytes) return ''
-  const gb = bytes / (1024 * 1024 * 1024)
-  if (gb >= 1) return `${gb.toFixed(1)} GB`
-  const mb = bytes / (1024 * 1024)
-  return `${mb.toFixed(0)} MB`
-}
 
 // Seleciona um modelo Ollama do modal de seleção
 function selectOllamaModel(modelName) {
@@ -2093,68 +2067,16 @@ function showApiKeysIfNeeded() {
 // API Keys Dialog
 // ============================================================
 const apiKeyVisible = ref(false)
-const anthropicApiKey = ref('')
-const openaiApiKey = ref('')
-const perplexityApiKey = ref('')
-const storeLocally = ref(true)
-const anthropicApiKeyError = ref('')
-
-function loadStoredKeysToForm() {
-  refreshStoredKeys()
-  anthropicApiKey.value = storedKeys.value.anthropicApiKey || ''
-  openaiApiKey.value = storedKeys.value.openaiApiKey || ''
-  perplexityApiKey.value = storedKeys.value.perplexityApiKey || ''
-}
 
 function openApiKeys() {
-  anthropicApiKeyError.value = ''
-  loadStoredKeysToForm()
-  apiKeyVisible.value = true
-}
-
-async function saveApiKeys() {
-  const aKey = anthropicApiKey.value.trim()
-  const oKey = openaiApiKey.value.trim()
-  const pKey = perplexityApiKey.value.trim()
-
-  if (aKey && !validateAnthropicApiKey(aKey)) {
-    anthropicApiKeyError.value = 'Chave inválida: deve começar com sk-ant-'
-    return
-  }
-
-  const ok = storeApiKeys(aKey, oKey, pKey, storeLocally.value)
-  if (!ok) {
-    notify('Falha ao salvar chaves de API', 'error')
-    return
-  }
-
   refreshStoredKeys()
-  apiKeyVisible.value = false
-  notify('Chaves de API salvas com sucesso', 'success')
-
-  // Se alguma chave foi configurada, abre o modal de seleção de modelos
-  if (aKey || oKey || pKey) {
-    // Pequeno delay para melhor UX (deixa o usuário ver a notificação de sucesso)
-    setTimeout(() => {
-      openModelSelection()
-    }, 300)
-  }
+  apiKeyVisible.value = true
 }
 
 // Verifica se há alguma chave API salva
 const hasStoredApiKeys = computed(() => {
   return !!(storedKeys.value.anthropicApiKey || storedKeys.value.openaiApiKey || storedKeys.value.perplexityApiKey)
 })
-
-// Limpa todas as chaves de API salvas
-function clearApiKeys() {
-  storeApiKeys('', '', '', true)
-  anthropicApiKey.value = ''
-  openaiApiKey.value = ''
-  perplexityApiKey.value = ''
-  refreshStoredKeys()
-  notify('Chaves de API removidas', 'info')
-}
 
 // ============================================================
 // Decks
@@ -2703,7 +2625,6 @@ function clearAllCards() {
 const editVisible = ref(false)
 const editIndex = ref(-1)
 const editDraft = ref({ front: '', back: '', deck: 'General' })
-const editContextMenuRef = ref(null)
 const editSelectedText = ref('')
 const editFrontRef = ref(null)
 const editBackRef = ref(null)
@@ -2799,40 +2720,6 @@ function openEditCard(index) {
       editBackRef.value.setContent(editDraft.value.back)
     }
   })
-}
-
-function saveEditCard() {
-  const idx = editIndex.value
-  if (idx < 0) return
-
-  // Pegar HTML formatado dos editores Quill
-  const frontHtml = editFrontRef.value?.getHtml() || editDraft.value.front
-  const backHtml = editBackRef.value?.getHtml() || editDraft.value.back
-
-  cards.value[idx] = {
-    ...cards.value[idx],
-    front: frontHtml,
-    back: backHtml,
-    deck: editDraft.value.deck || 'General'
-  }
-  editVisible.value = false
-  notify('Card atualizado', 'success', 2000)
-}
-
-function duplicateEditCard() {
-  const idx = editIndex.value
-  if (idx < 0) return
-  const c = cards.value[idx]
-  cards.value.splice(idx + 1, 0, { ...c })
-  notify('Card duplicado', 'success', 2000)
-}
-
-function deleteEditCard() {
-  const idx = editIndex.value
-  if (idx < 0) return
-  cards.value.splice(idx, 1)
-  editVisible.value = false
-  notify('Card removido', 'info', 2000)
 }
 
 // Handlers para o componente EditCardDialog
