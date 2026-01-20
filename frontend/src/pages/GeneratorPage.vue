@@ -11,8 +11,6 @@ import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
-import Slider from 'primevue/slider'
-import Textarea from 'primevue/textarea'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
 import ProgressBar from 'primevue/progressbar'
@@ -23,7 +21,6 @@ import ContextMenu from 'primevue/contextmenu'
 import Toast from 'primevue/toast'
 import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
-import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
 
 // App components - with lazy loading for performance
@@ -32,7 +29,6 @@ import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import DocumentUpload from '@/components/DocumentUpload.vue'
-import PromptEditor from '@/components/PromptEditor.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
 
 // Modal components
@@ -58,8 +54,7 @@ import {
   getStoredApiKeys,
   storeApiKeys,
   hasAnyApiKey,
-  fetchOllamaInfo,
-  rewriteCard
+  fetchOllamaInfo
 } from '@/services/api.js'
 
 const toast = useToast()
@@ -162,7 +157,6 @@ let isNavigatingPdfPage = false
 // Touch/swipe support
 let touchStartX = 0
 let touchStartY = 0
-let touchStartScrollLeft = 0
 let isSwiping = false
 const SWIPE_THRESHOLD = 50 // px mínimos para considerar swipe
 
@@ -173,10 +167,6 @@ const readerPageWidthPx = ref(680)
 
 // ✅ stride real entre páginas/spreads
 const readerStepPx = ref(0)
-
-const isKindleTheme = computed(() => immersiveReader.value && readerTheme.value === 'kindle')
-const isSepiaTheme = computed(() => immersiveReader.value && readerTheme.value === 'sepia')
-const isDarkTheme = computed(() => immersiveReader.value && readerTheme.value === 'dark')
 
 const readerThemeOptions = [
   { value: 'kindle', label: 'Claro', icon: 'pi-sun' },
@@ -221,15 +211,6 @@ function toggleReader() {
   }
 }
 
-function toggleReaderTheme() {
-  // Cicla: kindle -> sepia -> dark -> kindle
-  const themes = ['kindle', 'sepia', 'dark']
-  const currentIdx = themes.indexOf(readerTheme.value)
-  readerTheme.value = themes[(currentIdx + 1) % themes.length]
-  readerDark.value = readerTheme.value === 'dark' // compatibilidade
-  requestReaderLayout({ preserveProgress: true })
-}
-
 function setReaderTheme(theme) {
   readerTheme.value = theme
   readerDark.value = theme === 'dark'
@@ -242,7 +223,6 @@ function onTouchStart(e) {
   const touch = e.touches[0]
   touchStartX = touch.clientX
   touchStartY = touch.clientY
-  touchStartScrollLeft = readerScrollerEl.value?.scrollLeft || 0
   isSwiping = false
 }
 
@@ -286,16 +266,6 @@ function resetControlsTimer() {
     controlsHideTimer = setTimeout(() => {
       readerControlsVisible.value = false
     }, 3000)
-  }
-}
-
-function toggleAutoHideControls() {
-  readerAutoHideControls.value = !readerAutoHideControls.value
-  if (!readerAutoHideControls.value) {
-    readerControlsVisible.value = true
-    if (controlsHideTimer) clearTimeout(controlsHideTimer)
-  } else {
-    resetControlsTimer()
   }
 }
 
@@ -1359,13 +1329,7 @@ const hasCustomPromptsSaved = computed(() => {
   return !!(saved.systemPrompt || saved.guidelines || saved.generationPrompt)
 })
 
-// Quantity mode options for SelectButton
-const quantityModeOptions = [
-  { label: 'Automático', value: 'auto', icon: 'pi pi-sparkles' },
-  { label: 'Manual', value: 'manual', icon: 'pi pi-sliders-v' }
-]
 const quantityMode = ref('auto')
-const presetOptions = [5, 10, 15, 20, 30]
 
 function onCustomPromptsUpdate(prompts) {
   customPrompts.value = prompts
@@ -1481,13 +1445,6 @@ function stopOllamaInfoPolling() {
   }
 }
 
-function confirmGenerate() {
-  numCardsEnabled.value = (quantityMode.value === 'manual')
-  generateModalVisible.value = false
-  generateStep.value = '1'
-  generateCardsFromSelection()
-}
-
 // Handler para o novo componente GenerateModal
 function onGenerateModalConfirm({ quantityMode: qMode, numCards, customPrompts: prompts }) {
   numCardsEnabled.value = (qMode === 'manual')
@@ -1509,8 +1466,7 @@ const ollamaInfo = ref(null)
 const isLoadingOllamaInfo = ref(false)
 const ollamaModelSelectionVisible = ref(false) // Modal para seleção quando múltiplos modelos
 
-// Listas filtradas por tipo de modelo
-const llmModels = computed(() => availableModels.value.filter(m => m.type !== 'embedding'))
+// Lista de modelos de embedding
 const embeddingModels = computed(() => availableModels.value.filter(m => m.type === 'embedding'))
 
 // Helper functions para tags de modelo
@@ -1524,14 +1480,6 @@ function getProviderLabel(provider) {
   if (provider === 'ollama') return 'Ollama'
   if (provider === 'openai') return 'OpenAI'
   return 'Perplexity'
-}
-
-function getTypeSeverity(type) {
-  return type === 'embedding' ? 'secondary' : 'contrast'
-}
-
-function getTypeLabel(type) {
-  return type === 'embedding' ? 'Embedding' : 'LLM'
 }
 
 function getModelInfo(modelName) {
@@ -2005,24 +1953,6 @@ const dontShowIntroAgain = ref(false)
 const isOnboardingFlow = ref(false) // Flag para controlar fluxo de onboarding
 const TOTAL_INTRO_STEPS = 3
 
-function nextIntroStep() {
-  if (introStep.value < TOTAL_INTRO_STEPS) {
-    introStep.value++
-  } else {
-    finishIntro()
-  }
-}
-
-function prevIntroStep() {
-  if (introStep.value > 1) {
-    introStep.value--
-  }
-}
-
-function skipIntro() {
-  finishIntro()
-}
-
 function finishIntro() {
   if (dontShowIntroAgain.value) {
     localStorage.setItem(INTRO_SHOWN_KEY, 'true')
@@ -2088,20 +2018,8 @@ async function fetchDecks() {
 }
 
 // ============================================================
-// Analyze (debounce) — NÃO reanalisa quando é só highlight
+// Analyze
 // ============================================================
-let analyzeDebounce = null
-function scheduleAnalyze(fullText) {
-  if (analyzeDebounce) clearTimeout(analyzeDebounce)
-  analyzeDebounce = setTimeout(() => {
-    const normalized = normalizePlainText(fullText)
-    if (normalized.length > 100 && !isAnalyzing.value) {
-      if (normalized === lastTextForAnalysis.value) return
-      analyzeDocumentContext(fullText)
-    }
-  }, 1200)
-}
-
 async function analyzeDocumentContext(text) {
   const normalized = normalizePlainText(text)
   if (!normalized || normalized.length < 100 || isAnalyzing.value) return
@@ -2672,27 +2590,6 @@ function toggleCardExpand(idx) {
   }
 }
 
-// Handlers para quando os editores do modal de edição estão prontos
-function onEditFrontReady() {
-  editFrontReady.value = true
-  // Se há conteúdo pendente para carregar, carrega agora
-  if (pendingEditContent.value?.front !== undefined) {
-    nextTick(() => {
-      editFrontRef.value?.setContent(pendingEditContent.value.front)
-    })
-  }
-}
-
-function onEditBackReady() {
-  editBackReady.value = true
-  // Se há conteúdo pendente para carregar, carrega agora
-  if (pendingEditContent.value?.back !== undefined) {
-    nextTick(() => {
-      editBackRef.value?.setContent(pendingEditContent.value.back)
-    })
-  }
-}
-
 function openEditCard(index) {
   const c = cards.value[index]
   if (!c) return
@@ -2750,48 +2647,6 @@ function onEditCardDuplicate(index) {
   schedulePersistActiveSession()
 }
 
-// Estado e funcao para reescrita de cards com LLM
-const isRewriting = ref(false)
-
-async function handleRewriteCard(action) {
-  if (editIndex.value < 0) return
-  if (isRewriting.value) return
-
-  isRewriting.value = true
-  try {
-    const result = await rewriteCard(
-      {
-        front: editDraft.value.front,
-        back: editDraft.value.back,
-      },
-      action,
-      selectedModel.value
-    )
-
-    if (result.success) {
-      editDraft.value.front = result.front
-      editDraft.value.back = result.back
-      // Atualizar conteúdo nos editores Quill
-      editFrontRef.value?.setContent(result.front)
-      editBackRef.value?.setContent(result.back)
-      notify(`Card reescrito: ${action}`, 'success', 3000)
-    } else {
-      notify('Erro ao reescrever: ' + (result.error || 'Erro desconhecido'), 'error', 5000)
-    }
-  } catch (error) {
-    console.error('Rewrite error:', error)
-    notify('Erro ao reescrever: ' + (error?.message || String(error)), 'error', 5000)
-  } finally {
-    isRewriting.value = false
-  }
-}
-
-function editGenerateCard(type) {
-  if (!editSelectedText.value) return
-  editPendingCardType.value = type
-  editCustomInstructionVisible.value = true
-}
-
 async function editGenerateCardConfirm() {
   const text = editSelectedText.value
   const instruction = editCustomInstruction.value.trim()
@@ -2841,22 +2696,7 @@ async function editGenerateCardConfirm() {
   }
 }
 
-const editContextMenuModel = computed(() => [
-  {
-    label: 'Gerar card Basic',
-    icon: 'pi pi-plus',
-    disabled: !editSelectedText.value,
-    command: () => editGenerateCard('basic')
-  },
-  {
-    label: 'Gerar card Cloze',
-    icon: 'pi pi-plus',
-    disabled: !editSelectedText.value,
-    command: () => editGenerateCard('cloze')
-  }
-])
-
-// Markdown “safe”
+// Markdown "safe"
 function escapeHtml(s) {
   return String(s || '')
     .replaceAll('&', '&amp;')
@@ -3089,17 +2929,6 @@ function searchAnkiTags(event) {
   }
 }
 
-const ankiModelOptions = computed(() => {
-  const d = ankiModelsData.value
-  if (!d?.models) return []
-  return Object.keys(d.models).map((m) => ({ label: m, value: m }))
-})
-const ankiDeckOptions = computed(() => {
-  const d = ankiModelsData.value
-  const base = [{ label: "Use card's deck", value: '' }]
-  if (!d?.decks) return base
-  return base.concat(d.decks.map((x) => ({ label: x, value: x })))
-})
 const ankiFieldOptions = computed(() => {
   const d = ankiModelsData.value
   if (!d?.models || !ankiModel.value) return []
@@ -3407,9 +3236,6 @@ const contextHasSelection = ref(false)
 const contextHasHighlight = ref(false)
 const contextSelectedText = ref('')
 
-// Document Upload ref
-const documentUploadRef = ref(null)
-
 function onEditorContextMenu(payload) {
   contextHasSelection.value = !!payload.hasSelection
   contextHasHighlight.value = !!payload.hasHighlight
@@ -3679,7 +3505,6 @@ onMounted(async () => {
 
   ensureActiveSession()
 
-  loadStoredKeysToForm()
   try {
     await fetchDecks()
   } catch {}
@@ -4038,7 +3863,6 @@ onBeforeUnmount(() => {
 
               <!-- Document Upload Button -->
               <DocumentUpload
-                ref="documentUploadRef"
                 @extracted="onDocumentExtracted"
                 @error="onDocumentError"
               />
