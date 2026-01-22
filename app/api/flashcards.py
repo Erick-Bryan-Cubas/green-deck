@@ -1,6 +1,6 @@
 # app/api/flashcards.py
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Tuple, List
@@ -10,7 +10,55 @@ import logging
 from pathlib import Path
 import httpx
 
-from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, OLLAMA_VALIDATION_MODEL
+from app.config import OLLAMA_MODEL, OLLAMA_ANALYSIS_MODEL, OLLAMA_VALIDATION_MODEL, RATE_LIMIT_GENERATE
+from app.middleware.rate_limit import limiter
+
+
+# =============================================================================
+# API Keys from Headers (Security Enhancement)
+# =============================================================================
+class ApiKeys:
+    """Container for API keys extracted from headers or request body."""
+
+    def __init__(
+        self,
+        anthropic_key: Optional[str] = None,
+        openai_key: Optional[str] = None,
+        perplexity_key: Optional[str] = None,
+    ):
+        self.anthropic = anthropic_key
+        self.openai = openai_key
+        self.perplexity = perplexity_key
+
+
+def get_api_keys_from_headers(
+    x_anthropic_key: Optional[str] = Header(None, alias="X-Anthropic-Key"),
+    x_openai_key: Optional[str] = Header(None, alias="X-OpenAI-Key"),
+    x_perplexity_key: Optional[str] = Header(None, alias="X-Perplexity-Key"),
+) -> ApiKeys:
+    """
+    Extract API keys from request headers.
+    This is more secure than passing keys in the request body as headers
+    are typically not logged by default in server access logs.
+    """
+    return ApiKeys(
+        anthropic_key=x_anthropic_key,
+        openai_key=x_openai_key,
+        perplexity_key=x_perplexity_key,
+    )
+
+
+def merge_api_keys(header_keys: ApiKeys, body_request) -> ApiKeys:
+    """
+    Merge API keys from headers and request body.
+    Headers take priority over body for security reasons.
+    Body values are used as fallback for backward compatibility.
+    """
+    return ApiKeys(
+        anthropic_key=header_keys.anthropic or getattr(body_request, "anthropicApiKey", None),
+        openai_key=header_keys.openai or getattr(body_request, "openaiApiKey", None),
+        perplexity_key=header_keys.perplexity or getattr(body_request, "perplexityApiKey", None),
+    )
 from app.services.ollama import ollama_generate_stream
 from app.services.api_providers import openai_generate_stream, perplexity_generate_stream
 from app.services.parser import (
@@ -24,6 +72,7 @@ from app.utils.text import (
     detect_language_pt_en_es,
 )
 from app.utils.validation import validate_content_sufficiency
+from app.utils.prompt_validation import validate_custom_prompt, log_injection_attempt
 from app.services.storage import (
     save_analysis,
     save_cards,
@@ -775,10 +824,16 @@ def _is_embedding_model(model_name: str) -> bool:
 
 
 @router.post("/analyze-text-stream")
+@limiter.limit("20/minute")
 async def analyze_text_stream(
+    http_request: Request,
     request: TextRequest,
     prompt_provider: PromptProvider = Depends(get_prompt_provider),
+    header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
+    # Merge API keys from headers (priority) and body (fallback for backward compatibility)
+    api_keys = merge_api_keys(header_keys, request)
+
     async def generate():
         try:
             analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
@@ -793,8 +848,8 @@ async def analyze_text_stream(
             analysis_mode = request.analysisMode or "auto"
 
             # Detecta provider baseado no modelo e chaves API
-            use_openai = request.openaiApiKey and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
-            use_perplexity = request.perplexityApiKey and "sonar" in analysis_model.lower()
+            use_openai = api_keys.openai and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
+            use_perplexity = api_keys.perplexity and "sonar" in analysis_model.lower()
             use_ollama = not use_openai and not use_perplexity
             
             provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
@@ -889,10 +944,10 @@ async def analyze_text_stream(
                 raw = ""
                 try:
                     if use_openai:
-                        async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
+                        async for piece in openai_generate_stream(api_keys.openai, analysis_model, prompt, system=system, options=options):
                             raw += piece
                     elif use_perplexity:
-                        async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
+                        async for piece in perplexity_generate_stream(api_keys.perplexity, analysis_model, prompt, system=system, options=options):
                             raw += piece
                     else:
                         async for piece in ollama_generate_stream(analysis_model, prompt, system=system, options=options):
@@ -1310,15 +1365,21 @@ def _build_topic_definitions(segments: list) -> list:
 
 
 @router.post("/segment-topics")
+@limiter.limit("20/minute")
 async def segment_topics(
+    http_request: Request,
     request: SegmentTopicsRequest,
     prompt_provider: PromptProvider = Depends(get_prompt_provider),
+    header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
     """
     Segmenta texto por tópicos para highlighting automático.
     Usa LangExtract (se disponível) para posições exatas,
     com fallback para Ollama JSON Mode + str.find().
     """
+    # Merge API keys from headers (priority) and body (fallback for backward compatibility)
+    api_keys = merge_api_keys(header_keys, request)
+
     async def generate():
         try:
             analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
@@ -1331,8 +1392,8 @@ async def segment_topics(
                     return
 
             # Detecta provider
-            use_openai = request.openaiApiKey and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
-            use_perplexity = request.perplexityApiKey and "sonar" in analysis_model.lower()
+            use_openai = api_keys.openai and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
+            use_perplexity = api_keys.perplexity and "sonar" in analysis_model.lower()
             use_ollama = not use_openai and not use_perplexity
 
             provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
@@ -1355,7 +1416,7 @@ async def segment_topics(
                         text=src,
                         model=analysis_model,
                         ollama_url="http://localhost:11434",
-                        openai_key=request.openaiApiKey if use_openai else None,
+                        openai_key=api_keys.openai if use_openai else None,
                         gemini_key=None,  # TODO: adicionar suporte a Gemini
                     )
                     method_used = "langextract"
@@ -1392,10 +1453,10 @@ async def segment_topics(
 
                         raw = ""
                         if use_openai:
-                            async for piece in openai_generate_stream(request.openaiApiKey, analysis_model, prompt, system=system, options=options):
+                            async for piece in openai_generate_stream(api_keys.openai, analysis_model, prompt, system=system, options=options):
                                 raw += piece
                         elif use_perplexity:
-                            async for piece in perplexity_generate_stream(request.perplexityApiKey, analysis_model, prompt, system=system, options=options):
+                            async for piece in perplexity_generate_stream(api_keys.perplexity, analysis_model, prompt, system=system, options=options):
                                 raw += piece
 
                         try:
@@ -1475,9 +1536,15 @@ async def get_default_prompts():
 
 
 @router.post("/generate-cards-stream")
+@limiter.limit(RATE_LIMIT_GENERATE)
 async def generate_cards_stream(
+    http_request: Request,
     request: CardsRequest,
+    header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
+    # Merge API keys from headers (priority) and body (fallback for backward compatibility)
+    api_keys = merge_api_keys(header_keys, request)
+
     async def generate():
         try:
             model = request.model or OLLAMA_MODEL
@@ -1492,13 +1559,27 @@ async def generate_cards_stream(
 
             logger.info("Generation model: %s", model)
 
-            use_openai = request.openaiApiKey and ("gpt" in model.lower() or model.startswith("o1-"))
-            use_perplexity = request.perplexityApiKey and "sonar" in model.lower()
+            use_openai = api_keys.openai and ("gpt" in model.lower() or model.startswith("o1-"))
+            use_perplexity = api_keys.perplexity and "sonar" in model.lower()
             use_ollama = not use_openai and not use_perplexity
 
             provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
             logger.info("Using provider: %s", provider)
-            
+
+            # Validate custom prompts for injection attempts
+            custom_prompts_to_validate = [
+                ("customSystemPrompt", request.customSystemPrompt),
+                ("customGenerationPrompt", request.customGenerationPrompt),
+                ("customGuidelines", request.customGuidelines),
+            ]
+            for prompt_name, prompt_value in custom_prompts_to_validate:
+                if prompt_value:
+                    is_valid, error_msg, pattern_type = validate_custom_prompt(prompt_value)
+                    if not is_valid:
+                        log_injection_attempt(prompt_value, pattern_type, source="generate-cards-stream")
+                        yield f"event: error\ndata: {json.dumps({'error': f'Invalid {prompt_name}: {error_msg}', 'type': 'prompt_validation'})}\n\n"
+                        return
+
             # Cria PromptProvider com prompts customizados (se fornecidos)
             prompt_provider = get_prompt_provider(
                 custom_system=request.customSystemPrompt,
@@ -1506,7 +1587,7 @@ async def generate_cards_stream(
                 custom_guidelines=request.customGuidelines,
                 is_exam_mode=request.isExamMode or False,
             )
-            
+
             using_custom = any([
                 request.customSystemPrompt,
                 request.customGenerationPrompt,
@@ -1579,10 +1660,10 @@ async def generate_cards_stream(
 
             raw = ""
             if use_openai:
-                async for piece in openai_generate_stream(request.openaiApiKey, model, prompt, system=system_prompt, options=options):
+                async for piece in openai_generate_stream(api_keys.openai, model, prompt, system=system_prompt, options=options):
                     raw += piece
             elif use_perplexity:
-                async for piece in perplexity_generate_stream(request.perplexityApiKey, model, prompt, system=system_prompt, options=options):
+                async for piece in perplexity_generate_stream(api_keys.perplexity, model, prompt, system=system_prompt, options=options):
                     raw += piece
             else:
                 async for piece in ollama_generate_stream(model, prompt, system=system_prompt, options=options):
@@ -1645,8 +1726,8 @@ async def generate_cards_stream(
             # Detecta o provider correto para o modelo de validação (usa cache)
             validation_provider = get_provider_for_model(
                 validation_model,
-                openai_key=request.openaiApiKey,
-                perplexity_key=request.perplexityApiKey,
+                openai_key=api_keys.openai,
+                perplexity_key=api_keys.perplexity,
             )
             logger.info("Validation model: %s (provider: %s)", validation_model, validation_provider)
 
@@ -1657,8 +1738,8 @@ async def generate_cards_stream(
                 prompt_provider=prompt_provider,
                 provider=validation_provider,
                 model=validation_model,
-                openai_key=request.openaiApiKey,
-                perplexity_key=request.perplexityApiKey,
+                openai_key=api_keys.openai,
+                perplexity_key=api_keys.perplexity,
                 analysis_id=request.analysisId,
             )
 
@@ -1680,8 +1761,8 @@ async def generate_cards_stream(
                 prompt_provider=prompt_provider,
                 provider=validation_provider,
                 model=validation_model,
-                openai_key=request.openaiApiKey,
-                perplexity_key=request.perplexityApiKey,
+                openai_key=api_keys.openai,
+                perplexity_key=api_keys.perplexity,
                 analysis_id=request.analysisId,
             )
             if len(cards) < cards_before_relevance:
@@ -1735,7 +1816,7 @@ async def generate_cards_stream(
 
                 if use_openai:
                     async for piece in openai_generate_stream(
-                        request.openaiApiKey,
+                        api_keys.openai,
                         model,
                         repair_prompt,
                         system=repair_system,
@@ -1744,7 +1825,7 @@ async def generate_cards_stream(
                         raw2 += piece
                 elif use_perplexity:
                     async for piece in perplexity_generate_stream(
-                        request.perplexityApiKey,
+                        api_keys.perplexity,
                         model,
                         repair_prompt,
                         system=repair_system,
@@ -1776,8 +1857,8 @@ async def generate_cards_stream(
                     prompt_provider=prompt_provider,
                     provider=validation_provider,
                     model=validation_model,
-                    openai_key=request.openaiApiKey,
-                    perplexity_key=request.perplexityApiKey,
+                    openai_key=api_keys.openai,
+                    perplexity_key=api_keys.perplexity,
                     analysis_id=request.analysisId,
                 )
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2)), 'method': 'llm'})}\n\n"
@@ -1789,8 +1870,8 @@ async def generate_cards_stream(
                     prompt_provider=prompt_provider,
                     provider=validation_provider,
                     model=validation_model,
-                    openai_key=request.openaiApiKey,
-                    perplexity_key=request.perplexityApiKey,
+                    openai_key=api_keys.openai,
+                    perplexity_key=api_keys.perplexity,
                     analysis_id=request.analysisId,
                 )
                 if len(cards2) < cards2_before_relevance:
@@ -1894,7 +1975,12 @@ def _parse_rewrite_response(raw: str) -> dict:
 
 
 @router.post("/rewrite-card")
-async def rewrite_card(request: CardRewriteRequest):
+@limiter.limit("30/minute")
+async def rewrite_card(
+    http_request: Request,
+    request: CardRewriteRequest,
+    header_keys: ApiKeys = Depends(get_api_keys_from_headers),
+):
     """
     Reescreve um card usando LLM.
 
@@ -1903,6 +1989,9 @@ async def rewrite_card(request: CardRewriteRequest):
     - split_cloze: Divide em multiplos cloze
     - simplify: Simplifica o card
     """
+    # Merge API keys from headers (priority) and body (fallback for backward compatibility)
+    api_keys = merge_api_keys(header_keys, request)
+
     try:
         model = request.model or OLLAMA_MODEL
         # Fallback: buscar primeiro modelo Ollama disponível
@@ -1912,8 +2001,8 @@ async def rewrite_card(request: CardRewriteRequest):
                 return {"success": False, "error": "Nenhum modelo disponível"}
 
         # Detecta provider
-        use_openai = request.openaiApiKey and ("gpt" in model.lower() or model.startswith("o1-"))
-        use_perplexity = request.perplexityApiKey and "sonar" in model.lower()
+        use_openai = api_keys.openai and ("gpt" in model.lower() or model.startswith("o1-"))
+        use_perplexity = api_keys.perplexity and "sonar" in model.lower()
 
         prompt_provider = PromptProvider()
         prompt = prompt_provider.build_card_rewrite_prompt(
@@ -1928,12 +2017,12 @@ async def rewrite_card(request: CardRewriteRequest):
         raw = ""
         if use_openai:
             async for piece in openai_generate_stream(
-                request.openaiApiKey, model, prompt, system=system_prompt, options=options
+                api_keys.openai, model, prompt, system=system_prompt, options=options
             ):
                 raw += piece
         elif use_perplexity:
             async for piece in perplexity_generate_stream(
-                request.perplexityApiKey, model, prompt, system=system_prompt, options=options
+                api_keys.perplexity, model, prompt, system=system_prompt, options=options
             ):
                 raw += piece
         else:

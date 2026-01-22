@@ -32,6 +32,9 @@ import SidebarMenu from '@/components/SidebarMenu.vue'
 // API service
 import { getStoredApiKeys } from '@/services/api.js'
 
+// Security utilities
+import { sanitizeHtml } from '@/utils/sanitize.js'
+
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
@@ -1967,11 +1970,11 @@ onUnmounted(() => {
           <div class="pv-grid">
             <div class="pv-col">
               <div class="pv-title">Question</div>
-              <div class="pv-box" v-html="previewCard.question"></div>
+              <div class="pv-box" v-html="sanitizeHtml(previewCard.question)"></div>
             </div>
             <div class="pv-col">
               <div class="pv-title">Answer</div>
-              <div class="pv-box" v-html="previewCard.answer"></div>
+              <div class="pv-box" v-html="sanitizeHtml(previewCard.answer)"></div>
             </div>
           </div>
         </div>

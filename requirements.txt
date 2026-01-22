@@ -23,6 +23,9 @@ langextract>=0.1.0
 # Resilience
 tenacity>=8.0.0
 
+# Security
+slowapi>=0.1.9
+
 # Development & Linting
 ruff>=0.8.0
 pytest>=8.0.0
