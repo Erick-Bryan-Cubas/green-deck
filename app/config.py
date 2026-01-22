@@ -22,3 +22,11 @@ PORT = int(os.getenv("PORT", "3000"))
 # Limits (removidos)
 MAX_SOURCE_CHARS = None
 MAX_CTX_CHARS = None
+
+# Security
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173").split(",")
+
+# Rate Limiting
+RATE_LIMIT_DEFAULT = os.getenv("RATE_LIMIT_DEFAULT", "100/minute")
+RATE_LIMIT_GENERATE = os.getenv("RATE_LIMIT_GENERATE", "10/minute")

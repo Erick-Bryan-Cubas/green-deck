@@ -17,6 +17,7 @@
     "@primevue/themes": "^4.5.4",
     "@tato30/vue-pdf": "^1.11.5",
     "chart.js": "^4.5.1",
+    "dompurify": "^3.2.4",
     "primeflex": "^4.0.0",
     "primeicons": "^7.0.0",
     "primevue": "^4.5.4",

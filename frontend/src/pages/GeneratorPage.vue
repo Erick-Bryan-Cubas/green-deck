@@ -58,6 +58,9 @@ import {
   fetchOllamaInfo
 } from '@/services/api.js'
 
+// Security utilities
+import { sanitizeHtml } from '@/utils/sanitize.js'
+
 const toast = useToast()
 const router = useRouter()
 
@@ -1828,14 +1831,15 @@ function redo() {
 }
 
 // ============================================================
-// Highlight de busca
+// Highlight de busca (with XSS sanitization)
 // ============================================================
 function highlightSearchTerm(text) {
   const q = (cardSearch.value || '').trim()
-  if (!q) return text
+  if (!q) return sanitizeHtml(text)
   const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const regex = new RegExp(`(${escaped})`, 'gi')
-  return String(text || '').replace(regex, '<mark class="search-highlight">$1</mark>')
+  const highlighted = String(text || '').replace(regex, '<mark class="search-highlight">$1</mark>')
+  return sanitizeHtml(highlighted)
 }
 
 // ============================================================
@@ -2757,7 +2761,8 @@ function renderMarkdownSafe(text) {
   }
   if (inList) out.push('</ul>')
 
-  return out.join('')
+  // Final sanitization to ensure XSS safety
+  return sanitizeHtml(out.join(''))
 }
 
 function previewText(text, max = 260) {
