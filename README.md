@@ -145,6 +145,89 @@ python run.py
 
 The application will be available at `http://localhost:3000`
 
+## Docker Deployment
+
+### Quick Start with Docker
+
+```bash
+# Clone the repository
+git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
+cd green-deck
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env as needed (see Docker configuration below)
+
+# Build and run
+docker compose -p green-deck -f docker/docker-compose.yml up -d
+
+# View logs
+docker compose -p green-deck -f docker/docker-compose.yml logs -f green-deck
+```
+
+The application will be available at `http://localhost:3000`
+
+### Docker Configuration
+
+When running in Docker, configure these variables in your `.env` file:
+
+| Variable | Docker Value | Description |
+|----------|--------------|-------------|
+| `OLLAMA_HOST` | `http://host.docker.internal:11434` | Access Ollama on host machine |
+| `ANKI_CONNECT_URL` | `http://host.docker.internal:8765` | Access Anki on host machine |
+| `ENVIRONMENT` | `production` | Set to production for Docker |
+
+### Running with Ollama Container
+
+To run Ollama as a Docker container alongside Green Deck:
+
+```bash
+  docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compose.ollama.yml up -d
+```
+
+Then pull your models:
+```bash
+docker exec ollama ollama pull qwen2.5:7b
+docker exec ollama ollama pull nomic-embed-text
+```
+
+### Development with Docker
+
+For development with hot-reload:
+
+```bash
+docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d
+```
+
+This mounts your local `app/` directory for live code changes.
+
+### Data Persistence
+
+Docker volumes are used to persist data:
+- `green-deck-data`: DuckDB database and generated files
+
+To backup your data:
+```bash
+docker run --rm -v green-deck-data:/data -v $(pwd):/backup alpine tar czf /backup/green-deck-backup.tar.gz /data
+```
+
+### Docker Troubleshooting
+
+**Cannot connect to Ollama:**
+- Ensure Ollama is running on your host machine
+- On Linux, the `extra_hosts` config in `docker/docker-compose.yml` handles `host.docker.internal`
+- Check firewall settings allow connections from Docker
+
+**Cannot connect to Anki:**
+- Ensure Anki is running with AnkiConnect addon installed
+- AnkiConnect must be configured to accept connections from Docker's IP range
+
+**GPU not detected:**
+- Ensure NVIDIA Container Toolkit is installed
+- Verify with: `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`
+
+---
+
 ### Ollama Setup
 
 ```bash
@@ -339,6 +422,89 @@ python run.py
 ```
 
 A aplicação estará disponível em `http://localhost:3000`
+
+## Deploy com Docker
+
+### Início Rápido com Docker
+
+```bash
+# Clone o repositório
+git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
+cd green-deck
+
+# Copie e configure o ambiente
+cp .env.example .env
+# Edite o .env conforme necessário (veja configuração Docker abaixo)
+
+# Build e execução
+docker compose -f docker/docker-compose.yml up -d
+
+# Ver logs
+docker compose -f docker/docker-compose.yml logs -f green-deck
+```
+
+A aplicação estará disponível em `http://localhost:3000`
+
+### Configuração Docker
+
+Ao rodar com Docker, configure estas variáveis no seu arquivo `.env`:
+
+| Variável | Valor Docker | Descrição |
+|----------|--------------|-----------|
+| `OLLAMA_HOST` | `http://host.docker.internal:11434` | Acessa Ollama na máquina host |
+| `ANKI_CONNECT_URL` | `http://host.docker.internal:8765` | Acessa Anki na máquina host |
+| `ENVIRONMENT` | `production` | Define como produção para Docker |
+
+### Executando com Container Ollama
+
+Para rodar Ollama como container Docker junto com Green Deck:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.ollama.yml up -d
+```
+
+Depois baixe seus modelos:
+```bash
+docker exec ollama ollama pull qwen2.5:7b
+docker exec ollama ollama pull nomic-embed-text
+```
+
+### Desenvolvimento com Docker
+
+Para desenvolvimento com hot-reload:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up
+```
+
+Isso monta seu diretório local `app/` para mudanças em tempo real.
+
+### Persistência de Dados
+
+Volumes Docker são usados para persistir dados:
+- `green-deck-data`: Banco DuckDB e arquivos gerados
+
+Para fazer backup dos dados:
+```bash
+docker run --rm -v green-deck-data:/data -v $(pwd):/backup alpine tar czf /backup/green-deck-backup.tar.gz /data
+```
+
+### Solução de Problemas Docker
+
+**Não conecta ao Ollama:**
+- Certifique-se que Ollama está rodando na máquina host
+- No Linux, a config `extra_hosts` no `docker/docker-compose.yml` gerencia o `host.docker.internal`
+- Verifique se o firewall permite conexões do Docker
+
+**Não conecta ao Anki:**
+- Certifique-se que Anki está rodando com addon AnkiConnect instalado
+- AnkiConnect deve estar configurado para aceitar conexões da faixa IP do Docker
+
+**GPU não detectada:**
+- Certifique-se que NVIDIA Container Toolkit está instalado
+- Verifique com: `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`
+
+---
 
 ### Configuração do Ollama
 
