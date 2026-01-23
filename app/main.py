@@ -1,12 +1,28 @@
-from fastapi import FastAPI, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
+import os
 from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from app.api import health_router, anki_router, flashcards_router, history_router, dashboard_router, models_router, websocket_router, documents_router, start_broadcaster, stop_broadcaster
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.api import (
+    anki_router,
+    dashboard_router,
+    documents_router,
+    flashcards_router,
+    health_router,
+    history_router,
+    models_router,
+    start_broadcaster,
+    stop_broadcaster,
+    websocket_router,
+)
+from app.config import CORS_ORIGINS, ENVIRONMENT
+from app.middleware.security import SecurityHeadersMiddleware
+from app.middleware.rate_limit import setup_rate_limiting
 
 
 class AnkiStatusFilter(logging.Filter):
@@ -26,6 +42,8 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("uvicorn.access").addFilter(AnkiStatusFilter())
 logging.getLogger("httpx").addFilter(AnkiStatusFilter())
 
+logger = logging.getLogger(__name__)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: start WebSocket broadcaster
@@ -34,15 +52,28 @@ async def lifespan(app: FastAPI):
     # Shutdown: stop WebSocket broadcaster
     await stop_broadcaster()
 
-app = FastAPI(title="Flash Card Generator", version="1.0.1-beta", lifespan=lifespan)
+app = FastAPI(title="Green Deck", version="1.2.0-beta", lifespan=lifespan)
 
-# CORS
+# Rate Limiting (must be configured before middlewares)
+setup_rate_limiting(app)
+
+# Security Headers Middleware (must be added before CORS)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS - Configured with specific origins instead of wildcard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-API-Key",
+        "X-OpenAI-Key",
+        "X-Perplexity-Key",
+        "X-Anthropic-Key",
+    ],
 )
 
 # Routers
@@ -55,11 +86,40 @@ app.include_router(models_router)
 app.include_router(websocket_router)
 app.include_router(documents_router)
 
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Handle uncaught exceptions with sanitized error messages."""
+    logger.exception("Unhandled exception on %s: %s", request.url.path, exc)
+
+    # In development, show full error details
+    if ENVIRONMENT == "development":
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc), "type": type(exc).__name__},
+        )
+
+    # In production, return generic error message
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal error occurred. Please try again later."},
+    )
+
+
 @app.exception_handler(StarletteHTTPException)
 async def spa_fallback(request: Request, exc: StarletteHTTPException):
+    """Handle HTTP exceptions and SPA routing fallback."""
     if exc.status_code == 404 and not request.url.path.startswith("/api"):
         return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache"})
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    # Sanitize error details in production
+    detail = exc.detail
+    if ENVIRONMENT != "development" and isinstance(detail, str):
+        # Remove potentially sensitive information
+        sensitive_patterns = ["traceback", "file", "path", "line", "stack"]
+        if any(pattern in detail.lower() for pattern in sensitive_patterns):
+            detail = "Request could not be processed"
+
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
 
 # Static files
 app.mount("/", StaticFiles(directory="static/dist"), name="static")
