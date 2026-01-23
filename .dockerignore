@@ -1,0 +1,132 @@
+# =============================================================================
+# Green Deck - Docker Ignore File
+# =============================================================================
+# Files and directories to exclude from the Docker build context.
+# This reduces build time and image size.
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Virtual environments
+.venv/
+srs-venv/
+venv/
+env/
+ENV/
+.env
+
+# Node modules (will be installed fresh in build)
+frontend/node_modules/
+
+# Build artifacts (will be built in container)
+frontend/dist/
+static/dist/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Environment files (sensitive - use docker-compose environment instead)
+.env
+.env.*
+*.local
+!.env.example
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Data directory (will be mounted as volume)
+data/
+
+# Large model files
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+models/*.gguf
+models/*.bin
+
+# Training data and notebooks
+*.jsonl
+notebooks/
+*.ipynb
+
+# Documentation (not needed in production image)
+docs/
+*.md
+!README.md
+
+# Scripts and tests (optional exclusion for smaller image)
+scripts/
+tests/
+
+# Temporary files
+*.tmp
+*.bak
+*.temp
+.cache/
+tmp/
+temp/
+
+# Docker files (no need to include in build context)
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Misc
+*.pdf
+*.zip
+*.tar.gz
+*.rar

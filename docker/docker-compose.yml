@@ -1,0 +1,67 @@
+# =============================================================================
+# Green Deck - Docker Compose Configuration
+# =============================================================================
+# Usage:
+#   docker compose -p green-deck -f docker/docker-compose.yml up -d              # Start
+#   docker compose -p green-deck -f docker/docker-compose.yml logs -f            # View logs
+#   docker compose -p green-deck -f docker/docker-compose.yml down               # Stop
+#   docker compose -p green-deck -f docker/docker-compose.yml build --no-cache   # Rebuild
+# =============================================================================
+
+services:
+  green-deck:
+    image: green-deck:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: green-deck
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      # Persist DuckDB database and generated data
+      - green-deck-data:/app/data
+    environment:
+      - PORT=${PORT:-3000}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      # Ollama on host machine (use host.docker.internal)
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
+      - OLLAMA_ANALYSIS_MODEL=${OLLAMA_ANALYSIS_MODEL:-}
+      # Anki on host machine
+      - ANKI_CONNECT_URL=${ANKI_CONNECT_URL:-http://host.docker.internal:8765}
+      # Text processing limits
+      - MAX_SOURCE_CHARS=${MAX_SOURCE_CHARS:-16000}
+      - MAX_CTX_CHARS=${MAX_CTX_CHARS:-1500}
+      # CORS origins (adjust for your domain in production)
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      # Rate limiting
+      - RATE_LIMIT_DEFAULT=${RATE_LIMIT_DEFAULT:-100/minute}
+      - RATE_LIMIT_GENERATE=${RATE_LIMIT_GENERATE:-10/minute}
+      # Optional: wait for Ollama before starting
+      - WAIT_FOR_OLLAMA=${WAIT_FOR_OLLAMA:-false}
+    restart: unless-stopped
+    # Enable access to host services (Ollama, Anki running on host)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # GPU support for PyTorch CUDA
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  green-deck-data:
+    driver: local
+
+networks:
+  default:
+    name: green-deck-network
