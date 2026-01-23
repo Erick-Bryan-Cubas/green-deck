@@ -5,6 +5,57 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.2.0-beta] - 2026-01-23
+
+### Adicionado
+
+- **Suporte completo a Docker (deploy e operação)**
+  - Adicionado `.dockerignore` para otimizar builds (menos lixo no contexto, imagem menor e build mais rápido)
+  - README (EN/PT) expandido com passo a passo de deploy via Docker, configuração, troubleshooting e **persistência de dados**
+  - `.env.example` estendido com variáveis específicas para Docker, persistência e seções anotadas para facilitar setup (local vs Docker)
+
+- **Rate limiting em endpoints críticos da API**
+  - Limitação de requisições aplicada aos principais endpoints com middleware `limiter`
+
+- **Melhorias na API**
+  - `CardsRequest` agora suporta flag `isExamMode` para geração de simulado/prova
+
+### Alterado
+
+- **Tratamento de API Keys mais seguro**
+  - Endpoints passam a extrair API keys preferencialmente dos **headers** (mantendo compatibilidade com envio no body)
+  - Lógica de merge/normalização de chaves ajustada para suportar os dois formatos
+
+- **Documentação reorganizada e aprofundada (EN/PT)**
+  - Instruções mais detalhadas para configuração, execução, persistência e diagnóstico de problemas
+
+### Segurança
+
+- **API Keys agora são tratadas de forma mais segura**
+  - Extração preferencial via **headers** (em vez de body), reduzindo risco de:
+    - chaves aparecerem em logs de payload
+    - chaves vazarem em traces de erro, tools de debug, proxies e histórico de requests
+  - Mantida **retrocompatibilidade** com o formato antigo (body), evitando quebrar integrações existentes
+  - Normalização/merge de chaves aprimorado para lidar corretamente com múltiplas origens (headers + body), priorizando o caminho mais seguro
+
+- **Rate limiting em endpoints sensíveis**
+  - Aplicação de limites de requisições em rotas críticas para reduzir:
+    - brute force / abuso de endpoints
+    - exaustão de recursos (CPU/GPU/LLM calls) por uso malicioso ou acidental
+    - custos inesperados em provedores pagos
+  - Integração via middleware `limiter` com regras específicas por endpoint (quando aplicável)
+
+- **Validação e logging mais “safe-by-default”**
+  - Regras de validação reforçadas para inputs/prompt (incluindo sanitização/checagens extras)
+  - Logging ajustado para melhorar rastreabilidade **sem** expor conteúdo sensível (como credenciais e dados de configuração)
+
+- **Configuração de segurança mais explícita**
+  - `.env.example` ampliado com seções anotadas para:
+    - variáveis relacionadas a segurança e rate limiting
+    - parâmetros específicos de execução em Docker (reduzindo configurações “soltas” e inconsistentes entre ambientes)
+
+---
+
 ## [1.0.1-beta] - 2026-01-16
 
 ### Adicionado
