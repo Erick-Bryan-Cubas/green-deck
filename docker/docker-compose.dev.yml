@@ -1,0 +1,28 @@
+# =============================================================================
+# Green Deck - Development Docker Compose Override
+# =============================================================================
+# Usage:
+#   docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d
+#
+# Features:
+#   - Mounts local app/ directory for hot-reload
+#   - Enables uvicorn --reload flag
+#   - Development environment settings
+#   - Extended CORS origins for Vite dev server
+# =============================================================================
+
+services:
+  green-deck:
+    volumes:
+      # Mount source code for hot-reload (read-only for safety)
+      - ../app:/app/app:ro
+      # Mount local data directory instead of named volume
+      - ../data:/app/data
+    environment:
+      - ENVIRONMENT=development
+      # Include Vite dev server in CORS origins
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
+    # Override command to enable hot-reload
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3000", "--reload"]
+    # Remove restart policy for development
+    restart: "no"

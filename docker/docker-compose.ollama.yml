@@ -1,0 +1,50 @@
+# =============================================================================
+# Green Deck - Ollama Service Docker Compose Override
+# =============================================================================
+# Usage:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.ollama.yml up -d
+#
+# This file adds an Ollama container alongside Green Deck.
+# After starting, pull your models:
+#   docker exec ollama ollama pull qwen2.5:7b
+#   docker exec ollama ollama pull nomic-embed-text
+# =============================================================================
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      # Persist downloaded models
+      - ollama-data:/root/.ollama
+    # GPU support for inference
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  green-deck:
+    environment:
+      # Override Ollama host to use container network
+      - OLLAMA_HOST=http://ollama:11434
+      # Wait for Ollama to be ready before starting
+      - WAIT_FOR_OLLAMA=true
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+volumes:
+  ollama-data:
+    driver: local

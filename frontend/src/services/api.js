@@ -124,6 +124,29 @@ function truncateText(text, maxLength = 8000) {
 }
 
 /**
+ * Creates HTTP headers with API keys for secure transmission.
+ * API keys are sent via headers instead of request body to avoid logging exposure.
+ * @param {Object} keys - Object containing API keys
+ * @returns {Object} Headers object with Content-Type and API key headers
+ */
+function createApiHeaders(keys = null) {
+  const headers = { "Content-Type": "application/json" };
+  const apiKeys = keys || getStoredApiKeys();
+
+  if (apiKeys.anthropicApiKey) {
+    headers["X-Anthropic-Key"] = apiKeys.anthropicApiKey;
+  }
+  if (apiKeys.openaiApiKey) {
+    headers["X-OpenAI-Key"] = apiKeys.openaiApiKey;
+  }
+  if (apiKeys.perplexityApiKey) {
+    headers["X-Perplexity-Key"] = apiKeys.perplexityApiKey;
+  }
+
+  return headers;
+}
+
+/**
  * Normaliza o campo de referência do card, aceitando algumas variações.
  * (ex: src, SRC, fonte, ref)
  */
@@ -251,16 +274,12 @@ function parseClaudeResponse(responseData) {
  */
 async function analyzeText(text, analysisModel = null, onProgress = null) {
   try {
-    const keys = getStoredApiKeys();
-
     const response = await fetch("/api/analyze-text-stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: createApiHeaders(),
       body: JSON.stringify({
         text: truncateText(text, 10000),
         analysisModel: analysisModel,
-        openaiApiKey: keys.openaiApiKey || null,
-        perplexityApiKey: keys.perplexityApiKey || null,
       }),
     });
 
@@ -335,16 +354,12 @@ async function analyzeText(text, analysisModel = null, onProgress = null) {
  */
 async function segmentTopics(text, analysisModel = null, onProgress = null) {
   try {
-    const keys = getStoredApiKeys();
-
     const response = await fetch("/api/segment-topics", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: createApiHeaders(),
       body: JSON.stringify({
         text: truncateText(text, 15000),
         analysisModel: analysisModel,
-        openaiApiKey: keys.openaiApiKey || null,
-        perplexityApiKey: keys.perplexityApiKey || null,
       }),
     });
 
@@ -417,9 +432,6 @@ async function segmentTopics(text, analysisModel = null, onProgress = null) {
  */
 async function generateCards(text, deckOptions = "", textContext = "") {
   try {
-    // Get stored API key
-    const { anthropicApiKey } = getStoredApiKeys();
-
     // If no Anthropic API key is provided, the server will attempt to use a local Ollama instance
 
     // Call the server endpoint with timeout control
@@ -431,12 +443,11 @@ async function generateCards(text, deckOptions = "", textContext = "") {
 
       response = await fetch("/api/generate-cards", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: createApiHeaders(),
         body: JSON.stringify({
           text: truncateText(text),
           textContext,
           deckOptions,
-          userApiKey: anthropicApiKey || null,
         }),
         signal: controller.signal,
       });
@@ -518,11 +529,11 @@ async function generateCardsWithStream(
   validationModel = null,
   analysisModel = null,
   customPrompts = null,
-  numCards = null
+  numCards = null,
+  isExamMode = false
 ) {
-  const keys = getStoredApiKeys();
-
   // Monta o body com campos opcionais de prompts customizados
+  // Note: API keys are now sent via headers for security
   const requestBody = {
     text: truncateText(text),
     textContext,
@@ -532,14 +543,16 @@ async function generateCardsWithStream(
     validationModel: validationModel || model,
     analysisModel: analysisModel || model,
     analysisId,
-    anthropicApiKey: keys.anthropicApiKey || null,
-    openaiApiKey: keys.openaiApiKey || null,
-    perplexityApiKey: keys.perplexityApiKey || null,
   };
 
   // Adiciona quantidade de cards se especificada
   if (numCards && numCards > 0) {
     requestBody.numCards = numCards;
+  }
+
+  // Adiciona modo de simulado/prova se ativo
+  if (isExamMode) {
+    requestBody.isExamMode = true;
   }
 
   // Adiciona prompts customizados se fornecidos
@@ -559,7 +572,7 @@ async function generateCardsWithStream(
   try {
     response = await fetch("/api/generate-cards-stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: createApiHeaders(),
       body: JSON.stringify(requestBody),
     });
   } catch (err) {
@@ -840,19 +853,15 @@ async function getDefaultPrompts() {
  * @returns {Promise<Object>} Card reescrito {success, front, back, action}
  */
 async function rewriteCard(card, action, model = null) {
-  const keys = getStoredApiKeys();
-
   try {
     const response = await fetch("/api/rewrite-card", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: createApiHeaders(),
       body: JSON.stringify({
         front: card.front || "",
         back: card.back || "",
         action: action,
         model: model,
-        openaiApiKey: keys.openaiApiKey || null,
-        perplexityApiKey: keys.perplexityApiKey || null,
       }),
     });
 
