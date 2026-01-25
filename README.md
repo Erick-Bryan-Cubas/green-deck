@@ -201,6 +201,23 @@ docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compo
 
 This mounts your local `app/` directory for live code changes.
 
+### Rebuilding After Updates
+
+After pulling new changes or modifying the code, rebuild the containers to apply updates:
+
+```bash
+# Rebuild and restart all containers
+docker compose -p green-deck -f docker/docker-compose.yml up -d --build
+
+# Or rebuild a specific service
+docker compose -p green-deck -f docker/docker-compose.yml build green-deck
+docker compose -p green-deck -f docker/docker-compose.yml up -d green-deck
+
+# Force rebuild without cache (useful for major updates)
+docker compose -p green-deck -f docker/docker-compose.yml build --no-cache
+docker compose -p green-deck -f docker/docker-compose.yml up -d
+```
+
 ### Data Persistence
 
 Docker volumes are used to persist data:
@@ -437,7 +454,7 @@ cp .env.example .env
 # Edite o .env conforme necessário (veja configuração Docker abaixo)
 
 # Build e execução
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml up -d --build
 
 # Ver logs
 docker compose -f docker/docker-compose.yml logs -f green-deck
@@ -474,10 +491,27 @@ docker exec ollama ollama pull nomic-embed-text
 Para desenvolvimento com hot-reload:
 
 ```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up
+docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d
 ```
 
 Isso monta seu diretório local `app/` para mudanças em tempo real.
+
+### Reconstruir Após Atualizações
+
+Após baixar novas mudanças ou modificar o código, reconstrua os containers para aplicar as atualizações:
+
+```bash
+# Reconstruir e reiniciar todos os containers
+docker compose -p green-deck -f docker/docker-compose.yml up -d --build
+
+# Ou reconstruir um serviço específico
+docker compose -p green-deck -f docker/docker-compose.yml build green-deck
+docker compose -p green-deck -f docker/docker-compose.yml up -d green-deck
+
+# Forçar reconstrução sem cache (útil para atualizações maiores)
+docker compose -p green-deck -f docker/docker-compose.yml build --no-cache
+docker compose -p green-deck -f docker/docker-compose.yml up -d
+```
 
 ### Persistência de Dados
 
