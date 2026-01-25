@@ -35,7 +35,9 @@ class AnkiStatusFilter(logging.Filter):
             and "/api/health/ollama" not in msg
             and "/ws/status" not in msg
             and "http://127.0.0.1:8765" not in msg
+            and "http://host.docker.internal:8765" not in msg
             and "http://127.0.0.1:11434/api/tags" not in msg
+            and "http://host.docker.internal:11434" not in msg
         )
 
 logging.basicConfig(level=logging.INFO)

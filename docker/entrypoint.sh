@@ -51,7 +51,7 @@ cat <<'BANNER'
 
 BANNER
 
-echo "  Server:      http://0.0.0.0:${PORT:-3000}"
+echo "  Server:      http://localhost:${PORT:-3000}"
 echo "  Environment: ${ENVIRONMENT:-production}"
 echo "  Ollama:      ${OLLAMA_HOST:-not configured}"
 echo "  Anki:        ${ANKI_CONNECT_URL:-not configured}"
