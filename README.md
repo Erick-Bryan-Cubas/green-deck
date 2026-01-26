@@ -177,6 +177,30 @@ When running in Docker, configure these variables in your `.env` file:
 | `ANKI_CONNECT_URL` | `http://host.docker.internal:8765` | Access Anki on host machine |
 | `ENVIRONMENT` | `production` | Set to production for Docker |
 
+### Document Processing Configuration
+
+Green Deck supports extracting text from various document formats (PDF, DOCX, PPTX, etc.) with configurable timeout limits for large files. You can adjust these timeouts in your `.env` file:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOCUMENT_EXTRACTION_TIMEOUT` | `180` | Maximum time (seconds) for full document extraction (3 minutes) |
+| `DOCUMENT_PREVIEW_TIMEOUT` | `90` | Maximum time (seconds) for document preview (90 seconds) |
+
+**Recommendations:**
+- Small deployments (personal use): 120-180 seconds
+- Medium deployments (team use): 180-240 seconds
+- Large files (100+ pages): 300 seconds or use page selection
+
+**Tips for large files:**
+1. Select specific pages instead of extracting the entire document
+2. Use the "pdfplumber" extractor (faster but less formatting)
+3. Split large documents into smaller files
+
+**Real-time Progress:** When extracting documents, you'll see a real-time progress bar showing:
+- Percentage complete (e.g., "45%")
+- Current status (e.g., "Processing page 23 of 150...")
+- Cancel button to abort long-running extractions
+
 ### Running with Ollama Container
 
 To run Ollama as a Docker container alongside Green Deck:
