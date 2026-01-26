@@ -7,6 +7,7 @@ numpy>=1.24.0
 langid
 duckdb>=1.1.0
 python-multipart>=0.0.9
+sse-starlette>=1.6.5
 
 # Document Processing
 docling>=2.60.0

@@ -7,6 +7,10 @@
 // Local storage key for API keys
 const API_KEY_STORAGE_KEY = "flashcard_generator_api_keys";
 
+// Document extraction timeouts (milliseconds)
+const DOCUMENT_EXTRACTION_TIMEOUT = 180000; // 3 minutes
+const DOCUMENT_PREVIEW_TIMEOUT = 90000; // 90 seconds
+
 /**
  * Retrieves stored API keys from local storage
  * @returns {Object} Object containing API keys
@@ -680,11 +684,18 @@ async function extractDocumentText(file, options = {}, onProgress = null) {
     formData.append("chunk_size", chunkSize.toString());
   }
 
+  // Add timeout control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_EXTRACTION_TIMEOUT);
+
   try {
     const response = await fetch("/api/documents/extract", {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -697,13 +708,23 @@ async function extractDocumentText(file, options = {}, onProgress = null) {
     }
 
     const result = await response.json();
-    
+
     if (!result.success) {
       throw new Error(result.error || "Extraction failed");
     }
 
     return result;
   } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle timeout specifically
+    if (error.name === 'AbortError') {
+      throw new Error(
+        'A extração do documento excedeu o tempo limite de 3 minutos. ' +
+        'Tente selecionar menos páginas ou use um arquivo menor.'
+      );
+    }
+
     console.error("Error extracting document:", error);
     throw error;
   }
@@ -720,11 +741,18 @@ async function extractDocumentPreview(file, maxPreviewChars = 2000) {
   formData.append("file", file);
   formData.append("max_preview_chars", maxPreviewChars.toString());
 
+  // Add timeout control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_PREVIEW_TIMEOUT);
+
   try {
     const response = await fetch("/api/documents/extract-and-preview", {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -738,6 +766,16 @@ async function extractDocumentPreview(file, maxPreviewChars = 2000) {
 
     return await response.json();
   } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle timeout specifically
+    if (error.name === 'AbortError') {
+      throw new Error(
+        'A pré-visualização do documento excedeu o tempo limite de 90 segundos. ' +
+        'Tente um arquivo menor.'
+      );
+    }
+
     console.error("Error extracting document preview:", error);
     throw error;
   }
@@ -752,11 +790,18 @@ async function getDocumentPagesPreview(file) {
   const formData = new FormData();
   formData.append("file", file);
 
+  // Add timeout control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_PREVIEW_TIMEOUT);
+
   try {
     const response = await fetch("/api/documents/preview-pages", {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -770,6 +815,16 @@ async function getDocumentPagesPreview(file) {
 
     return await response.json();
   } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle timeout specifically
+    if (error.name === 'AbortError') {
+      throw new Error(
+        'A pré-visualização do documento excedeu o tempo limite de 90 segundos. ' +
+        'Tente um arquivo menor.'
+      );
+    }
+
     console.error("Error getting document pages preview:", error);
     throw error;
   }
@@ -793,11 +848,18 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
   formData.append("quality", quality);
   formData.append("pdf_extractor", pdfExtractor);
 
+  // Add timeout control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_EXTRACTION_TIMEOUT);
+
   try {
     const response = await fetch("/api/documents/extract-pages", {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -810,16 +872,183 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
     }
 
     const result = await response.json();
-    
+
     if (!result.success) {
       throw new Error(result.error || "Extraction failed");
     }
 
     return result;
   } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle timeout specifically
+    if (error.name === 'AbortError') {
+      throw new Error(
+        'A extração das páginas selecionadas excedeu o tempo limite de 3 minutos. ' +
+        'Tente selecionar menos páginas.'
+      );
+    }
+
     console.error("Error extracting selected pages:", error);
     throw error;
   }
+}
+
+/**
+ * Extract document text with real-time progress updates via Server-Sent Events (SSE)
+ * @param {File} file - Document file
+ * @param {Object} options - Extraction options
+ * @param {Function} onProgress - Callback for progress updates (percent, message)
+ * @param {AbortSignal} signal - Optional abort signal for cancellation
+ * @returns {Promise<Object>} Final extraction result
+ */
+async function extractDocumentTextStream(file, options = {}, onProgress = null, signal = null) {
+  const { quality = "cleaned", pdfExtractor = "docling" } = options;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
+
+  return new Promise((resolve, reject) => {
+    let result = null;
+    let aborted = false;
+
+    // Handle abort signal
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(new Error('AbortError'));
+      });
+    }
+
+    // Start the upload and stream
+    fetch("/api/documents/extract-stream", {
+      method: "POST",
+      body: formData,
+      signal: signal,
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream() {
+          if (aborted) {
+            reader.cancel();
+            return;
+          }
+
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              if (result) {
+                resolve(result);
+              } else {
+                reject(new Error("Stream ended without result"));
+              }
+              return;
+            }
+
+            // Decode chunk and add to buffer
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete SSE messages (separated by \n\n)
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || ''; // Keep incomplete message in buffer
+
+            for (const event of events) {
+              if (!event.trim()) continue;
+
+              const lines = event.split("\n");
+              let eventType = "message";
+              let eventData = "";
+
+              for (const line of lines) {
+                if (line.startsWith("event: ")) {
+                  eventType = line.substring(7).trim();
+                } else if (line.startsWith("data: ")) {
+                  eventData = line.substring(6);
+                }
+              }
+
+              if (!eventData) continue;
+
+              try {
+                const data = JSON.parse(eventData);
+
+                switch (eventType) {
+                  case "start":
+                    if (onProgress) {
+                      onProgress(0, data.message);
+                    }
+                    break;
+
+                  case "info":
+                    if (onProgress) {
+                      onProgress(0, data.message);
+                    }
+                    break;
+
+                  case "progress":
+                    if (onProgress) {
+                      onProgress(
+                        data.progress_percent,
+                        data.message
+                      );
+                    }
+                    break;
+
+                  case "complete":
+                    result = {
+                      success: data.success,
+                      text: data.text,
+                      word_count: data.word_count,
+                      total_pages: data.total_pages,
+                      pages: data.pages,
+                      quality: data.quality,
+                      filename: data.filename,
+                      metadata: data.metadata || {},
+                    };
+                    if (onProgress) {
+                      onProgress(100, data.message);
+                    }
+                    break;
+
+                  case "error":
+                    reject(new Error(data.error || "Extraction failed"));
+                    return;
+                }
+              } catch (e) {
+                console.error("Error parsing SSE event:", e, eventData);
+              }
+            }
+
+            // Continue reading
+            readStream();
+          }).catch(error => {
+            if (error.name === 'AbortError') {
+              reject(error);
+            } else {
+              console.error("Stream read error:", error);
+              reject(error);
+            }
+          });
+        }
+
+        readStream();
+      })
+      .catch(error => {
+        if (error.name === 'AbortError') {
+          reject(error);
+        } else {
+          reject(error);
+        }
+      });
+  });
 }
 
 /**
@@ -884,6 +1113,7 @@ export {
   fetchOllamaInfo,
   getDocumentExtractionStatus,
   extractDocumentText,
+  extractDocumentTextStream,
   extractDocumentPreview,
   getDocumentPagesPreview,
   getPdfPagesPreview, // Alias for backward compatibility
