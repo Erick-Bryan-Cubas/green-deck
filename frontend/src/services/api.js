@@ -529,8 +529,7 @@ async function generateCardsWithStream(
   validationModel = null,
   analysisModel = null,
   customPrompts = null,
-  numCards = null,
-  isExamMode = false
+  numCards = null
 ) {
   // Monta o body com campos opcionais de prompts customizados
   // Note: API keys are now sent via headers for security
@@ -548,11 +547,6 @@ async function generateCardsWithStream(
   // Adiciona quantidade de cards se especificada
   if (numCards && numCards > 0) {
     requestBody.numCards = numCards;
-  }
-
-  // Adiciona modo de simulado/prova se ativo
-  if (isExamMode) {
-    requestBody.isExamMode = true;
   }
 
   // Adiciona prompts customizados se fornecidos
