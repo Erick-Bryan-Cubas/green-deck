@@ -13,7 +13,8 @@ import { VuePDF, usePDF } from '@tato30/vue-pdf'
 import {
   getDocumentExtractionStatus,
   getDocumentPagesPreview,
-  extractSelectedPages
+  extractSelectedPages,
+  extractDocumentTextStream
 } from '@/services/api.js'
 
 const emit = defineEmits(['extracted', 'error'])
@@ -68,6 +69,10 @@ const extractionError = ref(null)
 const isServiceAvailable = ref(null)
 const supportedFormatsFromServer = ref({})
 const dragOver = ref(false)
+const extractionProgress = ref(0)
+const extractionProgressMessage = ref('')
+const isExtractingWithProgress = ref(false)
+const extractionAbortController = ref(null)
 
 // File input ref
 const fileInputRef = ref(null)
@@ -345,6 +350,9 @@ async function loadPdfPreview() {
   const { pdf, pages } = usePDF(blobUrl)
 
   // Aguardar o PDF carregar
+  // PDF preview timeout - generous for large files
+  const PDF_PREVIEW_TIMEOUT_MS = 90000; // 90 seconds (up from 30)
+
   await new Promise((resolve, reject) => {
     const checkLoaded = setInterval(() => {
       if (pages.value && pdf.value) {
@@ -357,13 +365,16 @@ async function loadPdfPreview() {
       }
     }, 100)
 
-    // Timeout apos 30 segundos
+    // Timeout apos 90 segundos (aumentado para arquivos grandes)
     setTimeout(() => {
       clearInterval(checkLoaded)
       if (!pages.value) {
-        reject(new Error('Timeout ao carregar PDF'))
+        reject(new Error(
+          'Timeout ao carregar PDF. O arquivo pode ser muito grande ou conter muitas páginas. ' +
+          'Tente selecionar páginas específicas ou use um arquivo menor.'
+        ))
       }
-    }, 30000)
+    }, PDF_PREVIEW_TIMEOUT_MS)
   })
 
   currentStep.value = 'pages'
@@ -485,15 +496,32 @@ async function extractSelectedText() {
   if (!selectedFile.value || selectedPages.value.length === 0) return
 
   isLoading.value = true
-  loadingMessage.value = 'Extraindo texto do documento...'
+  isExtractingWithProgress.value = true
+  extractionProgress.value = 0
+  extractionProgressMessage.value = 'Iniciando extração...'
   extractionError.value = null
 
+  // Create abort controller for cancellation
+  extractionAbortController.value = new AbortController()
+
   try {
-    const result = await extractSelectedPages(
+    // Progress callback
+    const handleProgress = (percent, message) => {
+      extractionProgress.value = percent
+      extractionProgressMessage.value = message
+    }
+
+    const extractionOptions = {
+      quality: 'cleaned',
+      pdfExtractor: isPdfFile.value ? selectedExtractor.value : 'docling'
+    }
+
+    // Use streaming extraction with progress for better UX
+    const result = await extractDocumentTextStream(
       selectedFile.value,
-      selectedPages.value,
-      'cleaned',
-      isPdfFile.value ? selectedExtractor.value : 'docling'
+      extractionOptions,
+      handleProgress,
+      extractionAbortController.value.signal
     )
 
     extractedResult.value = result
@@ -501,23 +529,60 @@ async function extractSelectedText() {
 
     toast.add({
       severity: 'success',
-      summary: 'Extracao concluida',
-      detail: `${result.word_count} palavras extraidas de ${result.pages} pagina(s)`,
+      summary: 'Extração concluída',
+      detail: `${result.word_count} palavras extraídas`,
       life: 3000
     })
   } catch (error) {
+    // Check if extraction was cancelled
+    if (error.message === 'AbortError') {
+      toast.add({
+        severity: 'info',
+        summary: 'Extração cancelada',
+        detail: 'A extração foi cancelada pelo usuário.',
+        life: 3000
+      })
+      return
+    }
+
     console.error('Extraction error:', error)
-    extractionError.value = error.message
+
+    // Provide helpful error messages based on error type
+    let errorDetail = error.message || 'Erro desconhecido'
+    let summary = 'Erro na extração'
+
+    if (errorDetail.includes('timeout') || errorDetail.includes('tempo limite')) {
+      summary = 'Tempo limite excedido'
+      errorDetail = 'O documento é muito grande. Sugestões:\n' +
+                    '• Selecione apenas as páginas necessárias\n' +
+                    '• Use o extrator "pdfplumber" (mais rápido)\n' +
+                    '• Divida o documento em arquivos menores'
+    } else if (errorDetail.includes('network') || errorDetail.includes('fetch')) {
+      summary = 'Erro de conexão'
+      errorDetail = 'Verifique sua conexão com a internet e tente novamente.'
+    }
+
+    extractionError.value = errorDetail
     toast.add({
       severity: 'error',
-      summary: 'Erro na extracao',
-      detail: error.message,
-      life: 5000
+      summary,
+      detail: errorDetail,
+      life: 8000 // Longer display for error messages
     })
     emit('error', error)
   } finally {
     isLoading.value = false
-    loadingMessage.value = ''
+    isExtractingWithProgress.value = false
+    extractionProgress.value = 0
+    extractionProgressMessage.value = ''
+    extractionAbortController.value = null
+  }
+}
+
+function cancelExtraction() {
+  if (extractionAbortController.value) {
+    extractionAbortController.value.abort()
+    extractionAbortController.value = null
   }
 }
 
@@ -805,8 +870,35 @@ defineExpose({
 
       <!-- Loading -->
       <div v-if="isLoading" class="upload-progress">
-        <ProgressBar mode="indeterminate" style="height: 6px" />
-        <span class="progress-label">{{ loadingMessage }}</span>
+        <!-- Progress bar with real progress if streaming extraction -->
+        <ProgressBar
+          v-if="isExtractingWithProgress"
+          :value="extractionProgress"
+          :showValue="true"
+          style="height: 10px"
+        >
+          <template #value>{{ extractionProgress.toFixed(0) }}%</template>
+        </ProgressBar>
+        <!-- Indeterminate progress bar as fallback -->
+        <ProgressBar
+          v-else
+          mode="indeterminate"
+          style="height: 6px"
+        />
+        <span class="progress-label">
+          {{ isExtractingWithProgress ? extractionProgressMessage : loadingMessage }}
+        </span>
+        <!-- Cancel button when extracting with progress -->
+        <div v-if="isExtractingWithProgress" class="mt-3 text-center">
+          <Button
+            label="Cancelar extração"
+            icon="pi pi-times"
+            severity="secondary"
+            outlined
+            size="small"
+            @click="cancelExtraction"
+          />
+        </div>
       </div>
 
       <!-- Error -->
