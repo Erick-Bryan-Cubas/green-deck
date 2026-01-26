@@ -43,7 +43,12 @@ import ProgressDialog from '@/components/modals/ProgressDialog.vue'
 import OllamaSelectionDialog from '@/components/modals/OllamaSelectionDialog.vue'
 import TopicConfirmDialog from '@/components/modals/TopicConfirmDialog.vue'
 import CustomInstructionDialog from '@/components/modals/CustomInstructionDialog.vue'
-import ExamModeInfoDialog from '@/components/modals/ExamModeInfoDialog.vue'
+import QuestionGenerateModal from '@/components/modals/QuestionGenerateModal.vue'
+import QuestionExportDialog from '@/components/modals/QuestionExportDialog.vue'
+
+// Question components
+import QuestionCardItem from '@/components/QuestionCardItem.vue'
+import QuizInteractive from '@/components/QuizInteractive.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 
@@ -57,6 +62,12 @@ import {
   hasAnyApiKey,
   fetchOllamaInfo
 } from '@/services/api.js'
+import {
+  generateQuestionsStream,
+  parseQuestionsStream,
+  uploadQuestionsToAnki,
+  checkAllInOneModel
+} from '@/services/questionApi.js'
 
 // Security utilities
 import { sanitizeHtml } from '@/utils/sanitize.js'
@@ -783,8 +794,8 @@ function buildActiveSessionSnapshot() {
     // Topic segmentation data
     topicSegments: topicSegments.value,
     topicDefinitions: topicDefinitions.value,
-    // Exam mode
-    isExamMode: isExamMode.value
+    // AllInOne questions
+    questionCards: questionCards.value
   }
 }
 
@@ -805,6 +816,7 @@ function schedulePersistActiveSession() {
     const hasAny =
       normalizePlainText(snap.plainText).length > 0 ||
       (Array.isArray(snap.cards) && snap.cards.length > 0) ||
+      (Array.isArray(snap.questionCards) && snap.questionCards.length > 0) ||
       normalizePlainText(snap.documentContext).length > 0
 
     if (!hasAny) {
@@ -848,8 +860,8 @@ async function restoreSessionById(id) {
     topicDefinitions.value = s.topicDefinitions || []
     showTopicLegend.value = topicSegments.value.length > 0
 
-    // Restaura exam mode
-    isExamMode.value = s.isExamMode || false
+    // Restaura AllInOne questions
+    questionCards.value = Array.isArray(s.questionCards) ? s.questionCards : []
 
     await nextTick()
 
@@ -908,8 +920,8 @@ function clearCurrentSession() {
     topicDefinitions.value = []
     showTopicLegend.value = false
 
-    // Limpa exam mode
-    isExamMode.value = false
+    // Limpa AllInOne questions
+    questionCards.value = []
 
     editorRef.value?.setDelta?.(null)
 
@@ -954,9 +966,6 @@ function newSession() {
   topicDefinitions.value = []
   showTopicLegend.value = false
 
-  // Limpa exam mode
-  isExamMode.value = false
-
   editorRef.value?.setDelta?.(null)
 
   activeSessionId.value = safeId()
@@ -972,8 +981,7 @@ function newSession() {
     cards: [],
     documentContext: '',
     topicSegments: [],
-    topicDefinitions: [],
-    isExamMode: false
+    topicDefinitions: []
   })
 
   notify('Nova sessão criada.', 'success', 2200)
@@ -995,9 +1003,17 @@ const documentContext = ref('')
 const currentAnalysisId = ref(null)
 const isAnalyzing = ref(false)
 
-// Exam/Quiz mode (textos de simulados/provas)
-const isExamMode = ref(false)
-const showExamModeInfo = ref(false)
+// ============================================================
+// Questions (AllInOne kprim, mc, sc)
+// ============================================================
+const questionCards = ref([])
+const showQuestionGenerateModal = ref(false)
+const showQuestionExportDialog = ref(false)
+const isGeneratingQuestions = ref(false)
+const isExportingQuestions = ref(false)
+const allInOneStatus = ref({ hasModel: false, checking: true })
+const questionPreviewVisible = ref(false)
+const questionPreviewData = ref(null)
 
 const decks = ref({})
 const currentDeck = ref(null)
@@ -2504,8 +2520,7 @@ async function generateCardsFromSelection() {
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      numCardsEnabled.value ? numCardsSlider.value : null,
-      isExamMode.value
+      numCardsEnabled.value ? numCardsSlider.value : null
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')
@@ -2531,6 +2546,193 @@ async function generateCardsFromSelection() {
     generating.value = false
     progressVisible.value = false
   }
+}
+
+// ============================================================
+// Questions Generation (AllInOne kprim, mc, sc)
+// ============================================================
+function openQuestionGenerateModal() {
+  showQuestionGenerateModal.value = true
+}
+
+async function handleGenerateQuestions(params) {
+  const { textSource, questionType, numQuestions, domain, model } = params
+
+  try {
+    isGeneratingQuestions.value = true
+    showQuestionGenerateModal.value = false
+
+    // Determine text to use
+    let text = ''
+    if (textSource === 'selection' && selectedText.value) {
+      text = selectedText.value
+    } else {
+      text = lastFullText.value
+    }
+
+    if (!text || text.trim().length < 50) {
+      notify('Texto insuficiente para gerar questões', 'warn')
+      return
+    }
+
+    progressVisible.value = true
+    progressStage.value = 'Gerando questões...'
+    progressPct.value = 10
+
+    const questions = await generateQuestionsStream({
+      text: text,
+      textContext: documentContext.value || '',
+      questionType: questionType,
+      numQuestions: numQuestions,
+      model: model,
+      domain: domain,
+      apiKeys: getStoredApiKeys()
+    }, (progress) => {
+      console.log('[Questions] Progress:', progress)
+      if (progress.event === 'generating') {
+        progressStage.value = 'Chamando modelo...'
+        progressPct.value = 30
+      } else if (progress.event === 'parsing') {
+        progressStage.value = 'Parseando questões...'
+        progressPct.value = 70
+      } else if (progress.event === 'parsed') {
+        progressStage.value = `${progress.data.count} questões geradas`
+        progressPct.value = 90
+      }
+    })
+
+    if (questions && questions.length > 0) {
+      questionCards.value = [...questionCards.value, ...questions]
+      notify(`${questions.length} questões geradas!`, 'success')
+      schedulePersistActiveSession()
+    } else {
+      notify('Nenhuma questão foi gerada', 'warn')
+    }
+
+    progressPct.value = 100
+    progressStage.value = 'Concluído!'
+
+  } catch (error) {
+    console.error('Error generating questions:', error)
+    notify('Erro ao gerar questões: ' + (error?.message || String(error)), 'error')
+  } finally {
+    isGeneratingQuestions.value = false
+    progressVisible.value = false
+  }
+}
+
+async function handleParseQuestions(params) {
+  const { text, model } = params
+
+  try {
+    isGeneratingQuestions.value = true
+    showQuestionGenerateModal.value = false
+
+    if (!text || text.trim().length < 50) {
+      notify('Texto insuficiente para interpretar', 'warn')
+      return
+    }
+
+    progressVisible.value = true
+    progressStage.value = 'Interpretando questões...'
+    progressPct.value = 10
+
+    const questions = await parseQuestionsStream({
+      text: text,
+      model: model,
+      apiKeys: getStoredApiKeys()
+    }, (progress) => {
+      console.log('[Questions] Parse Progress:', progress)
+      if (progress.event === 'parsing') {
+        progressStage.value = 'Chamando modelo...'
+        progressPct.value = 40
+      } else if (progress.event === 'parsed') {
+        progressStage.value = `${progress.data.count} questões identificadas`
+        progressPct.value = 90
+      }
+    })
+
+    if (questions && questions.length > 0) {
+      questionCards.value = [...questionCards.value, ...questions]
+      notify(`${questions.length} questões interpretadas!`, 'success')
+      schedulePersistActiveSession()
+    } else {
+      notify('Nenhuma questão identificada no texto', 'warn')
+    }
+
+    progressPct.value = 100
+    progressStage.value = 'Concluído!'
+
+  } catch (error) {
+    console.error('Error parsing questions:', error)
+    notify('Erro ao interpretar questões: ' + (error?.message || String(error)), 'error')
+  } finally {
+    isGeneratingQuestions.value = false
+    progressVisible.value = false
+  }
+}
+
+function deleteQuestion(index) {
+  questionCards.value.splice(index, 1)
+  notify('Questão removida', 'info')
+  schedulePersistActiveSession()
+}
+
+function openQuestionPreview(index) {
+  questionPreviewData.value = questionCards.value[index]
+  questionPreviewVisible.value = true
+}
+
+function openQuestionExportDialog() {
+  showQuestionExportDialog.value = true
+}
+
+async function checkAllInOneModelStatus() {
+  try {
+    allInOneStatus.value = { hasModel: false, checking: true }
+    const result = await checkAllInOneModel()
+    allInOneStatus.value = {
+      hasModel: result.hasModel,
+      checking: false,
+      fields: result.fields,
+      installUrl: result.installUrl
+    }
+  } catch (error) {
+    console.error('Error checking AllInOne model:', error)
+    allInOneStatus.value = { hasModel: false, checking: false }
+  }
+}
+
+async function handleExportQuestions(params) {
+  const { questions, deckName, tags } = params
+
+  try {
+    isExportingQuestions.value = true
+
+    const result = await uploadQuestionsToAnki({
+      questions: questions,
+      deckName: deckName,
+      tags: tags
+    })
+
+    if (result.success) {
+      notify(`${result.totalSuccess}/${result.totalQuestions} questões exportadas para Anki!`, 'success')
+      showQuestionExportDialog.value = false
+    } else {
+      notify('Falha ao exportar questões', 'error')
+    }
+  } catch (error) {
+    console.error('Error exporting questions:', error)
+    notify('Erro ao exportar: ' + (error?.message || String(error)), 'error')
+  } finally {
+    isExportingQuestions.value = false
+  }
+}
+
+function clearAllQuestions() {
+  questionCards.value = []
+  notify('Todas as questões removidas', 'info')
+  schedulePersistActiveSession()
 }
 
 // ============================================================
@@ -2700,8 +2902,7 @@ async function editGenerateCardConfirm() {
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      null, // numCards
-      isExamMode.value
+      null // numCards
     )
 
     newCards.forEach(card => {
@@ -3459,6 +3660,8 @@ function onDocumentError(error) {
 // ============================================================
 const hasSelection = computed(() => (selectedText.value || '').trim().length > 0)
 const hasCards = computed(() => cards.value.length > 0)
+const hasQuestions = computed(() => questionCards.value.length > 0)
+const hasAnyOutput = computed(() => hasCards.value || hasQuestions.value)
 
 // Verifica se há conteúdo disponível para geração (seleção, highlights ou texto)
 const canGenerate = computed(() => {
@@ -3495,11 +3698,6 @@ watch(
 )
 
 watch(documentContext, () => {
-  if (isRestoringSession.value) return
-  schedulePersistActiveSession()
-})
-
-watch(isExamMode, () => {
   if (isRestoringSession.value) return
   schedulePersistActiveSession()
 })
@@ -3923,35 +4121,6 @@ onBeforeUnmount(() => {
                 </template>
               </Select>
 
-              <!-- Exam Mode Toggle -->
-              <div class="exam-mode-toggle flex items-center gap-2">
-                <Checkbox
-                  v-model="isExamMode"
-                  inputId="examMode"
-                  :binary="true"
-                  :disabled="generating || isAnalyzing"
-                />
-                <label
-                  for="examMode"
-                  class="cursor-pointer select-none text-sm whitespace-nowrap"
-                  :class="{ 'opacity-50': generating || isAnalyzing }"
-                >
-                  <i class="pi pi-book mr-1" />
-                  Simulado
-                </label>
-                <Button
-                  v-if="isExamMode"
-                  icon="pi pi-info-circle"
-                  severity="secondary"
-                  text
-                  rounded
-                  size="small"
-                  class="p-0 w-6 h-6"
-                  @click="showExamModeInfo = true"
-                  v-tooltip.top="'Como funciona o modo simulado'"
-                />
-              </div>
-
               <!-- Analyze Button -->
               <Button
                 icon="pi pi-search-plus"
@@ -3973,6 +4142,15 @@ onBeforeUnmount(() => {
                 @click="openGenerateModal"
               />
 
+              <Button
+                icon="pi pi-question-circle"
+                label="Questões"
+                severity="secondary"
+                :disabled="!canGenerate || isGeneratingQuestions"
+                :loading="isGeneratingQuestions"
+                title="Gerar questões AllInOne (kprim, mc, sc)"
+                @click="openQuestionGenerateModal"
+              />
 
             </template>
           </div>
@@ -4402,7 +4580,7 @@ onBeforeUnmount(() => {
             </Transition>
 
             <div class="panel-body output-body">
-              <div v-if="!hasCards" class="empty-state">
+              <div v-if="!hasAnyOutput" class="empty-state">
                 <div class="empty-icon">✨</div>
                 <div class="empty-title">Nenhum card ainda</div>
                 <div class="empty-subtitle">
@@ -4421,7 +4599,54 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <DataView v-else :value="hierarchicalCards" layout="list" class="cards-view">
+              <!-- Questions Section -->
+              <div v-if="hasQuestions" class="questions-section">
+                <div class="section-header">
+                  <div class="section-title">
+                    <i class="pi pi-question-circle mr-2" />
+                    Questões ({{ questionCards.length }})
+                  </div>
+                  <div class="section-actions">
+                    <Button
+                      icon="pi pi-send"
+                      label="Exportar Questões"
+                      size="small"
+                      outlined
+                      @click="openQuestionExportDialog"
+                    />
+                    <Button
+                      icon="pi pi-trash"
+                      severity="danger"
+                      text
+                      size="small"
+                      @click="clearAllQuestions"
+                      title="Limpar todas as questões"
+                    />
+                  </div>
+                </div>
+                <div class="questions-list">
+                  <QuestionCardItem
+                    v-for="(q, idx) in questionCards"
+                    :key="q.id || idx"
+                    :question="q"
+                    :index="idx"
+                    @delete="deleteQuestion"
+                    @preview="openQuestionPreview"
+                  />
+                </div>
+              </div>
+
+              <!-- Cards Section -->
+              <div v-if="hasCards" class="cards-section">
+                <div v-if="hasQuestions" class="section-header">
+                  <div class="section-title">
+                    <i class="pi pi-clone mr-2" />
+                    Flashcards ({{ cards.length }})
+                  </div>
+                </div>
+              </div>
+
+              <DataView v-if="hasCards" :value="hierarchicalCards" layout="list" class="cards-view">
                 <template #list="{ items }">
                   <div class="cards-list">
                     <template v-for="(item, i) in items" :key="i">
@@ -4695,11 +4920,6 @@ onBeforeUnmount(() => {
       @complete="onIntroComplete"
     />
 
-    <!-- EXAM MODE INFO DIALOG -->
-    <ExamModeInfoDialog
-      v-model:visible="showExamModeInfo"
-    />
-
     <!-- OLLAMA MODEL SELECTION (fallback) -->
     <OllamaSelectionDialog
       v-model:visible="ollamaModelSelectionVisible"
@@ -4743,6 +4963,50 @@ onBeforeUnmount(() => {
       :initialTags="ankiTags"
       @export="onAnkiExport"
     />
+
+    <!-- QUESTION GENERATE MODAL -->
+    <QuestionGenerateModal
+      v-model:visible="showQuestionGenerateModal"
+      :selectedModel="selectedModel"
+      :currentModelInfo="currentModelInfo"
+      :generating="isGeneratingQuestions"
+      :hasSelectedText="!!selectedText"
+      :selectedTextLength="selectedText?.length || 0"
+      :fullTextLength="lastFullText?.length || 0"
+      :getModelInfo="getModelInfo"
+      :getProviderSeverity="getProviderSeverity"
+      :getProviderLabel="getProviderLabel"
+      @generate="handleGenerateQuestions"
+      @parse="handleParseQuestions"
+    />
+
+    <!-- QUESTION EXPORT DIALOG -->
+    <QuestionExportDialog
+      v-model:visible="showQuestionExportDialog"
+      :questions="questionCards"
+      :ankiDecks="ankiModelsData?.decks || []"
+      :allTags="ankiAllTags"
+      :exporting="isExportingQuestions"
+      :allInOneStatus="allInOneStatus"
+      @export="handleExportQuestions"
+      @checkModel="checkAllInOneModelStatus"
+    />
+
+    <!-- QUESTION PREVIEW DIALOG -->
+    <Dialog
+      v-model:visible="questionPreviewVisible"
+      header="Preview da Questão"
+      modal
+      class="modern-dialog"
+      style="width: min(720px, 96vw);"
+    >
+      <QuizInteractive
+        v-if="questionPreviewData"
+        :question="questionPreviewData"
+        :compact="false"
+        :showActions="true"
+      />
+    </Dialog>
   </div>
 </template>
 
@@ -5131,6 +5395,48 @@ onBeforeUnmount(() => {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: center;
+}
+
+/* =========================
+   Questions Section
+========================= */
+.questions-section {
+  margin-bottom: 20px;
+}
+
+.questions-section .section-header,
+.cards-section .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.section-title i {
+  color: var(--p-primary-color);
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.questions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 /* =========================

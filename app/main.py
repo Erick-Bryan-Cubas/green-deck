@@ -16,6 +16,7 @@ from app.api import (
     health_router,
     history_router,
     models_router,
+    questions_router,
     start_broadcaster,
     stop_broadcaster,
     websocket_router,
@@ -82,6 +83,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(anki_router)
 app.include_router(flashcards_router)
+app.include_router(questions_router)
 app.include_router(history_router)
 app.include_router(dashboard_router)
 app.include_router(models_router)
