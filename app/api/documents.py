@@ -356,20 +356,12 @@ async def preview_document_pages(
         raise HTTPException(status_code=400, detail="Arquivo vazio")
 
     try:
-        # Wrap preview in thread pool and add timeout
-        result = await with_timeout(
-            asyncio.to_thread(
-                document_extractor.get_document_preview,
-                file_bytes=content,
-                filename=filename,
-                preview_chars=300,
-            ),
-            DOCUMENT_PREVIEW_TIMEOUT,
-            "Pré-visualização de páginas"
+        # Preview sem timeout - processamento paralelo interno garante performance
+        result = await document_extractor.get_document_preview(
+            file_bytes=content,
+            filename=filename,
+            preview_chars=300,
         )
-    except HTTPException:
-        # Re-raise timeout errors
-        raise
     except Exception as e:
         logger.exception("Erro ao obter preview")
         raise HTTPException(status_code=500, detail=f"Erro ao obter preview: {str(e)}")

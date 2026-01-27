@@ -8,8 +8,9 @@ com suporte para multiplos formatos: PDF, DOCX, PPTX, XLSX, HTML, Markdown, Asci
 import logging
 import tempfile
 import os
+import asyncio
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -789,42 +790,141 @@ class DocumentExtractor:
                 error=f"Erro ao obter preview: {str(e)}"
             )
 
+    async def _get_single_page_preview(
+        self,
+        pdf_bytes: bytes,
+        page_num: int,
+        preview_chars: int,
+        semaphore: asyncio.Semaphore,
+    ) -> PageInfo:
+        """
+        Obtém preview de uma única página do PDF de forma thread-safe.
+
+        Args:
+            pdf_bytes: Bytes do PDF
+            page_num: Número da página (0-indexed internamente, retorna 1-indexed)
+            preview_chars: Máximo de caracteres no preview
+            semaphore: Semáforo para controle de concorrência
+
+        Returns:
+            PageInfo com informações da página
+        """
+        async with semaphore:
+            def _extract_preview():
+                import pdfplumber
+                from io import BytesIO
+
+                try:
+                    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                        if page_num >= len(pdf.pages):
+                            return PageInfo(
+                                page_number=page_num + 1,
+                                word_count=0,
+                                preview=""
+                            )
+
+                        page = pdf.pages[page_num]
+                        page_text = page.extract_text() or ""
+
+                        word_count = len(page_text.split()) if page_text else 0
+                        preview = page_text[:preview_chars].strip() if page_text else ""
+                        if len(page_text) > preview_chars:
+                            preview += "..."
+
+                        return PageInfo(
+                            page_number=page_num + 1,
+                            word_count=word_count,
+                            preview=preview,
+                        )
+                except Exception as e:
+                    logger.warning(f"Erro ao obter preview da página {page_num + 1}: {e}")
+                    return PageInfo(
+                        page_number=page_num + 1,
+                        word_count=0,
+                        preview=f"[Erro: {str(e)[:50]}]"
+                    )
+
+            return await asyncio.to_thread(_extract_preview)
+
     async def _get_pdf_preview(
         self,
         pdf_bytes: bytes,
         filename: str,
         preview_chars: int,
+        max_concurrent: int = 10,
+        batch_size: int = 50,
     ) -> DocumentPreviewResult:
-        """Preview especifico para PDFs usando pdfplumber."""
+        """
+        Preview de PDF com processamento PARALELO em lotes.
+
+        Args:
+            pdf_bytes: Bytes do PDF
+            filename: Nome do arquivo
+            preview_chars: Caracteres máximos por preview
+            max_concurrent: Máximo de páginas processadas simultaneamente
+            batch_size: Tamanho de cada lote para processamento
+
+        Returns:
+            DocumentPreviewResult com preview de todas as páginas
+        """
         try:
             import pdfplumber
             from io import BytesIO
 
+            # Obter total de páginas (operação rápida)
             with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
                 total_pages = len(pdf.pages)
 
-                pages_info = []
-                for i, page in enumerate(pdf.pages):
-                    page_text = page.extract_text() or ""
+            logger.info(
+                "Iniciando preview paralelo de %d páginas (lotes de %d, max %d concurrent)",
+                total_pages, batch_size, max_concurrent
+            )
 
-                    word_count = len(page_text.split()) if page_text else 0
-                    preview = page_text[:preview_chars].strip() if page_text else ""
-                    if len(page_text) > preview_chars:
-                        preview += "..."
+            # Semáforo para controlar concorrência
+            semaphore = asyncio.Semaphore(max_concurrent)
 
-                    pages_info.append(PageInfo(
-                        page_number=i + 1,
-                        word_count=word_count,
-                        preview=preview,
-                    ))
+            # Processar em lotes para PDFs muito grandes
+            all_pages_info = []
 
-                return DocumentPreviewResult(
-                    total_pages=total_pages,
-                    pages=pages_info,
-                    filename=filename,
-                    file_size=len(pdf_bytes),
-                    format_type="PDF Document",
-                )
+            for batch_start in range(0, total_pages, batch_size):
+                batch_end = min(batch_start + batch_size, total_pages)
+                batch_pages = range(batch_start, batch_end)
+
+                logger.debug("Processando lote: páginas %d a %d", batch_start + 1, batch_end)
+
+                # Criar tasks para o lote atual
+                tasks = [
+                    self._get_single_page_preview(
+                        pdf_bytes, page_num, preview_chars, semaphore
+                    )
+                    for page_num in batch_pages
+                ]
+
+                # Executar lote em paralelo
+                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Processar resultados do lote
+                for result in batch_results:
+                    if isinstance(result, Exception):
+                        logger.warning("Erro em página do lote: %s", result)
+                        continue
+                    all_pages_info.append(result)
+
+            # Ordenar por número da página (garantir ordem correta)
+            all_pages_info.sort(key=lambda x: x.page_number)
+
+            logger.info(
+                "Preview paralelo concluído: %d de %d páginas",
+                len(all_pages_info), total_pages
+            )
+
+            return DocumentPreviewResult(
+                total_pages=total_pages,
+                pages=all_pages_info,
+                filename=filename,
+                file_size=len(pdf_bytes),
+                format_type="PDF Document",
+            )
 
         except Exception as e:
             logger.exception("Erro ao obter preview do PDF: %s", e)
