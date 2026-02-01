@@ -10,17 +10,13 @@ import Skeleton from 'primevue/skeleton'
 import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
 import { VuePDF, usePDF } from '@tato30/vue-pdf'
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist'
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import {
   getDocumentExtractionStatus,
   getDocumentPagesPreview,
+  getPdfMetadata,
   extractSelectedPages,
   extractDocumentTextStream
 } from '@/services/api.js'
-
-// Configurar worker do PDF.js
-GlobalWorkerOptions.workerSrc = PdfWorker
 
 const emit = defineEmits(['extracted', 'error'])
 const toast = useToast()
@@ -78,12 +74,6 @@ const extractionProgress = ref(0)
 const extractionProgressMessage = ref('')
 const isExtractingWithProgress = ref(false)
 const extractionAbortController = ref(null)
-
-// Preview loading progress
-const previewProgress = ref(0)
-const previewProgressMessage = ref('')
-const previewTotalPages = ref(0)
-const previewLoadedPages = ref(0)
 
 // File input ref
 const fileInputRef = ref(null)
@@ -356,75 +346,39 @@ async function loadPagesPreview() {
 }
 
 async function loadPdfPreview() {
-  // Reset progress
-  previewProgress.value = 0
-  previewProgressMessage.value = 'Iniciando carregamento do PDF...'
-  previewTotalPages.value = 0
-  previewLoadedPages.value = 0
-
   try {
-    // 1. Ler arquivo como ArrayBuffer
+    // 1. Obter metadados do backend (< 2 segundos para 13MB)
+    const metadata = await getPdfMetadata(selectedFile.value)
+
+    if (!metadata.success) {
+      throw new Error(metadata.error || 'Falha ao analisar PDF')
+    }
+
+    // 2. Criar blob URL para thumbnails
     const arrayBuffer = await selectedFile.value.arrayBuffer()
-    previewProgress.value = 10
-    previewProgressMessage.value = 'Arquivo lido, analisando PDF...'
-
-    // 2. Usar pdfjs-dist diretamente para obter APENAS metadados (muito rápido!)
-    // Nota: usa o mesmo worker que vue-pdf já configura internamente
-    const loadingTask = getDocument({
-      data: arrayBuffer,
-      // Callback de progresso real
-      onProgress: (progressData) => {
-        if (progressData.total > 0) {
-          const percent = Math.round((progressData.loaded / progressData.total) * 80) + 10
-          previewProgress.value = Math.min(90, percent)
-          previewProgressMessage.value = `Carregando ${(progressData.loaded / 1024 / 1024).toFixed(1)}MB de ${(progressData.total / 1024 / 1024).toFixed(1)}MB...`
-        }
-      }
-    })
-
-    // 3. Obter documento (apenas metadados, não renderiza páginas)
-    const pdfDoc = await loadingTask.promise
-    const numPages = pdfDoc.numPages
-
-    previewProgress.value = 95
-    previewProgressMessage.value = `${numPages} páginas detectadas!`
-
-    // 4. Criar blob URL para thumbnails (usePDF vai usar isso depois)
     const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
-    const blobUrl = URL.createObjectURL(blob)
-    pdfSource.value = blobUrl
+    pdfSource.value = URL.createObjectURL(blob)
 
-    // 5. Armazenar dados do PDF
-    totalPdfPages.value = numPages
-    previewTotalPages.value = numPages
-    previewLoadedPages.value = numPages
+    // 3. Armazenar dados do PDF
+    totalPdfPages.value = metadata.num_pages
 
-    // 6. Selecionar todas as páginas por padrão
-    selectedPages.value = Array.from({ length: numPages }, (_, i) => i + 1)
+    // 4. Selecionar todas as páginas por padrão
+    selectedPages.value = Array.from({ length: metadata.num_pages }, (_, i) => i + 1)
 
-    // 7. Liberar documento (thumbnails usarão usePDF separadamente)
-    pdfDoc.destroy()
-
-    previewProgress.value = 100
-    previewProgressMessage.value = `${numPages} páginas prontas!`
-
-    // 8. Transição para step de páginas
+    // 5. Transição para seleção de páginas
     currentStep.value = 'pages'
 
-    // Reset progress após transição
-    setTimeout(() => {
-      previewProgress.value = 0
-      previewProgressMessage.value = ''
-    }, 1000)
-
-    // 9. Inicializar lazy loading para thumbnails
+    // 6. Inicializar observer imediatamente (mostra cards com skeletons)
     await nextTick()
+    setupIntersectionObserver()
+
+    // 7. Carregar thumbnails em background (não bloqueia UI)
     setupThumbnailLazyLoading()
 
     toast.add({
       severity: 'info',
       summary: 'PDF carregado',
-      detail: `${numPages} páginas encontradas`,
+      detail: `${metadata.num_pages} páginas encontradas`,
       life: 3000
     })
 
@@ -435,28 +389,26 @@ async function loadPdfPreview() {
 }
 
 function setupThumbnailLazyLoading() {
-  // Usar usePDF apenas quando for renderizar thumbnails
-  // O pdfData será carregado sob demanda pelo VuePDF component
+  // Usar usePDF para carregar dados do PDF para renderização de thumbnails
+  // Isso roda em background enquanto o usuário já pode ver e selecionar páginas
   const { pdf } = usePDF(pdfSource.value)
 
-  // Aguardar pdf carregar para thumbnails
+  // Aguardar pdf carregar para thumbnails (em background)
   const checkPdfReady = setInterval(() => {
     if (pdf.value) {
       clearInterval(checkPdfReady)
       pdfData.value = pdf.value
-      setupIntersectionObserver()
+      // Thumbnails começarão a aparecer automaticamente via reatividade do Vue
     }
   }, 100)
 
-  // Timeout de 30s para thumbnails (não crítico)
+  // Timeout de 60s para thumbnails (não crítico - usuário pode selecionar sem eles)
   setTimeout(() => {
     clearInterval(checkPdfReady)
     if (!pdfData.value) {
-      console.warn('Thumbnails não disponíveis, mas PDF já está carregado')
-      // Continuar sem thumbnails - usuário pode selecionar páginas pelo número
-      setupIntersectionObserver()
+      console.warn('Thumbnails não disponíveis, mas seleção de páginas funciona normalmente')
     }
-  }, 30000)
+  }, 60000)
 }
 
 async function loadDocumentPreview() {
@@ -819,23 +771,10 @@ defineExpose({
           <span>Imagens serao processadas com OCR para extrair texto</span>
         </div>
 
-        <!-- Progress with page counter for PDF loading -->
+        <!-- Loading indicator -->
         <div v-if="isLoading" class="upload-progress">
-          <template v-if="previewProgress > 0">
-            <div class="progress-header">
-              <span class="progress-message">{{ previewProgressMessage }}</span>
-              <span class="progress-percentage">{{ Math.round(previewProgress) }}%</span>
-            </div>
-            <ProgressBar
-              :value="previewProgress"
-              :showValue="false"
-              class="progress-bar-custom"
-            />
-          </template>
-          <template v-else>
-            <span class="progress-message">{{ loadingMessage }}</span>
-            <ProgressBar mode="indeterminate" class="progress-bar-custom" />
-          </template>
+          <span class="progress-message">{{ loadingMessage }}</span>
+          <ProgressBar mode="indeterminate" style="height: 6px" />
         </div>
 
         <!-- Error Message -->
@@ -1273,48 +1212,13 @@ defineExpose({
 .upload-progress {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  background: var(--surface-50);
-  border-radius: 8px;
-  border: 1px solid var(--surface-200);
-}
-
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  gap: 0.5rem;
 }
 
 .progress-message {
   font-size: 0.875rem;
   color: var(--text-color-secondary);
-}
-
-.progress-percentage {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--primary-color);
-  background: var(--primary-50);
-  padding: 0.125rem 0.5rem;
-  border-radius: 4px;
-}
-
-.progress-bar-custom {
-  height: 10px !important;
-  border-radius: 5px !important;
-  background: var(--surface-200) !important;
-  overflow: hidden !important;
-}
-
-.progress-bar-custom :deep(.p-progressbar-value) {
-  background: var(--primary-color) !important;
-  border-radius: 5px !important;
-  transition: width 0.2s ease-out !important;
-}
-
-.progress-bar-custom :deep(.p-progressbar-label) {
-  display: none;
+  text-align: center;
 }
 
 .extraction-error {
