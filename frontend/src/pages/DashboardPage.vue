@@ -23,13 +23,16 @@ import Divider from 'primevue/divider'
 // App components - with lazy loading for performance
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import LazyChart from '@/components/LazyChart.vue'
+import { sidebarIconColors } from '@/config/theme'
 
 // Composables
 import { useDashboardFilters } from '@/composables/useDashboardFilters'
 import { useAnimatedNumber } from '@/composables/useAnimatedNumber'
+import { useTheme } from '@/composables/useTheme'
 
 const router = useRouter()
 const toast = useToast()
+const { isDark, toggleTheme } = useTheme()
 
 // Filters
 const { dateRange, selectedDecks, hasActiveFilters, queryString, clearFilters } = useDashboardFilters()
@@ -64,25 +67,25 @@ function notify(message, severity = 'info', life = 3200) {
 // Sidebar Menu Items
 // ============================================================
 const sidebarMenuItems = computed(() => [
-  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: '#10B981', tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: '#3B82F6', tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: '#F59E0B', tooltip: 'Estatísticas de estudo', active: true },
+  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
+  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', active: true },
   { separator: true },
   {
     key: 'actions',
     label: 'Ações',
     icon: 'pi pi-cog',
-    iconColor: '#64748B',
+    iconColor: sidebarIconColors.settings,
     tooltip: 'Ações rápidas',
     submenu: [
-      { label: 'Atualizar dados', icon: 'pi pi-refresh', iconColor: '#10B981', command: fetchDashboard }
+      { label: 'Atualizar dados', icon: 'pi pi-refresh', iconColor: sidebarIconColors.generator, command: fetchDashboard }
     ]
   }
 ])
 
 const sidebarFooterActions = computed(() => [
   { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: 'pi pi-moon', tooltip: 'Tema', command: () => notify('Tema alternativo em breve!', 'info') }
+  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
 ])
 
 // --- helpers ---
@@ -856,15 +859,9 @@ onUnmounted(() => {
   border-radius: 24px;
   overflow: hidden;
   transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.22), transparent 55%),
-    radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.16), transparent 60%),
-    radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.12), transparent 55%),
-    linear-gradient(180deg, rgba(17, 24, 39, 0.95), rgba(10, 10, 12, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-border);
+  box-shadow: var(--shell-shadow);
 }
 
 .app-shell.sidebar-expanded {
@@ -901,7 +898,7 @@ onUnmounted(() => {
 :deep(.p-toolbar) {
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--header-border);
 }
 
 .header-left {
@@ -961,10 +958,10 @@ onUnmounted(() => {
 /* Cards */
 .card-surface {
   border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(17, 24, 39, 0.56);
+  border: 1px solid var(--app-border);
+  background: var(--app-card);
   backdrop-filter: blur(10px);
-  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--app-shadow);
   padding: 14px;
   position: relative;
   overflow: hidden;
@@ -974,13 +971,13 @@ onUnmounted(() => {
   content: '';
   position: absolute;
   inset: -2px;
-  background: radial-gradient(500px 220px at 12% 0%, rgba(255, 255, 255, 0.06), transparent 55%);
+  background: radial-gradient(500px 220px at 12% 0%, color-mix(in srgb, var(--app-text) 6%, transparent), transparent 55%);
   pointer-events: none;
 }
 
 .card-surface:hover {
   transform: translateY(-1px);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 18px 50px color-mix(in srgb, var(--app-text) 12%, transparent);
 }
 
 /* Shared heading blocks in cards */
@@ -1023,10 +1020,10 @@ onUnmounted(() => {
 
 .kpi {
   border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(17, 24, 39, 0.56);
+  border: 1px solid var(--app-border);
+  background: var(--app-card);
   backdrop-filter: blur(10px);
-  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--app-shadow);
   overflow: hidden;
   position: relative;
 }
@@ -1035,7 +1032,7 @@ onUnmounted(() => {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.07), transparent 45%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--app-text) 8%, transparent), transparent 45%);
   opacity: 0.6;
   pointer-events: none;
 }
@@ -1057,9 +1054,9 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  background: var(--ghost-bg-strong);
+  border: 1px solid var(--ghost-border);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-text) 6%, transparent);
 }
 
 .kpi-ico i {
@@ -1086,13 +1083,13 @@ onUnmounted(() => {
   position: absolute;
   inset: 0 0 auto 0;
   height: 3px;
-  background: rgba(99, 102, 241, 0.85);
+  background: color-mix(in srgb, var(--color-primary) 85%, transparent);
   opacity: 0.9;
 }
-.kpi-accent-1::after { background: rgba(99, 102, 241, 0.9); }
-.kpi-accent-2::after { background: rgba(16, 185, 129, 0.9); }
-.kpi-accent-3::after { background: rgba(236, 72, 153, 0.85); }
-.kpi-accent-4::after { background: rgba(245, 158, 11, 0.9); }
+.kpi-accent-1::after { background: color-mix(in srgb, var(--color-primary) 90%, transparent); }
+.kpi-accent-2::after { background: color-mix(in srgb, var(--color-success) 90%, transparent); }
+.kpi-accent-3::after { background: color-mix(in srgb, var(--color-pink) 85%, transparent); }
+.kpi-accent-4::after { background: color-mix(in srgb, var(--color-warning) 90%, transparent); }
 
 /* Grid blocks */
 .grid {
@@ -1139,7 +1136,7 @@ onUnmounted(() => {
 .mini-legend {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  border-top: 1px solid var(--app-border);
   display: grid;
   gap: 8px;
 }
@@ -1162,8 +1159,8 @@ onUnmounted(() => {
   width: 10px;
   height: 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.5);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--app-text) 55%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-text) 8%, transparent);
   flex: 0 0 auto;
 }
 
@@ -1210,13 +1207,13 @@ onUnmounted(() => {
 }
 
 :deep(.modern-dt .p-datatable-thead > tr > th) {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(148, 163, 184, 0.12);
+  background: color-mix(in srgb, var(--app-card) 92%, transparent);
+  border-color: var(--app-border);
   font-weight: 950;
 }
 
 :deep(.modern-dt .p-datatable-tbody > tr > td) {
-  border-color: rgba(148, 163, 184, 0.10);
+  border-color: var(--app-border);
 }
 
 :deep(.modern-dt .p-paginator) {
@@ -1239,8 +1236,8 @@ onUnmounted(() => {
   border-radius: 12px;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: color-mix(in srgb, var(--app-card) 92%, transparent);
+  border: 1px solid var(--app-border);
 }
 
 .tiny {
@@ -1262,8 +1259,8 @@ onUnmounted(() => {
   border-radius: 12px;
   display: grid;
   place-items: center;
-  background: rgba(239, 68, 68, 0.10);
-  border: 1px solid rgba(239, 68, 68, 0.22);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
 }
 
 .err i {
