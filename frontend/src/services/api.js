@@ -964,6 +964,172 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
 }
 
 /**
+ * Extract SELECTED PAGES with real-time progress updates via Server-Sent Events (SSE)
+ * Processes pages in batches and reports progress per batch.
+ * @param {File} file - Document file (PDF)
+ * @param {number[]} pageNumbers - Array of page numbers to extract
+ * @param {Object} options - Extraction options
+ * @param {Function} onProgress - Callback for progress updates (percent, message)
+ * @param {AbortSignal} signal - Optional abort signal for cancellation
+ * @returns {Promise<Object>} Final extraction result
+ */
+async function extractSelectedPagesStream(file, pageNumbers, options = {}, onProgress = null, signal = null) {
+  const { quality = "cleaned", pdfExtractor = "docling" } = options;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("page_numbers", pageNumbers.join(","));
+  formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
+
+  return new Promise((resolve, reject) => {
+    let result = null;
+    let aborted = false;
+
+    // Handle abort signal
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(new Error('AbortError'));
+      });
+    }
+
+    // Start the upload and stream
+    fetch("/api/documents/extract-pages-stream", {
+      method: "POST",
+      body: formData,
+      signal: signal,
+    })
+      .then(response => {
+        if (!response.ok) {
+          return response.json().then(err => {
+            throw new Error(err.detail || `HTTP ${response.status}`);
+          });
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream() {
+          if (aborted) {
+            reader.cancel();
+            return;
+          }
+
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              // Process any remaining data in buffer before closing
+              if (buffer.trim()) {
+                processEvent(buffer);
+              }
+              if (result) {
+                resolve(result);
+              } else {
+                reject(new Error("Stream ended without result"));
+              }
+              return;
+            }
+
+            // Decode chunk and add to buffer
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete SSE messages (separated by \n\n)
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || ''; // Keep incomplete message in buffer
+
+            for (const event of events) {
+              processEvent(event);
+            }
+
+            // Continue reading
+            readStream();
+          }).catch(error => {
+            if (error.name === 'AbortError') {
+              reject(error);
+            } else {
+              console.error("Stream read error:", error);
+              reject(error);
+            }
+          });
+        }
+
+        // Helper function to process a single SSE event
+        function processEvent(event) {
+          if (!event.trim()) return;
+
+          const lines = event.split("\n");
+          let eventType = "message";
+          let eventData = "";
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.substring(7).trim();
+            } else if (line.startsWith("data: ")) {
+              eventData = line.substring(6);
+            }
+          }
+
+          if (!eventData) return;
+
+          try {
+            const data = JSON.parse(eventData);
+
+            switch (eventType) {
+              case "start":
+                if (onProgress) {
+                  onProgress(0, data.message);
+                }
+                break;
+
+              case "progress":
+                if (onProgress) {
+                  onProgress(
+                    data.progress_percent,
+                    data.message
+                  );
+                }
+                break;
+
+              case "complete":
+                result = {
+                  success: data.success,
+                  text: data.text,
+                  word_count: data.word_count,
+                  total_pages: data.total_pages,
+                  pages: data.pages,
+                  quality: data.quality,
+                  filename: data.filename,
+                  pages_content: data.pages_content || [],
+                  metadata: data.metadata || {},
+                };
+                if (onProgress) {
+                  onProgress(100, data.message);
+                }
+                break;
+
+              case "error":
+                reject(new Error(data.error || "Extraction failed"));
+                break;
+            }
+          } catch (e) {
+            console.error("Error parsing SSE event:", e, eventData);
+          }
+        }
+
+        readStream();
+      })
+      .catch(error => {
+        if (error.name === 'AbortError') {
+          reject(error);
+        } else {
+          reject(error);
+        }
+      });
+  });
+}
+
+/**
  * Extract document text with real-time progress updates via Server-Sent Events (SSE)
  * @param {File} file - Document file
  * @param {Object} options - Extraction options
@@ -1014,6 +1180,10 @@ async function extractDocumentTextStream(file, options = {}, onProgress = null, 
 
           reader.read().then(({ done, value }) => {
             if (done) {
+              // Process any remaining data in buffer before closing
+              if (buffer.trim()) {
+                processEvent(buffer);
+              }
               if (result) {
                 resolve(result);
               } else {
@@ -1030,70 +1200,7 @@ async function extractDocumentTextStream(file, options = {}, onProgress = null, 
             buffer = events.pop() || ''; // Keep incomplete message in buffer
 
             for (const event of events) {
-              if (!event.trim()) continue;
-
-              const lines = event.split("\n");
-              let eventType = "message";
-              let eventData = "";
-
-              for (const line of lines) {
-                if (line.startsWith("event: ")) {
-                  eventType = line.substring(7).trim();
-                } else if (line.startsWith("data: ")) {
-                  eventData = line.substring(6);
-                }
-              }
-
-              if (!eventData) continue;
-
-              try {
-                const data = JSON.parse(eventData);
-
-                switch (eventType) {
-                  case "start":
-                    if (onProgress) {
-                      onProgress(0, data.message);
-                    }
-                    break;
-
-                  case "info":
-                    if (onProgress) {
-                      onProgress(0, data.message);
-                    }
-                    break;
-
-                  case "progress":
-                    if (onProgress) {
-                      onProgress(
-                        data.progress_percent,
-                        data.message
-                      );
-                    }
-                    break;
-
-                  case "complete":
-                    result = {
-                      success: data.success,
-                      text: data.text,
-                      word_count: data.word_count,
-                      total_pages: data.total_pages,
-                      pages: data.pages,
-                      quality: data.quality,
-                      filename: data.filename,
-                      metadata: data.metadata || {},
-                    };
-                    if (onProgress) {
-                      onProgress(100, data.message);
-                    }
-                    break;
-
-                  case "error":
-                    reject(new Error(data.error || "Extraction failed"));
-                    return;
-                }
-              } catch (e) {
-                console.error("Error parsing SSE event:", e, eventData);
-              }
+              processEvent(event);
             }
 
             // Continue reading
@@ -1106,6 +1213,74 @@ async function extractDocumentTextStream(file, options = {}, onProgress = null, 
               reject(error);
             }
           });
+        }
+
+        // Helper function to process a single SSE event
+        function processEvent(event) {
+          if (!event.trim()) return;
+
+          const lines = event.split("\n");
+          let eventType = "message";
+          let eventData = "";
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.substring(7).trim();
+            } else if (line.startsWith("data: ")) {
+              eventData = line.substring(6);
+            }
+          }
+
+          if (!eventData) return;
+
+          try {
+            const data = JSON.parse(eventData);
+
+            switch (eventType) {
+              case "start":
+                if (onProgress) {
+                  onProgress(0, data.message);
+                }
+                break;
+
+              case "info":
+                if (onProgress) {
+                  onProgress(0, data.message);
+                }
+                break;
+
+              case "progress":
+                if (onProgress) {
+                  onProgress(
+                    data.progress_percent,
+                    data.message
+                  );
+                }
+                break;
+
+              case "complete":
+                result = {
+                  success: data.success,
+                  text: data.text,
+                  word_count: data.word_count,
+                  total_pages: data.total_pages,
+                  pages: data.pages,
+                  quality: data.quality,
+                  filename: data.filename,
+                  metadata: data.metadata || {},
+                };
+                if (onProgress) {
+                  onProgress(100, data.message);
+                }
+                break;
+
+              case "error":
+                reject(new Error(data.error || "Extraction failed"));
+                break;
+            }
+          } catch (e) {
+            console.error("Error parsing SSE event:", e, eventData);
+          }
         }
 
         readStream();
@@ -1189,6 +1364,7 @@ export {
   getPdfMetadata,
   getPdfThumbnails,
   extractSelectedPages,
+  extractSelectedPagesStream,
   getDefaultPrompts,
   rewriteCard,
 };

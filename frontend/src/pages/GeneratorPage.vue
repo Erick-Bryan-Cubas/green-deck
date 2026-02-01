@@ -5045,12 +5045,31 @@ onBeforeUnmount(() => {
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--header-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.app-header :deep(.p-toolbar-group-left),
+.app-header :deep(.p-toolbar-group-right) {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-header :deep(.p-toolbar-group-right) {
+  justify-content: flex-end;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 16px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .brand {
@@ -5087,12 +5106,16 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .controls {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .cardtype {
@@ -5103,6 +5126,44 @@ onBeforeUnmount(() => {
 .hdr-divider {
   height: 24px;
   opacity: 0.5;
+}
+
+.menu-toggle {
+  width: 40px;
+  height: 40px;
+}
+
+@media (max-width: 1200px) {
+  .app-header {
+    padding: 10px 12px;
+  }
+  .header-left,
+  .header-right {
+    gap: 10px;
+  }
+  .header-badges {
+    display: none;
+  }
+  .cardtype {
+    width: 9.5rem;
+    min-width: 9rem;
+  }
+}
+
+@media (max-width: 1024px) {
+  .status-wrap {
+    display: none;
+  }
+  .controls {
+    gap: 6px;
+  }
+  .menu-toggle {
+    width: 36px;
+    height: 36px;
+  }
+  .app-header :deep(.p-button) {
+    padding: 0.4rem 0.6rem;
+  }
 }
 
 :deep(.cta.p-button) {

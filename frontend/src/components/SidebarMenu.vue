@@ -300,21 +300,21 @@ defineExpose({
 }
 
 .sidebar-header {
-  padding: 16px 14px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--sidebar-header-border);
   display: flex;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
   background: var(--sidebar-header-bg);
-  min-height: auto;
+  min-height: 56px;
   overflow: visible;
   gap: 10px;
   border-radius: 23px 23px 0 0;
 }
 
 .sidebar.expanded .sidebar-header {
-  padding: 12px 16px;
+  padding: 12px 14px;
 }
 
 .sidebar-logo {
@@ -745,11 +745,12 @@ defineExpose({
 
 /* Sidebar Brand Logo (expanded state) */
 .sidebar-brand-logo {
-  height: 26px;
+  height: 24px;
   width: auto;
   flex: 1;
   display: block;
   max-width: 100%;
+  max-height: 24px;
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.15));
 }
 
