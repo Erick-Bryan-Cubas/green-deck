@@ -216,11 +216,11 @@ function showBackgroundPicker(buttonEl) {
   picker.className = PICKER_CLASS
   picker.style.cssText = `
     position: fixed;
-    background: #111827;
-    border: 1px solid #374151;
+    background: var(--quill-picker-bg);
+    border: 1px solid var(--quill-picker-border);
     border-radius: 10px;
     padding: 10px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.55);
+    box-shadow: var(--quill-picker-shadow);
     z-index: 99999;
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -812,15 +812,15 @@ defineExpose({
   width: 44px;
   padding-top: 12px;
   padding-right: 6px;
-  background: var(--surface-ground, #1e293b);
-  border-right: 1px solid rgba(148, 163, 184, 0.15);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  border-left: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--quill-line-number-bg, rgba(15, 23, 42, 0.9));
+  border-right: 1px solid var(--quill-line-number-border, rgba(148, 163, 184, 0.18));
+  border-bottom: 1px solid var(--quill-line-number-border, rgba(148, 163, 184, 0.18));
+  border-left: 1px solid var(--quill-line-number-border, rgba(148, 163, 184, 0.18));
   border-radius: 0 0 0 14px;
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
   font-size: 0.75em;
-  color: var(--text-color-secondary, #64748b);
+  color: var(--quill-line-number-text, rgba(226, 232, 240, 0.6));
   user-select: none;
   overflow-y: hidden;
   overflow-x: hidden;
@@ -903,15 +903,15 @@ defineExpose({
 
 :deep(.ql-toolbar.ql-snow .ql-highlight-custom:hover) {
   transform: scale(1.08);
-  box-shadow: 0 2px 8px rgba(252, 211, 77, 0.4);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-warning) 40%, transparent);
 }
 
 :deep(.ql-toolbar.ql-snow .ql-highlight-custom i) {
-  color: #78350f;
+  color: var(--quill-inlinecode-text);
 }
 
 :deep(.ql-toolbar.ql-snow .ql-highlight-group) {
-  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  border-right: 1px solid var(--quill-toolbar-sep);
 }
 
 /* Estilo dos selects na toolbar */
@@ -926,17 +926,17 @@ defineExpose({
 }
 
 :deep(.ql-toolbar.ql-snow .ql-picker-label:hover) {
-  background-color: rgba(148, 163, 184, 0.15);
+  background-color: var(--quill-toolbar-hover);
 }
 
 /* Dropdown de cores */
 :deep(.ql-toolbar.ql-snow .ql-picker.ql-color .ql-picker-options),
 :deep(.ql-toolbar.ql-snow .ql-picker.ql-background .ql-picker-options) {
-  background: #1f2937;
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: var(--quill-dropdown-bg);
+  border: 1px solid var(--quill-dropdown-border);
   border-radius: 8px;
   padding: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--gen-modal-shadow);
 }
 
 :deep(.ql-toolbar.ql-snow .ql-picker.ql-color .ql-picker-item),
@@ -952,49 +952,49 @@ defineExpose({
 
 /* Dropdown de alinhamento e header */
 :deep(.ql-toolbar.ql-snow .ql-picker-options) {
-  background: #1f2937;
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: var(--quill-dropdown-bg);
+  border: 1px solid var(--quill-dropdown-border);
   border-radius: 8px;
   padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--gen-modal-shadow);
 }
 
 :deep(.ql-toolbar.ql-snow .ql-picker-item) {
-  color: #e5e7eb;
+  color: var(--quill-dropdown-text);
   padding: 4px 8px;
   border-radius: 4px;
 }
 
 :deep(.ql-toolbar.ql-snow .ql-picker-item:hover) {
-  background-color: rgba(59, 130, 246, 0.2);
+  background-color: var(--quill-dropdown-hover);
 }
 
 /* Ícones SVG no tema escuro */
 :deep(.ql-toolbar.ql-snow .ql-stroke) {
-  stroke: #9ca3af;
+  stroke: var(--quill-icon);
 }
 
 :deep(.ql-toolbar.ql-snow .ql-fill) {
-  fill: #9ca3af;
+  fill: var(--quill-icon);
 }
 
 :deep(.ql-toolbar.ql-snow button:hover .ql-stroke),
 :deep(.ql-toolbar.ql-snow button.ql-active .ql-stroke) {
-  stroke: #3b82f6;
+  stroke: var(--quill-accent);
 }
 
 :deep(.ql-toolbar.ql-snow button:hover .ql-fill),
 :deep(.ql-toolbar.ql-snow button.ql-active .ql-fill) {
-  fill: #3b82f6;
+  fill: var(--quill-accent);
 }
 
 :deep(.ql-toolbar.ql-snow .ql-picker-label .ql-stroke) {
-  stroke: #9ca3af;
+  stroke: var(--quill-icon);
 }
 
 /* Container do editor com borda arredondada */
 :deep(.ql-container.ql-snow) {
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border: 1px solid var(--quill-container-border);
   border-top: none;
   border-radius: 0 0 14px 14px;
 }
@@ -1005,48 +1005,48 @@ defineExpose({
 }
 /* Estilos para blockquote (citação) */
 :deep(.ql-editor blockquote) {
-  border-left: 4px solid #3b82f6;
-  background-color: rgba(59, 130, 246, 0.1);
+  border-left: 4px solid var(--quill-blockquote-border);
+  background-color: var(--quill-blockquote-bg);
   margin: 12px 0;
   padding: 12px 16px;
   border-radius: 0 8px 8px 0;
-  color: #cbd5e1;
+  color: var(--quill-blockquote-text);
   font-style: italic;
 }
 
 /* Estilos para code-block */
 :deep(.ql-editor pre.ql-syntax) {
-  background-color: #0d1117;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background-color: var(--quill-codeblock-bg);
+  border: 1px solid var(--quill-codeblock-border);
   border-radius: 8px;
   padding: 16px;
   margin: 12px 0;
   font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
   font-size: 0.9em;
-  color: #e6edf3;
+  color: var(--quill-codeblock-text);
   overflow-x: auto;
 }
 
 /* Estilos para código inline */
 :deep(.ql-editor code) {
-  background-color: rgba(110, 118, 129, 0.3);
+  background-color: var(--quill-inlinecode-bg);
   border-radius: 4px;
   padding: 2px 6px;
   font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
   font-size: 0.9em;
-  color: #f0abfc;
+  color: var(--quill-inlinecode-text);
 }
 
 /* Estilos para links */
 :deep(.ql-editor a) {
-  color: #60a5fa;
+  color: var(--quill-link);
   text-decoration: underline;
   text-underline-offset: 2px;
   transition: color 0.15s;
 }
 
 :deep(.ql-editor a:hover) {
-  color: #93c5fd;
+  color: var(--quill-link-hover);
 }
 
 /* Estilos para subscrito e sobrescrito */
@@ -1084,7 +1084,7 @@ defineExpose({
 :deep(.ql-editor .ql-align-justify) { text-align: justify; }
 /* Placeholder do Quill (tema escuro) */
 :deep(.ql-editor.ql-blank::before) {
-  color: var(--text-color-secondary, rgba(229, 231, 235, 0.65)) !important;
+  color: var(--quill-placeholder) !important;
   opacity: 1 !important;
 }
 
