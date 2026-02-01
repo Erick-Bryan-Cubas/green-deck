@@ -834,6 +834,39 @@ async function getDocumentPagesPreview(file) {
 const getPdfPagesPreview = getDocumentPagesPreview;
 
 /**
+ * Gets PDF metadata (number of pages) ULTRA-FAST (< 2 seconds for 13MB)
+ * Does not process page content, only reads PDF headers
+ * @param {File} file - PDF file
+ * @returns {Promise<Object>} Metadata result with num_pages, file_size, filename
+ */
+async function getPdfMetadata(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch("/api/documents/pdf-metadata", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Falha ao obter metadados do PDF");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error getting PDF metadata:", error);
+    throw error;
+  }
+}
+
+/**
  * Extracts text from selected pages of a document
  * @param {File} file - Document file (PDF, DOCX, PPTX, etc.)
  * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
@@ -1117,6 +1150,7 @@ export {
   extractDocumentPreview,
   getDocumentPagesPreview,
   getPdfPagesPreview, // Alias for backward compatibility
+  getPdfMetadata,
   extractSelectedPages,
   getDefaultPrompts,
   rewriteCard,
