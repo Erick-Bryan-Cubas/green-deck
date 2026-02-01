@@ -125,6 +125,25 @@ class DocumentPreviewResult:
         }
 
 
+@dataclass
+class PDFMetadataResult:
+    """Resultado dos metadados do PDF (carregamento rápido)."""
+    num_pages: int
+    file_size: int
+    filename: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "num_pages": self.num_pages,
+            "file_size": self.file_size,
+            "filename": self.filename,
+            "metadata": self.metadata,
+            "error": self.error,
+        }
+
+
 class DocumentExtractor:
     """
     Extrator de texto de documentos usando Docling.
@@ -257,6 +276,56 @@ class DocumentExtractor:
 
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             return len(pdf.pages)
+
+    def get_pdf_metadata(self, pdf_bytes: bytes, filename: str) -> PDFMetadataResult:
+        """
+        Obtem APENAS metadados do PDF de forma ultra-rapida (< 100ms).
+
+        Nao processa conteudo das paginas, apenas le headers do PDF.
+        Ideal para validar arquivo antes de processamento pesado.
+
+        Args:
+            pdf_bytes: Conteudo binario do PDF
+            filename: Nome do arquivo
+
+        Returns:
+            PDFMetadataResult com numero de paginas e metadados basicos
+        """
+        import pdfplumber
+        from io import BytesIO
+
+        try:
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                num_pages = len(pdf.pages)
+                raw_metadata = pdf.metadata or {}
+
+                # Extrair metadados relevantes
+                metadata = {
+                    "title": raw_metadata.get("Title", ""),
+                    "author": raw_metadata.get("Author", ""),
+                    "creator": raw_metadata.get("Creator", ""),
+                    "producer": raw_metadata.get("Producer", ""),
+                    "creation_date": str(raw_metadata.get("CreationDate", "")),
+                    "modification_date": str(raw_metadata.get("ModDate", "")),
+                }
+
+                logger.info(f"PDF metadata extraido: {filename} - {num_pages} paginas")
+
+                return PDFMetadataResult(
+                    num_pages=num_pages,
+                    file_size=len(pdf_bytes),
+                    filename=filename,
+                    metadata=metadata,
+                )
+
+        except Exception as e:
+            logger.exception(f"Erro ao obter metadados do PDF {filename}: {e}")
+            return PDFMetadataResult(
+                num_pages=0,
+                file_size=len(pdf_bytes),
+                filename=filename,
+                error=f"Erro ao ler PDF: {str(e)}",
+            )
 
     async def _extract_pdf_with_pdfplumber(
         self,

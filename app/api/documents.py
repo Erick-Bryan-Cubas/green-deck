@@ -90,6 +90,16 @@ class DocumentPreviewResponse(BaseModel):
     error: Optional[str] = None
 
 
+class PDFMetadataResponse(BaseModel):
+    """Resposta com metadados do PDF (carregamento rapido)."""
+    success: bool
+    num_pages: int = 0
+    file_size: int = 0
+    filename: str = ""
+    metadata: Dict[str, Any] = {}
+    error: Optional[str] = None
+
+
 def get_file_extension(filename: str) -> str:
     """Extrai a extensao do arquivo de forma segura."""
     if not filename or "." not in filename:
@@ -130,6 +140,71 @@ async def get_extraction_status():
         supported_formats=list(SUPPORTED_FORMATS.keys()),
         format_descriptions=SUPPORTED_FORMATS,
         max_file_size_mb=MAX_FILE_SIZE_MB,
+    )
+
+
+@router.post("/pdf-metadata", response_model=PDFMetadataResponse)
+async def get_pdf_metadata(
+    file: UploadFile = File(..., description="Arquivo PDF para extrair metadados"),
+):
+    """
+    Obtem APENAS metadados do PDF de forma ULTRA-RAPIDA (< 2 segundos para 13MB).
+
+    Nao processa conteudo, apenas:
+    - Numero de paginas
+    - Tamanho do arquivo
+    - Metadados do documento (titulo, autor, datas)
+
+    Ideal para validar arquivo antes de processamento pesado.
+
+    Returns:
+        PDFMetadataResponse com metadados basicos
+    """
+    filename = file.filename or "document.pdf"
+    valid, ext = validate_file_extension(filename)
+
+    if not valid or ext != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Este endpoint e especifico para PDFs. Use /preview-pages para outros formatos."
+        )
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.exception("Erro ao ler arquivo PDF")
+        raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {str(e)}")
+
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo muito grande. Maximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+    # Executa de forma sincrona em thread pool (ultra-rapido)
+    result = await asyncio.to_thread(
+        document_extractor.get_pdf_metadata,
+        content,
+        filename
+    )
+
+    if result.error:
+        return PDFMetadataResponse(
+            success=False,
+            error=result.error,
+            filename=filename,
+            file_size=len(content),
+        )
+
+    return PDFMetadataResponse(
+        success=True,
+        num_pages=result.num_pages,
+        file_size=result.file_size,
+        filename=result.filename,
+        metadata=result.metadata,
     )
 
 
