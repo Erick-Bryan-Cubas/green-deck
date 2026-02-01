@@ -31,6 +31,7 @@ import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import DocumentUpload from '@/components/DocumentUpload.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
+import { colorTokens, sidebarIconColors } from '@/config/theme'
 
 // Modal components
 import GenerateModal from '@/components/modals/GenerateModal.vue'
@@ -52,6 +53,7 @@ import QuestionCardItem from '@/components/QuestionCardItem.vue'
 import QuizInteractive from '@/components/QuizInteractive.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
+import { useTheme } from '@/composables/useTheme'
 
 // Services
 import {
@@ -63,6 +65,7 @@ import {
   hasAnyApiKey,
   fetchOllamaInfo
 } from '@/services/api.js'
+import { downloadTextFile, exportCardsAsMarkdown } from '@/services/export'
 import {
   generateQuestionsStream,
   parseQuestionsStream,
@@ -75,12 +78,9 @@ import { sanitizeHtml } from '@/utils/sanitize.js'
 
 const toast = useToast()
 const router = useRouter()
-
+const { isDark, toggleTheme } = useTheme()
 // WebSocket status do Ollama (para detectar quando fica disponível)
 const { status: ollamaWsStatus } = useOllamaStatus()
-
-// ============================================================
-// Helpers
 // ============================================================
 function notify(message, severity = 'info', life = 3000) {
   toast.add({ severity, summary: message, life })
@@ -876,7 +876,7 @@ async function restoreSessionById(id) {
       const highlightData = topicSegments.value.map(seg => ({
         start: seg.start,
         end: seg.end,
-        color: topicDefinitions.value.find(t => t.id === seg.topic_id)?.color || '#e5e7eb'
+        color: topicDefinitions.value.find(t => t.id === seg.topic_id)?.color || 'var(--app-text)'
       }))
       editorRef.value?.applyTopicHighlights(highlightData)
     }
@@ -2221,7 +2221,7 @@ async function performTopicSegmentation(text) {
         return {
           start: s.start,
           end: s.end,
-          color: topic?.color || '#e5e7eb'
+          color: topic?.color || 'var(--app-text)'
         }
       })
       console.log('[TopicSegmentation] Applying', highlightData.length, 'highlights')
@@ -2982,44 +2982,7 @@ function previewText(text, max = 260) {
 // Export Markdown
 // ============================================================
 function exportAsMarkdown() {
-  if (!cards.value.length) {
-    notify('No cards to export', 'info')
-    return
-  }
-
-  let markdown = `# Flashcards - ${new Date().toLocaleDateString()}\n\n`
-  const deckGroups = {}
-
-  cards.value.forEach((card) => {
-    const d = card.deck || 'General'
-    if (!deckGroups[d]) deckGroups[d] = []
-    deckGroups[d].push(card)
-  })
-
-  for (const [deckName, arr] of Object.entries(deckGroups)) {
-    markdown += `## ${deckName}\n\n`
-    arr.forEach((card, idx) => {
-      markdown += `### Card ${idx + 1}\n\n`
-      markdown += `**Question:** ${card.front}\n\n`
-      markdown += `---\n\n`
-      markdown += `**Answer:** ${card.back}\n\n`
-    })
-  }
-
-  const blob = new Blob([markdown], { type: 'text/markdown' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `flashcards-${new Date().toISOString().slice(0, 10)}.md`
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  setTimeout(() => {
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }, 100)
-
-  notify(`${cards.value.length} cards exportados em markdown`, 'success')
+  exportCardsAsMarkdown(cards.value, notify)
 }
 
 // ============================================================
@@ -3053,8 +3016,8 @@ function exportTextAs(format = 'txt') {
   <title>Documento - ${now}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
-    .cloze { background: #fef08a; padding: 2px 4px; border-radius: 3px; }
-    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    .cloze { background: var(--export-markdown-cloze-bg); padding: 2px 4px; border-radius: 3px; }
+    code { background: var(--export-markdown-code-bg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
   </style>
 </head>
 <body>
@@ -3069,19 +3032,8 @@ ${html}
     filename = `documento-${now}.txt`
     mimeType = 'text/plain'
   }
-  
-  const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  setTimeout(() => {
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }, 100)
+
+  downloadTextFile(content, filename, mimeType)
   
   notify(`Texto exportado como ${format.toUpperCase()}`, 'success')
 }
@@ -3391,11 +3343,11 @@ const sidebarMenuItems = computed(() => [
     key: 'sessions',
     label: 'Sessões',
     icon: 'pi pi-history',
-    iconColor: '#8B5CF6',
+    iconColor: colorTokens.primary,
     badge: sessions.value.length,
     tooltip: 'Gerenciar sessões de estudo',
     submenu: [
-      { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: '#10B981', command: newSession },
+      { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: colorTokens.success, command: newSession },
       { separator: true },
       ...sessions.value
         .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
@@ -3404,59 +3356,59 @@ const sidebarMenuItems = computed(() => [
           label: `${s.title}`,
           sublabel: formatSessionStamp(s.updatedAt),
           icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
-          iconColor: s.id === activeSessionId.value ? '#10B981' : '#64748B',
+          iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
           active: s.id === activeSessionId.value,
           command: () => restoreSessionById(s.id)
         })),
-      ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: '#64748B', disabled: true }] : []),
+      ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: colorTokens.neutral, disabled: true }] : []),
       { separator: true },
-      { label: 'Limpar sessão atual', icon: 'pi pi-refresh', iconColor: '#F59E0B', command: clearCurrentSession },
-      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: '#EF4444', danger: true, command: () => { clearAllSessions(); clearCurrentSession() } }
+      { label: 'Limpar sessão atual', icon: 'pi pi-refresh', iconColor: colorTokens.warning, command: clearCurrentSession },
+      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: () => { clearAllSessions(); clearCurrentSession() } }
     ]
   },
   {
     key: 'cards',
     label: 'Cards',
     icon: 'pi pi-clone',
-    iconColor: '#10B981',
+    iconColor: colorTokens.success,
     badge: cards.value.length,
     tooltip: 'Gerenciar flashcards gerados',
     submenu: [
-      { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: '#3B82F6', disabled: !cards.value.length, command: exportToAnkiOpenConfig },
-      { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: '#8B5CF6', disabled: !cards.value.length, command: exportAsMarkdown },
+      { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: colorTokens.info, disabled: !cards.value.length, command: exportToAnkiOpenConfig },
+      { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: colorTokens.primary, disabled: !cards.value.length, command: exportAsMarkdown },
       { separator: true },
-      { label: 'Limpar Cards', icon: 'pi pi-trash', iconColor: '#EF4444', danger: true, disabled: !cards.value.length, command: clearAllCards }
+      { label: 'Limpar Cards', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, disabled: !cards.value.length, command: clearAllCards }
     ]
   },
   {
     key: 'config',
     label: 'Configurações',
     icon: 'pi pi-cog',
-    iconColor: '#64748B',
+    iconColor: colorTokens.neutral,
     tooltip: 'Ajustes e preferências',
     submenu: [
-      { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: '#10B981', command: openModelSelection },
+      { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: colorTokens.success, command: openModelSelection },
       {
         label: 'Prompts de Geração',
         icon: 'pi pi-file-edit',
-        iconColor: '#8B5CF6',
+        iconColor: colorTokens.primary,
         command: openPromptSettings,
         badge: hasCustomPromptsSaved.value ? '✓' : null,
-        badgeColor: '#8B5CF6'
+        badgeColor: colorTokens.primary
       },
-      { label: 'Chaves de API', icon: 'pi pi-key', iconColor: '#F59E0B', command: openApiKeys }
+      { label: 'Chaves de API', icon: 'pi pi-key', iconColor: colorTokens.warning, command: openApiKeys }
     ]
   },
   { separator: true },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: '#3B82F6', tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: '#F59E0B', tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
-  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: '#EF4444', tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: colorTokens.info, tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
+  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: colorTokens.warning, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
+  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: colorTokens.danger, tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
 ])
 
 // Footer actions para o sidebar
 const sidebarFooterActions = computed(() => [
   { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: 'pi pi-moon', tooltip: 'Tema', command: () => notify('Tema alternativo em breve!', 'info') }
+  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
 ])
 
 // ============================================================
@@ -3498,8 +3450,18 @@ function contextRemoveHighlight() {
   editorRef.value?.clearHighlight?.()
 }
 
+function resolveColorToken(color) {
+  if (typeof color !== 'string') return color
+  if (!color.startsWith('var(')) return color
+  const match = color.match(/--[^)]+/)
+  const token = match ? match[0] : ''
+  if (!token || typeof window === 'undefined') return color
+  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  return value || color
+}
+
 function contextMark(color) {
-  editorRef.value?.formatBackground?.(color)
+  editorRef.value?.formatBackground?.(resolveColorToken(color))
 }
 
 const contextMenuModel = computed(() => [
@@ -3507,12 +3469,12 @@ const contextMenuModel = computed(() => [
     label: 'Marcar texto',
     disabled: !contextHasSelection.value,
     items: [
-      { label: 'Amarelo', command: () => contextMark('#fef08a') },
-      { label: 'Verde', command: () => contextMark('#bbf7d0') },
-      { label: 'Azul', command: () => contextMark('#bfdbfe') },
-      { label: 'Rosa', command: () => contextMark('#fbcfe8') },
-      { label: 'Roxo', command: () => contextMark('#ddd6fe') },
-      { label: 'Laranja', command: () => contextMark('#fed7aa') }
+      { label: 'Amarelo', command: () => contextMark('var(--highlight-palette-yellow)') },
+      { label: 'Verde', command: () => contextMark('var(--highlight-palette-green)') },
+      { label: 'Azul', command: () => contextMark('var(--highlight-palette-blue)') },
+      { label: 'Rosa', command: () => contextMark('var(--highlight-palette-pink)') },
+      { label: 'Roxo', command: () => contextMark('var(--highlight-palette-purple)') },
+      { label: 'Laranja', command: () => contextMark('var(--highlight-palette-orange)') }
     ]
   },
   { label: 'Remover marcação', disabled: !contextHasHighlight.value, command: contextRemoveHighlight },
@@ -5049,15 +5011,9 @@ onBeforeUnmount(() => {
   border-radius: 24px;
   overflow: hidden;
   transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.22), transparent 55%),
-    radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.16), transparent 60%),
-    radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.12), transparent 55%),
-    linear-gradient(180deg, rgba(17, 24, 39, 0.95), rgba(10, 10, 12, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-border);
+  box-shadow: var(--shell-shadow);
 }
 
 .app-shell.sidebar-expanded {
@@ -5082,13 +5038,13 @@ onBeforeUnmount(() => {
   padding: 12px 16px;
   backdrop-filter: blur(16px);
   border-radius: 24px 24px 0 0;
-  background: rgba(17, 24, 39, 0.5);
+  background: var(--header-bg);
 }
 
 :deep(.p-toolbar) {
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--header-border);
 }
 
 .header-left {
@@ -5150,16 +5106,16 @@ onBeforeUnmount(() => {
 }
 
 :deep(.cta.p-button) {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: var(--cta-bg);
   border: none;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+  box-shadow: var(--cta-shadow);
   font-weight: 700;
   transition: all 0.2s ease;
 }
 
 :deep(.cta.p-button:hover) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+  box-shadow: var(--cta-shadow-hover);
 }
 
 @media (max-width: 768px) {
@@ -5189,21 +5145,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   border-radius: 20px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.65) 0%, rgba(15, 23, 42, 0.75) 100%);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
   backdrop-filter: blur(16px);
-  box-shadow: 
-    0 8px 24px rgba(0, 0, 0, 0.2),
-    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  box-shadow: var(--panel-shadow);
   overflow: hidden;
   transition: box-shadow 0.3s ease, border-color 0.3s ease;
 }
 
 .panel:hover {
-  border-color: rgba(148, 163, 184, 0.18);
-  box-shadow: 
-    0 12px 32px rgba(0, 0, 0, 0.25),
-    0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  border-color: var(--panel-border-hover);
+  box-shadow: var(--panel-shadow-hover);
 }
 
 .panel-head {
@@ -5212,8 +5164,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
-  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--panel-head-border);
+  background: var(--panel-head-bg);
 }
 
 .panel-title {
@@ -5242,7 +5194,7 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 :deep(.p-splitter-gutter-handle) {
-  background: rgba(148, 163, 184, 0.28);
+  background: var(--app-border);
   border-radius: 999px;
 }
 
@@ -5258,11 +5210,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(17, 24, 39, 0.95);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--searchbar-bg);
+  border: 1px solid var(--searchbar-border);
   border-radius: 12px;
   backdrop-filter: blur(12px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--searchbar-shadow);
 }
 
 .search-input-wrap {
@@ -5273,7 +5225,7 @@ onBeforeUnmount(() => {
 }
 
 .search-input-wrap .search-icon {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--searchbar-icon);
   font-size: 14px;
 }
 
@@ -5282,22 +5234,22 @@ onBeforeUnmount(() => {
   height: 32px;
   padding: 0 8px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: var(--searchbar-input-bg);
+  border: 1px solid var(--searchbar-input-border);
   font-size: 13px;
   color: inherit;
 }
 
 .editor-search-bar .search-input:focus {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  background: var(--searchbar-input-focus-bg);
+  border-color: var(--searchbar-input-focus-border);
+  box-shadow: var(--searchbar-input-focus-ring);
 }
 
 .search-results-label {
   font-size: 12px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--searchbar-label);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -5333,9 +5285,9 @@ onBeforeUnmount(() => {
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  color: rgba(255, 255, 255, 0.8);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  color: var(--chip-text);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -5345,16 +5297,16 @@ onBeforeUnmount(() => {
 }
 
 .search-toggle:hover {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(99, 102, 241, 0.4);
-  color: rgba(99, 102, 241, 0.9);
+  background: var(--chip-hover-bg);
+  border-color: var(--chip-hover-border);
+  color: var(--chip-hover-text);
   transform: scale(1.05);
 }
 
 .search-wrap.expanded .search-toggle {
-  background: rgba(99, 102, 241, 0.15);
-  border-color: rgba(99, 102, 241, 0.5);
-  color: rgba(99, 102, 241, 1);
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+  color: var(--chip-active-text);
 }
 
 .search {
@@ -5363,8 +5315,8 @@ onBeforeUnmount(() => {
   padding: 0;
   height: 40px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   font-size: 14px;
 }
@@ -5376,13 +5328,13 @@ onBeforeUnmount(() => {
 }
 
 .search:focus {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  background: var(--chip-hover-bg);
+  border-color: var(--chip-active-border);
+  box-shadow: var(--searchbar-input-focus-ring);
 }
 
 .search::placeholder {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--searchbar-placeholder);
   font-weight: 500;
 }
 
@@ -5433,7 +5385,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.04) 100%);
+  background: var(--section-bg);
   border-radius: 10px;
   margin-bottom: 12px;
 }
@@ -5443,7 +5395,7 @@ onBeforeUnmount(() => {
   align-items: center;
   font-weight: 700;
   font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--section-title);
 }
 
 .section-title i {
@@ -5525,8 +5477,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--selection-bg);
+  border: 1px solid var(--selection-border);
   border-radius: 12px;
   margin: 0 12px 12px 12px;
   backdrop-filter: blur(8px);
@@ -5541,7 +5493,7 @@ onBeforeUnmount(() => {
 .selection-count {
   font-weight: 700;
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--selection-text);
 }
 
 .selection-actions {
@@ -5555,9 +5507,9 @@ onBeforeUnmount(() => {
 }
 
 .card-item.card-selected :deep(.p-card) {
-  border: 2px solid rgba(99, 102, 241, 0.7);
-  background: rgba(99, 102, 241, 0.08);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  border: 2px solid var(--selection-card-border);
+  background: var(--selection-card-bg);
+  box-shadow: var(--selection-card-ring);
 }
 
 /* Slide up animation para selection bar */
@@ -5576,7 +5528,7 @@ onBeforeUnmount(() => {
    Highlight de busca
 ========================= */
 :deep(.search-highlight) {
-  background: linear-gradient(135deg, rgba(251, 191, 36, 0.4) 0%, rgba(245, 158, 11, 0.4) 100%);
+  background: var(--highlight-bg);
   padding: 1px 4px;
   border-radius: 4px;
   font-weight: 700;
@@ -5608,11 +5560,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 12px;
   padding-left: 16px;
-  border-left: 3px solid rgba(99, 102, 241, 0.3);
+  border-left: 3px solid var(--selection-border);
 }
 .card-item.card-child :deep(.p-card) {
-  background: rgba(99, 102, 241, 0.04);
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  background: var(--card-child-bg);
+  border: 1px solid var(--card-child-border);
 }
 .children-enter-active,
 .children-leave-active {
@@ -5661,8 +5613,8 @@ onBeforeUnmount(() => {
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(148,163,184,0.18);
+  background: var(--deck-pill-bg);
+  border: 1px solid var(--deck-pill-border);
   font-weight: 800;
   font-size: 12px;
   opacity: 0.95;
@@ -5682,8 +5634,8 @@ onBeforeUnmount(() => {
 .preview-block {
   border-radius: 14px;
   padding: 10px 12px;
-  border: 1px solid rgba(148,163,184,0.14);
-  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--preview-border);
+  background: var(--preview-bg);
 }
 .preview-label {
   font-weight: 900;
@@ -5709,8 +5661,8 @@ onBeforeUnmount(() => {
 .md-preview :deep(code) {
   padding: 2px 6px;
   border-radius: 8px;
-  background: rgba(0,0,0,0.35);
-  border: 1px solid rgba(148,163,184,0.18);
+  background: var(--highlight-help-bg);
+  border: 1px solid var(--highlight-help-border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
 }
@@ -5726,8 +5678,8 @@ onBeforeUnmount(() => {
 .md-preview :deep(.cloze) {
   padding: 2px 6px;
   border-radius: 999px;
-  background: rgba(251, 191, 36, 0.18);
-  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: var(--cloze-bg);
+  border: 1px solid var(--cloze-border);
   font-weight: 900;
 }
 
@@ -5738,7 +5690,7 @@ onBeforeUnmount(() => {
 
 /* Edit Card Dialog - Enhanced */
 :deep(.edit-card-dialog) {
-  --edit-accent: rgba(99, 102, 241, 0.9);
+  --edit-accent: var(--edit-accent);
 }
 
 .edit-dialog-header {
@@ -5806,7 +5758,7 @@ onBeforeUnmount(() => {
   font-weight: 800;
   font-size: 14px;
   margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--edit-field-label);
 }
 
 .edit-field-header i {
@@ -5822,20 +5774,20 @@ onBeforeUnmount(() => {
   flex-direction: column;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--edit-quill-border);
+  background: var(--ghost-bg-strong);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .edit-card-quill:focus-within {
   border-color: var(--edit-accent);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  box-shadow: var(--searchbar-input-focus-ring);
 }
 
 .edit-card-quill :deep(.ql-toolbar) {
   border: none;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--edit-quill-toolbar-border);
+  background: var(--modal-surface-bg);
   padding: 6px 8px;
   flex-shrink: 0;
 }
@@ -5859,7 +5811,7 @@ onBeforeUnmount(() => {
 
 .edit-card-quill :deep(.ql-editor.ql-blank::before) {
   font-style: normal;
-  color: rgba(148, 163, 184, 0.5);
+  color: var(--input-muted);
 }
 
 /* AI Rewrite Section */
@@ -5867,8 +5819,8 @@ onBeforeUnmount(() => {
   margin-top: 20px;
   padding: 14px 16px;
   border-radius: 12px;
-  background: rgba(99, 102, 241, 0.06);
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: var(--edit-ai-bg);
+  border: 1px solid var(--edit-ai-border);
 }
 
 .edit-ai-header {
@@ -5878,11 +5830,11 @@ onBeforeUnmount(() => {
   font-weight: 700;
   font-size: 13px;
   margin-bottom: 12px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--edit-ai-label);
 }
 
 .edit-ai-header i {
-  color: #fbbf24;
+  color: var(--edit-ai-icon);
   font-size: 14px;
 }
 
@@ -5911,8 +5863,8 @@ onBeforeUnmount(() => {
 .md-preview {
   border-radius: 14px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.14);
-  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--preview-border);
+  background: var(--modal-surface-bg);
   min-height: 120px;
   font-size: 13.5px;
   line-height: 1.35;
@@ -5921,21 +5873,21 @@ onBeforeUnmount(() => {
 
 /* Dialogs */
 .api-info {
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  border: 1px solid var(--selection-border);
 }
 .model-info {
   padding: 10px 12px;
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid var(--modal-surface-border);
+  background: var(--modal-surface-bg);
   margin-bottom: 14px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.req { color: #ef4444; font-weight: 900; margin-left: 6px; }
+.req { color: var(--required-color); font-weight: 900; margin-left: 6px; }
 .opt { opacity: 0.7; margin-left: 6px; }
-.err { color: #ef4444; margin-top: 8px; font-weight: 800; }
+.err { color: var(--required-color); margin-top: 8px; font-weight: 800; }
 
 /* Logs */
 .logs-wrap {
@@ -5953,13 +5905,13 @@ onBeforeUnmount(() => {
   padding: 6px 8px;
   border-radius: 10px;
   margin-bottom: 6px;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(148, 163, 184, 0.10);
+  background: var(--log-bg);
+  border: 1px solid var(--log-border);
 }
 .log-ts { opacity: 0.7; white-space: nowrap; }
 .log-msg { opacity: 0.92; }
-.log-row.t-success { border-color: rgba(16, 185, 129, 0.25); }
-.log-row.t-error { border-color: rgba(239, 68, 68, 0.25); }
+.log-row.t-success { border-color: var(--log-success-border); }
+.log-row.t-error { border-color: var(--log-error-border); }
 
 /* Pills */
 .pill {
@@ -5972,7 +5924,7 @@ onBeforeUnmount(() => {
   margin-left: 4px;
   font-size: 0.75em;
   opacity: 0.8;
-  color: #ef4444;
+  color: var(--required-color);
   font-weight: 600;
 }
 
@@ -6011,8 +5963,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 6px 12px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(148, 163, 184, 0.15);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
 }
 
 .status-item {
@@ -6032,7 +5984,7 @@ onBeforeUnmount(() => {
 .status-sep {
   width: 1px;
   height: 16px;
-  background: rgba(148, 163, 184, 0.2);
+  background: var(--status-sep);
 }
 
 /* =========================
@@ -6041,16 +5993,16 @@ onBeforeUnmount(() => {
 :deep(.p-dialog.modern-dialog) {
   border-radius: 20px;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(17, 24, 39, 0.92);
+  border: 1px solid var(--dialog-border);
+  background: var(--dialog-bg);
   backdrop-filter: blur(14px);
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--dialog-shadow);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-header) {
   padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--dialog-header-bg);
+  border-bottom: 1px solid var(--dialog-surface-border);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-title) {
@@ -6065,25 +6017,25 @@ onBeforeUnmount(() => {
 
 :deep(.p-dialog.modern-dialog .p-dialog-footer) {
   padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.03);
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--dialog-footer-bg);
+  border-top: 1px solid var(--dialog-surface-border);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-header-icon) {
   width: 36px;
   height: 36px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-header-icon:hover) {
-  background: rgba(255, 255, 255, 0.10);
+  background: var(--ghost-bg-strong);
 }
 
 :deep(.p-dialog-mask) {
   backdrop-filter: blur(8px);
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--dialog-mask);
 }
 
 :deep(.modern-dialog .p-inputtext),
@@ -6097,8 +6049,8 @@ onBeforeUnmount(() => {
 :deep(.modern-dialog .p-textarea:focus),
 :deep(.modern-dialog .p-dropdown:not(.p-disabled).p-focus),
 :deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
-  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: var(--focus-ring);
+  border-color: var(--focus-border);
 }
 
 /* =========================
@@ -6108,9 +6060,7 @@ onBeforeUnmount(() => {
   background: var(--p-content-background);
   border-radius: 20px;
   overflow: hidden;
-  box-shadow:
-    0 25px 50px -12px rgba(0, 0, 0, 0.25),
-    0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: var(--gen-modal-shadow);
   animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -6127,8 +6077,8 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .p-dialog-header) {
   padding: 1.5rem 1.75rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.05) 100%);
+  border-bottom: 1px solid var(--gen-header-border);
+  background: var(--gen-header-bg);
   backdrop-filter: blur(20px);
   position: relative;
   overflow: hidden;
@@ -6141,7 +6091,7 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  background: var(--gen-header-line);
 }
 
 :deep(.generate-modal .p-dialog-content) {
@@ -6151,8 +6101,8 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .p-dialog-footer) {
   padding: 1.25rem 1.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, var(--p-content-background) 0%, rgba(99, 102, 241, 0.02) 100%);
+  border-top: 1px solid var(--gen-footer-border);
+  background: var(--gen-footer-bg);
 }
 
 :deep(.generate-modal .generate-modal-header) {
@@ -6165,28 +6115,24 @@ onBeforeUnmount(() => {
   width: 52px;
   height: 52px;
   border-radius: 16px;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  background: var(--gen-icon-bg);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow:
-    0 8px 16px -4px rgba(99, 102, 241, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: var(--gen-icon-shadow), var(--gen-icon-inset);
   position: relative;
   animation: iconPulse 2s ease-in-out infinite;
 }
 
 @keyframes iconPulse {
   0%, 100% {
-    box-shadow:
-      0 8px 16px -4px rgba(99, 102, 241, 0.4),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    box-shadow: var(--gen-icon-shadow), var(--gen-icon-inset);
   }
   50% {
     box-shadow:
-      0 8px 24px -4px rgba(99, 102, 241, 0.6),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      0 8px 24px -4px color-mix(in srgb, var(--color-primary) 60%, transparent),
+      var(--gen-icon-inset);
   }
 }
 
@@ -6195,14 +6141,14 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   border-radius: 16px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, transparent 50%);
+  background: var(--gen-icon-gloss);
   pointer-events: none;
 }
 
 :deep(.generate-modal .generate-modal-header .header-icon i) {
   font-size: 1.6rem;
-  color: white;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+  color: var(--app-text);
+  filter: drop-shadow(0 2px 4px color-mix(in srgb, var(--app-text) 30%, transparent));
 }
 
 :deep(.generate-modal .generate-modal-header .header-text h3) {
@@ -6228,7 +6174,7 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .generate-section) {
   background: var(--p-content-background);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--gen-section-border);
   border-radius: 16px;
   padding: 1.25rem;
   position: relative;
@@ -6243,14 +6189,14 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  background: var(--gen-section-line);
   opacity: 0;
   transition: opacity 0.25s ease;
 }
 
 :deep(.generate-modal .generate-section:hover) {
-  border-color: rgba(99, 102, 241, 0.2);
-  box-shadow: 0 4px 24px -8px rgba(99, 102, 241, 0.15);
+  border-color: var(--gen-section-hover-border);
+  box-shadow: var(--gen-section-hover-shadow);
 }
 
 :deep(.generate-modal .generate-section:hover::before) {
@@ -6268,12 +6214,12 @@ onBeforeUnmount(() => {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  background: var(--gen-section-icon-bg);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 4px 12px -2px rgba(99, 102, 241, 0.35);
+  box-shadow: var(--gen-section-icon-shadow);
   position: relative;
 }
 
@@ -6282,12 +6228,12 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, transparent 50%);
+  background: var(--gen-section-icon-gloss);
 }
 
 :deep(.generate-modal .section-icon.prompt-icon) {
-  background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
-  box-shadow: 0 4px 12px -2px rgba(16, 185, 129, 0.35);
+  background: var(--gen-section-icon-prompt-bg);
+  box-shadow: var(--gen-section-icon-prompt-shadow);
 }
 
 :deep(.generate-modal .section-icon i) {
