@@ -14,7 +14,8 @@ import {
   getDocumentPagesPreview,
   getPdfMetadata,
   getPdfThumbnails,
-  extractDocumentTextStream
+  extractDocumentTextStream,
+  extractSelectedPagesStream
 } from '@/services/api.js'
 
 const emit = defineEmits(['extracted', 'error'])
@@ -539,21 +540,36 @@ async function extractSelectedText() {
       pdfExtractor: isPdfFile.value ? selectedExtractor.value : 'docling'
     }
 
-    // Use streaming extraction with progress for better UX
-    const result = await extractDocumentTextStream(
-      selectedFile.value,
-      extractionOptions,
-      handleProgress,
-      extractionAbortController.value.signal
-    )
+    let result
+
+    // For PDFs, use the new endpoint that processes only selected pages
+    if (isPdfFile.value && selectedPages.value.length > 0) {
+      // Extract only selected pages with streaming progress
+      result = await extractSelectedPagesStream(
+        selectedFile.value,
+        selectedPages.value,
+        extractionOptions,
+        handleProgress,
+        extractionAbortController.value.signal
+      )
+    } else {
+      // For non-PDF files, use the full document extraction
+      result = await extractDocumentTextStream(
+        selectedFile.value,
+        extractionOptions,
+        handleProgress,
+        extractionAbortController.value.signal
+      )
+    }
 
     extractedResult.value = result
     currentStep.value = 'result'
 
+    const pagesInfo = isPdfFile.value ? ` de ${selectedPages.value.length} páginas` : ''
     toast.add({
       severity: 'success',
       summary: 'Extração concluída',
-      detail: `${result.word_count} palavras extraídas`,
+      detail: `${result.word_count} palavras extraídas${pagesInfo}`,
       life: 3000
     })
   } catch (error) {
