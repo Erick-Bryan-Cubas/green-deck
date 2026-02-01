@@ -327,6 +327,110 @@ class DocumentExtractor:
                 error=f"Erro ao ler PDF: {str(e)}",
             )
 
+    def generate_pdf_thumbnails(
+        self,
+        pdf_bytes: bytes,
+        pages_str: str = "1-12",
+        width: int = 150,
+    ) -> List[Dict[str, Any]]:
+        """
+        Gera thumbnails de paginas especificas do PDF usando pymupdf.
+
+        Muito mais rapido que renderizar no frontend com pdfjs.
+        Retorna imagens em base64 para renderizacao imediata.
+
+        Args:
+            pdf_bytes: Conteudo binario do PDF
+            pages_str: Range de paginas ("1-12") ou lista ("1,5,10")
+            width: Largura do thumbnail em pixels
+
+        Returns:
+            Lista de dicts com {page, data (base64), width, height}
+        """
+        try:
+            import fitz  # pymupdf
+            import base64
+
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            thumbnails = []
+
+            # Parse pages string
+            page_numbers = self._parse_page_range(pages_str, total_pages)
+
+            for page_num in page_numbers:
+                if page_num < 1 or page_num > total_pages:
+                    continue
+
+                try:
+                    page = doc[page_num - 1]
+
+                    # Calcular escala para largura desejada
+                    zoom = width / page.rect.width
+                    mat = fitz.Matrix(zoom, zoom)
+
+                    # Renderizar pagina como imagem
+                    pix = page.get_pixmap(matrix=mat)
+
+                    # Converter para base64
+                    img_bytes = pix.tobytes("png")
+                    b64 = base64.b64encode(img_bytes).decode()
+
+                    thumbnails.append({
+                        "page": page_num,
+                        "data": f"data:image/png;base64,{b64}",
+                        "width": pix.width,
+                        "height": pix.height,
+                    })
+
+                except Exception as e:
+                    logger.warning(f"Erro ao gerar thumbnail da pagina {page_num}: {e}")
+                    thumbnails.append({
+                        "page": page_num,
+                        "data": None,
+                        "error": str(e),
+                    })
+
+            doc.close()
+            logger.info(f"Gerados {len(thumbnails)} thumbnails")
+            return thumbnails
+
+        except ImportError:
+            logger.error("pymupdf nao esta instalado. Execute: pip install pymupdf")
+            return []
+        except Exception as e:
+            logger.exception(f"Erro ao gerar thumbnails: {e}")
+            return []
+
+    def _parse_page_range(self, pages_str: str, total_pages: int) -> List[int]:
+        """
+        Parse string de paginas para lista de numeros.
+
+        Suporta:
+        - Range: "1-12" -> [1, 2, 3, ..., 12]
+        - Lista: "1,5,10" -> [1, 5, 10]
+        - Misto: "1-5,10,15-20" -> [1, 2, 3, 4, 5, 10, 15, 16, 17, 18, 19, 20]
+        """
+        page_numbers = []
+
+        for part in pages_str.split(","):
+            part = part.strip()
+            if "-" in part:
+                try:
+                    start, end = part.split("-", 1)
+                    start = max(1, int(start.strip()))
+                    end = min(total_pages, int(end.strip()))
+                    page_numbers.extend(range(start, end + 1))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    page_numbers.append(int(part))
+                except ValueError:
+                    continue
+
+        return sorted(set(page_numbers))
+
     async def _extract_pdf_with_pdfplumber(
         self,
         pdf_bytes: bytes,

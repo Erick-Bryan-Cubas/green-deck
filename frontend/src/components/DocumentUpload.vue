@@ -1,6 +1,6 @@
 <!-- frontend/src/components/DocumentUpload.vue -->
 <script setup>
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onBeforeUnmount, nextTick } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import ProgressBar from 'primevue/progressbar'
@@ -9,12 +9,11 @@ import Checkbox from 'primevue/checkbox'
 import Skeleton from 'primevue/skeleton'
 import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
-import { VuePDF, usePDF } from '@tato30/vue-pdf'
 import {
   getDocumentExtractionStatus,
   getDocumentPagesPreview,
   getPdfMetadata,
-  extractSelectedPages,
+  getPdfThumbnails,
   extractDocumentTextStream
 } from '@/services/api.js'
 
@@ -79,11 +78,9 @@ const extractionAbortController = ref(null)
 const fileInputRef = ref(null)
 
 // PDF visual rendering (only for PDF files)
-const pdfSource = ref(null)
-const pdfData = ref(null)
 const totalPdfPages = ref(0)
-const loadedThumbnails = ref(new Set())
-const thumbnailScale = ref(0.5)
+const thumbnailsCache = ref({}) // { pageNum: base64DataUrl }
+const loadingThumbnails = ref(new Set()) // Pages currently being loaded
 
 // Document preview (for non-PDF files)
 const documentPreview = ref(null)
@@ -218,11 +215,10 @@ function openDialog() {
   selectedFile.value = null
   pagesPreview.value = null
   selectedPages.value = []
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   selectedExtractor.value = 'docling'
   cleanupIntersectionObserver()
@@ -237,11 +233,10 @@ function closeDialog() {
   extractedResult.value = null
   extractionError.value = null
   currentStep.value = 'upload'
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   cleanupIntersectionObserver()
 }
@@ -354,26 +349,21 @@ async function loadPdfPreview() {
       throw new Error(metadata.error || 'Falha ao analisar PDF')
     }
 
-    // 2. Criar blob URL para thumbnails
-    const arrayBuffer = await selectedFile.value.arrayBuffer()
-    const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
-    pdfSource.value = URL.createObjectURL(blob)
-
-    // 3. Armazenar dados do PDF
+    // 2. Armazenar dados do PDF
     totalPdfPages.value = metadata.num_pages
 
-    // 4. Selecionar todas as páginas por padrão
+    // 3. Selecionar todas as páginas por padrão
     selectedPages.value = Array.from({ length: metadata.num_pages }, (_, i) => i + 1)
 
-    // 5. Transição para seleção de páginas
+    // 4. Transição para seleção de páginas
     currentStep.value = 'pages'
 
-    // 6. Inicializar observer imediatamente (mostra cards com skeletons)
+    // 5. Inicializar observer e carregar primeiros thumbnails
     await nextTick()
     setupIntersectionObserver()
 
-    // 7. Carregar thumbnails em background (não bloqueia UI)
-    setupThumbnailLazyLoading()
+    // 6. Carregar thumbnails das primeiras páginas visíveis
+    loadThumbnailsBatch(1, Math.min(18, metadata.num_pages))
 
     toast.add({
       severity: 'info',
@@ -388,27 +378,38 @@ async function loadPdfPreview() {
   }
 }
 
-function setupThumbnailLazyLoading() {
-  // Usar usePDF para carregar dados do PDF para renderização de thumbnails
-  // Isso roda em background enquanto o usuário já pode ver e selecionar páginas
-  const { pdf } = usePDF(pdfSource.value)
-
-  // Aguardar pdf carregar para thumbnails (em background)
-  const checkPdfReady = setInterval(() => {
-    if (pdf.value) {
-      clearInterval(checkPdfReady)
-      pdfData.value = pdf.value
-      // Thumbnails começarão a aparecer automaticamente via reatividade do Vue
+async function loadThumbnailsBatch(startPage, endPage) {
+  // Evitar carregar páginas já carregadas ou em carregamento
+  const pagesToLoad = []
+  for (let i = startPage; i <= endPage; i++) {
+    if (!thumbnailsCache.value[i] && !loadingThumbnails.value.has(i)) {
+      pagesToLoad.push(i)
+      loadingThumbnails.value.add(i)
     }
-  }, 100)
+  }
 
-  // Timeout de 60s para thumbnails (não crítico - usuário pode selecionar sem eles)
-  setTimeout(() => {
-    clearInterval(checkPdfReady)
-    if (!pdfData.value) {
-      console.warn('Thumbnails não disponíveis, mas seleção de páginas funciona normalmente')
+  if (pagesToLoad.length === 0) return
+
+  const pagesStr = `${Math.min(...pagesToLoad)}-${Math.max(...pagesToLoad)}`
+
+  try {
+    const result = await getPdfThumbnails(selectedFile.value, pagesStr, 150)
+
+    if (result.success && result.thumbnails) {
+      for (const thumb of result.thumbnails) {
+        if (thumb.data) {
+          thumbnailsCache.value[thumb.page] = thumb.data
+        }
+        loadingThumbnails.value.delete(thumb.page)
+      }
     }
-  }, 60000)
+  } catch (error) {
+    console.error('Erro ao carregar thumbnails:', error)
+    // Remover páginas do loading em caso de erro
+    for (const page of pagesToLoad) {
+      loadingThumbnails.value.delete(page)
+    }
+  }
 }
 
 async function loadDocumentPreview() {
@@ -443,25 +444,35 @@ function setupIntersectionObserver() {
 
   cleanupIntersectionObserver()
 
-  // Carregar as primeiras paginas imediatamente (viewport inicial)
-  const initialVisibleCount = Math.min(8, totalPdfPages.value)
-  for (let i = 1; i <= initialVisibleCount; i++) {
-    visiblePages.value.add(i)
-  }
-
-  // Criar observer para lazy loading das demais
+  // Criar observer para lazy loading de thumbnails
   intersectionObserver = new IntersectionObserver(
     (entries) => {
+      const pagesToLoad = []
+
       entries.forEach((entry) => {
         const pageNum = parseInt(entry.target.dataset.page, 10)
-        if (entry.isIntersecting && !visiblePages.value.has(pageNum)) {
+        if (entry.isIntersecting) {
           visiblePages.value.add(pageNum)
+          // Coletar páginas visíveis que não têm thumbnail
+          if (!thumbnailsCache.value[pageNum] && !loadingThumbnails.value.has(pageNum)) {
+            pagesToLoad.push(pageNum)
+          }
         }
       })
+
+      // Carregar thumbnails em batch para páginas visíveis
+      if (pagesToLoad.length > 0) {
+        const minPage = Math.min(...pagesToLoad)
+        const maxPage = Math.max(...pagesToLoad)
+        // Expandir range para carregar algumas páginas extras
+        const batchStart = Math.max(1, minPage - 3)
+        const batchEnd = Math.min(totalPdfPages.value, maxPage + 3)
+        loadThumbnailsBatch(batchStart, batchEnd)
+      }
     },
     {
       root: pagesGridRef.value,
-      rootMargin: '100px',
+      rootMargin: '200px',
       threshold: 0.1
     }
   )
@@ -485,14 +496,6 @@ function cleanupIntersectionObserver() {
 onBeforeUnmount(() => {
   cleanupIntersectionObserver()
 })
-
-function onThumbnailLoaded(pageNum) {
-  loadedThumbnails.value.add(pageNum)
-}
-
-function onThumbnailError(pageNum, error) {
-  console.error(`Erro ao carregar thumbnail da pagina ${pageNum}:`, error)
-}
 
 function togglePageSelection(pageNumber) {
   const idx = selectedPages.value.indexOf(pageNumber)
@@ -637,11 +640,10 @@ function goBackToUpload() {
   currentStep.value = 'upload'
   pagesPreview.value = null
   selectedPages.value = []
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   cleanupIntersectionObserver()
 }
@@ -652,11 +654,10 @@ function clearFile() {
   extractionError.value = null
   pagesPreview.value = null
   selectedPages.value = []
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   cleanupIntersectionObserver()
 }
@@ -829,20 +830,17 @@ defineExpose({
             </div>
 
             <div class="thumbnail-container">
+              <img
+                v-if="thumbnailsCache[pageNum]"
+                :src="thumbnailsCache[pageNum]"
+                :alt="`Página ${pageNum}`"
+                class="pdf-thumbnail"
+              />
               <Skeleton
-                v-if="!loadedThumbnails.has(pageNum)"
+                v-else
                 width="100%"
                 height="180px"
                 class="thumbnail-skeleton"
-              />
-              <VuePDF
-                v-if="pdfData && visiblePages.has(pageNum)"
-                :pdf="pdfData"
-                :page="pageNum"
-                :scale="thumbnailScale"
-                class="pdf-thumbnail"
-                @loaded="onThumbnailLoaded(pageNum)"
-                @error="(e) => onThumbnailError(pageNum, e)"
               />
             </div>
 
