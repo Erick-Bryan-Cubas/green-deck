@@ -10,6 +10,7 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import InputSwitch from 'primevue/inputswitch'
 import Checkbox from 'primevue/checkbox'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
@@ -224,6 +225,11 @@ function toggleReader() {
       }
     }
   }
+}
+
+function setReaderEnabled(nextValue) {
+  if (nextValue === immersiveReader.value) return
+  toggleReader()
 }
 
 function setReaderTheme(theme) {
@@ -3922,9 +3928,18 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="header-badges">
-            <Tag class="pill subtle">
-              <i class="pi pi-book mr-2" /> Leitura
-            </Tag>
+            <div class="editor-switch" title="Modo Zen">
+              <span class="editor-switch-label">
+                <i class="pi pi-bullseye" />
+                Modo Zen
+              </span>
+              <InputSwitch
+                class="zen-switch"
+                :modelValue="immersiveReader"
+                @update:modelValue="setReaderEnabled"
+                title="Sair do Modo Zen (Esc)"
+              />
+            </div>
             <Tag class="pill subtle" :title="usePdfPagination ? 'Páginas do PDF original' : 'Páginas virtuais'">
               <i :class="usePdfPagination ? 'pi pi-file-pdf mr-2' : 'pi pi-file mr-2'" /> 
               Página {{ readerPage }} / {{ readerTotalPages }}
@@ -4070,24 +4085,6 @@ onBeforeUnmount(() => {
 
             <!-- Controles normais -->
             <template v-else>
-              <Button
-                icon="pi pi-book"
-                :label="immersiveReader ? 'Sair leitura' : 'Leitura'"
-                severity="secondary"
-                outlined
-                @click="toggleReader"
-                title="Ativar modo leitura"
-              />
-
-              <Button
-                :icon="showLineNumbers ? 'pi pi-list' : 'pi pi-align-left'"
-                severity="secondary"
-                :outlined="showLineNumbers"
-                :text="!showLineNumbers"
-                rounded
-                @click="showLineNumbers = !showLineNumbers"
-                :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
-              />
 
               <!-- Document Upload Button -->
               <DocumentUpload
@@ -4184,6 +4181,32 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="panel-actions">
+                <!-- Modo Zen + números de linha (movidos do header) -->
+                <div class="editor-zen-group">
+                  <div class="editor-switch" title="Ativar Modo Zen">
+                    <span class="editor-switch-label">
+                      <i class="pi pi-bullseye" />
+                      Modo Zen
+                    </span>
+                    <InputSwitch
+                      class="zen-switch"
+                      :modelValue="immersiveReader"
+                      @update:modelValue="setReaderEnabled"
+                      :title="immersiveReader ? 'Sair do Modo Zen (Esc)' : 'Ativar Modo Zen'"
+                    />
+                  </div>
+                  <div class="editor-switch" title="Mostrar/ocultar números de linha">
+                    <span class="editor-switch-label">
+                      <i class="pi pi-list" />
+                      Nº de linhas
+                    </span>
+                    <InputSwitch
+                      class="line-switch"
+                      v-model="showLineNumbers"
+                      :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
+                    />
+                  </div>
+                </div>
                 <!-- Undo/Redo do Editor -->
                 <div class="editor-undo-redo">
                   <Button
@@ -6622,6 +6645,69 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.editor-zen-group{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-switch{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.45), rgba(15, 23, 42, 0.65));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+  backdrop-filter: blur(8px);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.editor-switch:hover{
+  transform: translateY(-1px);
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.25), 0 0 10px rgba(99, 102, 241, 0.18);
+}
+
+.editor-switch-label{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.9);
+  letter-spacing: 0.01em;
+}
+
+.editor-switch-label i{
+  font-size: 0.9rem;
+}
+
+.zen-switch:deep(.p-inputswitch-slider){
+  background: rgba(71, 85, 105, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
+}
+
+.zen-switch:deep(.p-inputswitch.p-highlight .p-inputswitch-slider){
+  background: linear-gradient(135deg, #a855f7, #6366f1);
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.45),
+    0 0 14px rgba(168, 85, 247, 0.35);
+}
+
+.line-switch:deep(.p-inputswitch-slider){
+  background: rgba(71, 85, 105, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
+}
+
+.line-switch:deep(.p-inputswitch.p-highlight .p-inputswitch-slider){
+  background: linear-gradient(135deg, #a855f7, #6366f1);
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.45),
+    0 0 14px rgba(168, 85, 247, 0.35);
 }
 
 .export-group{
