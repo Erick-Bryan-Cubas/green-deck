@@ -208,6 +208,83 @@ async def get_pdf_metadata(
     )
 
 
+class ThumbnailInfo(BaseModel):
+    """Informacoes de um thumbnail."""
+    page: int
+    data: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    error: Optional[str] = None
+
+
+class PDFThumbnailsResponse(BaseModel):
+    """Resposta com thumbnails do PDF."""
+    success: bool
+    thumbnails: List[ThumbnailInfo] = []
+    error: Optional[str] = None
+
+
+@router.post("/pdf-thumbnails", response_model=PDFThumbnailsResponse)
+async def get_pdf_thumbnails(
+    file: UploadFile = File(..., description="Arquivo PDF"),
+    pages: str = Form(default="1-12", description="Range de paginas: '1-12' ou '1,5,10'"),
+    width: int = Form(default=150, description="Largura do thumbnail em pixels"),
+):
+    """
+    Gera thumbnails de paginas especificas do PDF.
+
+    Muito mais rapido que renderizar no frontend.
+    Retorna imagens em base64 para renderizacao imediata.
+
+    Args:
+        file: Arquivo PDF
+        pages: Range de paginas ("1-12") ou lista ("1,5,10")
+        width: Largura do thumbnail em pixels (default: 150)
+
+    Returns:
+        PDFThumbnailsResponse com lista de thumbnails em base64
+    """
+    filename = file.filename or "document.pdf"
+    valid, ext = validate_file_extension(filename)
+
+    if not valid or ext != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Este endpoint e especifico para PDFs."
+        )
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.exception("Erro ao ler arquivo PDF")
+        raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {str(e)}")
+
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo muito grande. Maximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+    # Limitar largura para evitar uso excessivo de memoria
+    width = min(max(50, width), 300)
+
+    # Gerar thumbnails em thread pool
+    thumbnails = await asyncio.to_thread(
+        document_extractor.generate_pdf_thumbnails,
+        content,
+        pages,
+        width
+    )
+
+    return PDFThumbnailsResponse(
+        success=True,
+        thumbnails=[ThumbnailInfo(**t) for t in thumbnails],
+    )
+
+
 @router.post("/extract", response_model=ExtractionResponse)
 async def extract_document(
     file: UploadFile = File(..., description="Arquivo para extracao"),
