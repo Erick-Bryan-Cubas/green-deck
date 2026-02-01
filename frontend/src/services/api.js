@@ -867,6 +867,42 @@ async function getPdfMetadata(file) {
 }
 
 /**
+ * Gets PDF thumbnails from backend (fast, uses pymupdf)
+ * @param {File} file - PDF file
+ * @param {string} pages - Page range: "1-12" or "1,5,10"
+ * @param {number} width - Thumbnail width in pixels (default: 150)
+ * @returns {Promise<Object>} Thumbnails result with base64 images
+ */
+async function getPdfThumbnails(file, pages = "1-12", width = 150) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("pages", pages);
+  formData.append("width", width.toString());
+
+  try {
+    const response = await fetch("/api/documents/pdf-thumbnails", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Falha ao gerar thumbnails");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error getting PDF thumbnails:", error);
+    throw error;
+  }
+}
+
+/**
  * Extracts text from selected pages of a document
  * @param {File} file - Document file (PDF, DOCX, PPTX, etc.)
  * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
@@ -1151,6 +1187,7 @@ export {
   getDocumentPagesPreview,
   getPdfPagesPreview, // Alias for backward compatibility
   getPdfMetadata,
+  getPdfThumbnails,
   extractSelectedPages,
   getDefaultPrompts,
   rewriteCard,
