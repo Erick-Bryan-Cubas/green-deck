@@ -15,7 +15,7 @@ import {
   getPdfMetadata,
   getPdfThumbnails,
   extractDocumentTextStream,
-  extractSelectedPagesStream
+  extractPagesWithWebSocket
 } from '@/services/api.js'
 
 const emit = defineEmits(['extracted', 'error'])
@@ -74,6 +74,7 @@ const extractionProgress = ref(0)
 const extractionProgressMessage = ref('')
 const isExtractingWithProgress = ref(false)
 const extractionAbortController = ref(null)
+const processedPages = ref(new Set())
 
 // File input ref
 const fileInputRef = ref(null)
@@ -162,12 +163,16 @@ const dialogTitle = computed(() => {
 })
 
 const dialogWidth = computed(() => {
-  if (currentStep.value === 'pages' && isPdfFile.value) return '90vw'
+  if (currentStep.value === 'pages' && isPdfFile.value) {
+    return isExtractingWithProgress.value ? '650px' : '90vw'
+  }
   return '550px'
 })
 
 const dialogMaxWidth = computed(() => {
-  if (currentStep.value === 'pages' && isPdfFile.value) return '1200px'
+  if (currentStep.value === 'pages' && isPdfFile.value) {
+    return isExtractingWithProgress.value ? '650px' : '1200px'
+  }
   return '550px'
 })
 
@@ -524,15 +529,33 @@ async function extractSelectedText() {
   extractionProgress.value = 0
   extractionProgressMessage.value = 'Iniciando extração...'
   extractionError.value = null
+  processedPages.value = new Set()
 
   // Create abort controller for cancellation
   extractionAbortController.value = new AbortController()
 
   try {
-    // Progress callback
+    // Progress callback - uses nextTick to ensure Vue reactivity in WebSocket context
     const handleProgress = (percent, message) => {
+      console.log(`[Vue] handleProgress called: ${percent}% - ${message}`)
+      // Force reactive update immediately
       extractionProgress.value = percent
       extractionProgressMessage.value = message
+      if (message) {
+        const match = message.match(/p[aá]gina\s+(\d+)/i)
+        if (match) {
+          const pageNum = Number(match[1])
+          if (!Number.isNaN(pageNum)) {
+            const next = new Set(processedPages.value)
+            next.add(pageNum)
+            processedPages.value = next
+          }
+        }
+      }
+      // Force Vue to flush updates
+      nextTick(() => {
+        console.log(`[Vue] After nextTick: progress=${extractionProgress.value}, message=${extractionProgressMessage.value}`)
+      })
     }
 
     const extractionOptions = {
@@ -542,15 +565,15 @@ async function extractSelectedText() {
 
     let result
 
-    // For PDFs, use the new endpoint that processes only selected pages
+    // For PDFs, use WebSocket-based extraction for real-time progress
     if (isPdfFile.value && selectedPages.value.length > 0) {
-      // Extract only selected pages with streaming progress
-      result = await extractSelectedPagesStream(
+      // Extract only selected pages with WebSocket progress (fixes SSE buffering)
+      result = await extractPagesWithWebSocket(
         selectedFile.value,
         selectedPages.value,
         extractionOptions,
         handleProgress,
-        extractionAbortController.value.signal
+        extractionAbortController.value?.signal // Pass abort signal for cancellation
       )
     } else {
       // For non-PDF files, use the full document extraction
@@ -806,8 +829,28 @@ defineExpose({
     <!-- STEP 2: Select Pages (PDF) or Confirm (Other) -->
     <!-- ============================================== -->
     <template v-if="currentStep === 'pages'">
-      <!-- PDF with Visual Thumbnails -->
-      <div v-if="isPdfFile && hasPages" class="pages-selection">
+      <!-- Extraction Progress (shown during extraction) -->
+      <div v-if="isExtractingWithProgress" class="extraction-progress-container">
+        <div class="extraction-file-name">
+          <i class="pi pi-file-pdf" />
+          <span>{{ fileInfo?.name }}</span>
+        </div>
+
+        <div class="extraction-progress-main">
+          <ProgressBar
+            :value="extractionProgress"
+            :showValue="false"
+            class="extraction-bar"
+          />
+          <div class="extraction-stats">
+            <span class="extraction-pages">{{ extractionProgressMessage }}</span>
+            <span class="extraction-percent">{{ extractionProgress.toFixed(0) }}%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PDF with Visual Thumbnails (hidden during extraction) -->
+      <div v-else-if="isPdfFile && hasPages" class="pages-selection">
         <div class="pages-header">
           <div class="pages-info">
             <Tag severity="info">
@@ -833,7 +876,7 @@ defineExpose({
             :key="pageNum"
             :data-page="pageNum"
             class="page-card"
-            :class="{ 'selected': selectedPages.includes(pageNum) }"
+            :class="{ 'selected': selectedPages.includes(pageNum), 'processed': processedPages.has(pageNum) }"
             @click="togglePageSelection(pageNum)"
           >
             <div class="page-checkbox-overlay">
@@ -843,6 +886,10 @@ defineExpose({
                 @click.stop
                 @update:modelValue="togglePageSelection(pageNum)"
               />
+            </div>
+
+            <div v-if="processedPages.has(pageNum)" class="page-processed-badge">
+              <i class="pi pi-check" />
             </div>
 
             <div class="thumbnail-container">
@@ -902,36 +949,17 @@ defineExpose({
         </div>
       </div>
 
-      <!-- Loading -->
-      <div v-if="isLoading" class="upload-progress">
-        <!-- Progress bar with real progress if streaming extraction -->
-        <ProgressBar
-          v-if="isExtractingWithProgress"
-          :value="extractionProgress"
-          :showValue="true"
-          style="height: 10px"
-        >
-          <template #value>{{ extractionProgress.toFixed(0) }}%</template>
-        </ProgressBar>
-        <!-- Indeterminate progress bar as fallback -->
-        <ProgressBar
-          v-else
-          mode="indeterminate"
-          style="height: 6px"
-        />
-        <span class="progress-label">
-          {{ isExtractingWithProgress ? extractionProgressMessage : loadingMessage }}
-        </span>
-        <!-- Cancel button when extracting with progress -->
-        <div v-if="isExtractingWithProgress" class="mt-3 text-center">
-          <Button
-            label="Cancelar extração"
-            icon="pi pi-times"
-            severity="secondary"
-            outlined
-            size="small"
-            @click="cancelExtraction"
-          />
+      <!-- Loading (only for initial loading, not extraction) -->
+      <div v-if="isLoading && !isExtractingWithProgress" class="upload-progress pages-loading">
+        <div class="progress-card">
+          <div class="progress-header">
+            <div class="progress-title">
+              <i class="pi pi-sync progress-icon" />
+              <span>Carregando</span>
+            </div>
+          </div>
+          <ProgressBar mode="indeterminate" class="pdf-progress-bar is-indeterminate" />
+          <span class="progress-label">{{ loadingMessage }}</span>
         </div>
       </div>
 
@@ -998,11 +1026,11 @@ defineExpose({
             text
             icon="pi pi-arrow-left"
             @click="goBackToUpload"
-            :disabled="isLoading"
+            :disabled="isLoading && !isExtractingWithProgress"
           />
 
-          <!-- PDF Extractor Selection -->
-          <div v-if="isPdfFile" class="extractor-selector">
+          <!-- PDF Extractor Selection - hidden during extraction -->
+          <div v-if="isPdfFile && !isExtractingWithProgress" class="extractor-selector">
             <SelectButton
               v-model="selectedExtractor"
               :options="extractorOptions"
@@ -1021,7 +1049,17 @@ defineExpose({
             </SelectButton>
           </div>
 
+          <!-- Cancel button during extraction -->
           <Button
+            v-if="isExtractingWithProgress"
+            label="Cancelar"
+            icon="pi pi-times"
+            class="cancel-extraction-btn"
+            @click="cancelExtraction"
+          />
+          <!-- Extract button when not extracting -->
+          <Button
+            v-else
             label="Extrair Texto"
             icon="pi pi-download"
             @click="extractSelectedText"
@@ -1226,7 +1264,101 @@ defineExpose({
 .upload-progress {
   display: flex;
   flex-direction: column;
+  gap: 0.75rem;
+}
+
+.pages-loading {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  padding-top: 0.5rem;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, var(--surface-0) 45%);
+}
+
+.progress-card {
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 10px;
+  background: var(--surface-50);
+  border: 1px solid var(--surface-200);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.progress-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-color);
+}
+
+.progress-icon {
+  font-size: 0.9rem;
+  color: var(--primary-500);
+  animation: progress-spin 1.2s linear infinite;
+}
+
+.progress-percent {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--primary-600);
+}
+
+.pdf-progress-bar {
+  height: 16px;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--surface-200);
+}
+
+.pdf-progress-bar :deep(.p-progressbar) {
+  background: var(--surface-200);
+}
+
+.pdf-progress-bar :deep(.p-progressbar-value) {
+  background: linear-gradient(90deg, #16a34a, #22c55e);
+  transition: width 0.2s ease;
+}
+
+.pdf-progress-bar.is-indeterminate :deep(.p-progressbar-value) {
+  background: linear-gradient(90deg, #16a34a, #22c55e, #4ade80);
+  animation: pdf-progress-shimmer 1.2s ease-in-out infinite;
+}
+
+.progress-label {
+  font-size: 0.85rem;
+  color: var(--text-color-secondary);
+}
+
+@keyframes progress-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pdf-progress-shimmer {
+  0% {
+    filter: brightness(0.95);
+  }
+  50% {
+    filter: brightness(1.15);
+  }
+  100% {
+    filter: brightness(0.95);
+  }
 }
 
 .progress-message {
@@ -1249,6 +1381,87 @@ defineExpose({
 
 .extraction-error i {
   color: var(--red-500);
+}
+
+/* Extraction Progress */
+.extraction-progress-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.5rem;
+  width: 100%;
+}
+
+.extraction-file-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-color-secondary);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.extraction-file-name i {
+  color: var(--red-400);
+  flex-shrink: 0;
+}
+
+.extraction-file-name span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extraction-progress-main {
+  width: 100%;
+}
+
+.extraction-bar {
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.extraction-bar :deep(.p-progressbar) {
+  background: var(--surface-200);
+  height: 14px;
+  border-radius: 7px;
+}
+
+.extraction-bar :deep(.p-progressbar-value) {
+  background: linear-gradient(
+    90deg,
+    #16a34a 0%,
+    #22c55e 50%,
+    #16a34a 100%
+  );
+  background-size: 200% 100%;
+  animation: extraction-shimmer 1.5s ease-in-out infinite;
+  border-radius: 7px;
+}
+
+@keyframes extraction-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.extraction-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.extraction-pages {
+  color: var(--text-color-secondary);
+}
+
+.extraction-percent {
+  font-weight: 600;
+  color: var(--primary-400);
 }
 
 /* Pages Selection */
@@ -1308,6 +1521,28 @@ defineExpose({
 
 .page-card.selected .page-checkbox-overlay {
   opacity: 1;
+}
+
+.page-card.processed {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.15), 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.page-processed-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 11;
+  background: #16a34a;
+  color: #ffffff;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
 .page-checkbox-overlay {
@@ -1539,5 +1774,23 @@ defineExpose({
 
 .extractor-selector :deep(.p-togglebutton.p-highlight) .extractor-desc {
   color: var(--primary-100);
+}
+
+/* Cancel extraction button - purple gradient */
+.cancel-extraction-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #c084fc 100%) !important;
+  border: none !important;
+  color: white !important;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.cancel-extraction-btn:hover {
+  background: linear-gradient(135deg, #7c3aed 0%, #9333ea 50%, #a855f7 100%) !important;
+  transform: translateY(-1px);
+}
+
+.cancel-extraction-btn:active {
+  transform: translateY(0);
 }
 </style>
