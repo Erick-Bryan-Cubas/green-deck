@@ -7,9 +7,9 @@
 // Local storage key for API keys
 const API_KEY_STORAGE_KEY = "flashcard_generator_api_keys";
 
-// Document extraction timeouts (milliseconds)
-const DOCUMENT_EXTRACTION_TIMEOUT = 180000; // 3 minutes
-const DOCUMENT_PREVIEW_TIMEOUT = 90000; // 90 seconds
+// Document extraction timeouts (milliseconds) - 0 = no timeout
+const DOCUMENT_EXTRACTION_TIMEOUT = 0; // No timeout for extraction
+const DOCUMENT_PREVIEW_TIMEOUT = 0; // No timeout for preview
 
 /**
  * Retrieves stored API keys from local storage
@@ -684,18 +684,11 @@ async function extractDocumentText(file, options = {}, onProgress = null) {
     formData.append("chunk_size", chunkSize.toString());
   }
 
-  // Add timeout control
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_EXTRACTION_TIMEOUT);
-
   try {
     const response = await fetch("/api/documents/extract", {
       method: "POST",
       body: formData,
-      signal: controller.signal,
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -715,16 +708,6 @@ async function extractDocumentText(file, options = {}, onProgress = null) {
 
     return result;
   } catch (error) {
-    clearTimeout(timeoutId);
-
-    // Handle timeout specifically
-    if (error.name === 'AbortError') {
-      throw new Error(
-        'A extração do documento excedeu o tempo limite de 3 minutos. ' +
-        'Tente selecionar menos páginas ou use um arquivo menor.'
-      );
-    }
-
     console.error("Error extracting document:", error);
     throw error;
   }
@@ -917,18 +900,11 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
   formData.append("quality", quality);
   formData.append("pdf_extractor", pdfExtractor);
 
-  // Add timeout control
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_EXTRACTION_TIMEOUT);
-
   try {
     const response = await fetch("/api/documents/extract-pages", {
       method: "POST",
       body: formData,
-      signal: controller.signal,
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -948,16 +924,6 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
 
     return result;
   } catch (error) {
-    clearTimeout(timeoutId);
-
-    // Handle timeout specifically
-    if (error.name === 'AbortError') {
-      throw new Error(
-        'A extração das páginas selecionadas excedeu o tempo limite de 3 minutos. ' +
-        'Tente selecionar menos páginas.'
-      );
-    }
-
     console.error("Error extracting selected pages:", error);
     throw error;
   }
@@ -1074,15 +1040,18 @@ async function extractSelectedPagesStream(file, pageNumbers, options = {}, onPro
 
           try {
             const data = JSON.parse(eventData);
+            console.log(`[SSE] Event: ${eventType}`, data);
 
             switch (eventType) {
               case "start":
+                console.log(`[SSE] Start - calling onProgress(0, "${data.message}")`);
                 if (onProgress) {
                   onProgress(0, data.message);
                 }
                 break;
 
               case "progress":
+                console.log(`[SSE] Progress - calling onProgress(${data.progress_percent}, "${data.message}")`);
                 if (onProgress) {
                   onProgress(
                     data.progress_percent,
@@ -1313,6 +1282,219 @@ async function getDefaultPrompts() {
 }
 
 /**
+ * Extract SELECTED PAGES with real-time progress via WebSocket
+ * This is the preferred method for real-time progress updates (fixes SSE buffering issues)
+ *
+ * @param {File} file - PDF file to extract
+ * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
+ * @param {Object} options - Extraction options
+ * @param {string} options.quality - 'raw', 'cleaned', or 'formatted'
+ * @param {string} options.pdfExtractor - 'docling' or 'pymupdf'
+ * @param {Function} onProgress - Callback (percent: number, message: string) => void
+ * @param {AbortSignal} signal - Optional abort signal for cancellation
+ * @returns {Promise<Object>} Extraction result with text, word_count, pages_content, etc.
+ */
+async function extractPagesWithWebSocket(file, pageNumbers, options = {}, onProgress = null, signal = null) {
+  const { quality = "cleaned", pdfExtractor = "docling" } = options;
+
+  // 1. Preparar FormData antes de conectar
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("page_numbers", pageNumbers.join(","));
+  formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
+
+  return new Promise((resolve, reject) => {
+    // 2. Conectar WebSocket PRIMEIRO (antes do POST)
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/extraction`;
+    const ws = new WebSocket(wsUrl);
+    let taskId = null;
+    let resolved = false;
+    let pingInterval = null;
+    let aborted = false;
+
+    // Handle abort signal
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        if (!resolved) {
+          aborted = true;
+          resolved = true;
+          if (pingInterval) clearInterval(pingInterval);
+          ws.close();
+          reject(new Error('AbortError'));
+        }
+      });
+    }
+
+    // No timeout - let the extraction run as long as needed
+    const timeout = null;
+
+    ws.onopen = async () => {
+      console.log("[WS] Connected, starting extraction...");
+
+      // Notificar progresso inicial
+      if (onProgress) {
+        onProgress(0, "Conectado. Iniciando extração...");
+      }
+
+      // 3. Agora fazer POST para iniciar extração
+      try {
+        const response = await fetch("/api/documents/extract-pages-async", {
+          method: "POST",
+          body: formData,
+          signal: signal, // Pass abort signal to fetch too
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          try {
+            const errorJson = JSON.parse(errorText);
+            throw new Error(errorJson.detail || "Failed to start extraction");
+          } catch {
+            throw new Error(errorText.substring(0, 200));
+          }
+        }
+
+        const data = await response.json();
+        taskId = data.task_id;
+        console.log(`[WS] Task created: ${taskId} (${data.total_pages} pages)`);
+
+        // Notificar que a tarefa foi criada
+        if (onProgress) {
+          onProgress(0, `Tarefa criada. Processando ${data.total_pages} páginas...`);
+        }
+
+        // 4. Inscrever na tarefa
+        ws.send(JSON.stringify({ action: "subscribe", task_id: taskId }));
+
+        // Iniciar pings para manter conexão viva
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: "ping" }));
+          } else {
+            clearInterval(pingInterval);
+          }
+        }, 30000);
+      } catch (err) {
+        if (err.name === 'AbortError' || aborted) {
+          // Already handled by abort listener
+          return;
+        }
+        resolved = true;
+        clearTimeout(timeout);
+        ws.close();
+        reject(err);
+      }
+    };
+
+    ws.onmessage = (event) => {
+      if (aborted) return;
+
+      try {
+        const data = JSON.parse(event.data);
+        console.log("[WS] Message:", data.type, data);
+
+        switch (data.type) {
+          case "extraction_status":
+            // Status inicial ao se inscrever
+            console.log(`[WS] Status: ${data.status}, progress: ${data.progress}, message: ${data.message}`);
+            if (data.status === "completed" && data.has_result) {
+              console.log("[WS] Task already completed");
+            } else if (data.status === "failed") {
+              resolved = true;
+              clearTimeout(timeout);
+              if (pingInterval) clearInterval(pingInterval);
+              ws.close();
+              reject(new Error(data.error || "Extraction failed"));
+            } else if (onProgress) {
+              const progress = data.progress || 0;
+              const message = data.message || "Processando...";
+              console.log(`[WS] Calling onProgress(${progress}, "${message}")`);
+              onProgress(progress, message);
+            }
+            break;
+
+          case "extraction_progress":
+            console.log(`[WS] Progress: ${data.progress}% - ${data.message}`);
+            if (onProgress) {
+              onProgress(data.progress, data.message);
+            }
+            break;
+
+          case "extraction_complete":
+            console.log("[WS] Extraction complete!");
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+
+            if (onProgress) {
+              onProgress(100, `Concluído! ${data.word_count} palavras.`);
+            }
+
+            resolve({
+              success: data.success,
+              text: data.text,
+              word_count: data.word_count,
+              pages: data.pages,
+              quality: data.quality,
+              filename: data.filename,
+              pages_content: data.pages_content || [],
+              metadata: data.metadata || {},
+            });
+            break;
+
+          case "extraction_error":
+            console.error("[WS] Extraction error:", data.error);
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+            reject(new Error(data.error || "Extraction failed"));
+            break;
+
+          case "error":
+            console.error("[WS] Error:", data.error);
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+            reject(new Error(data.error || "WebSocket error"));
+            break;
+
+          case "pong":
+            // Keepalive response, ignore
+            break;
+        }
+      } catch (e) {
+        console.error("[WS] Error parsing message:", e, event.data);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("[WS] WebSocket error:", error);
+      if (!resolved && !aborted) {
+        resolved = true;
+        clearTimeout(timeout);
+        if (pingInterval) clearInterval(pingInterval);
+        reject(new Error("WebSocket connection error"));
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("[WS] Connection closed");
+      if (pingInterval) clearInterval(pingInterval);
+      if (!resolved && !aborted) {
+        resolved = true;
+        clearTimeout(timeout);
+        reject(new Error("WebSocket closed unexpectedly"));
+      }
+    };
+  });
+}
+
+/**
  * Reescreve um card usando LLM
  * @param {Object} card - Card a ser reescrito {front, back}
  * @param {string} action - Acao: "densify" | "split_cloze" | "simplify"
@@ -1365,6 +1547,7 @@ export {
   getPdfThumbnails,
   extractSelectedPages,
   extractSelectedPagesStream,
+  extractPagesWithWebSocket, // WebSocket-based extraction (real-time progress)
   getDefaultPrompts,
   rewriteCard,
 };
