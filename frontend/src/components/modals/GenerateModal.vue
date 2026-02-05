@@ -35,6 +35,7 @@ const props = defineProps({
 const emit = defineEmits([
   'update:visible',
   'update:numCardsSlider',
+  'update:cardType',
   'confirm',
   'customPromptsUpdate'
 ])
@@ -44,6 +45,9 @@ const generateStep = ref('1')
 const quantityMode = ref('auto')
 const customPrompts = ref(null)
 
+// Local card type value
+const localCardType = ref(props.cardType || 'basic')
+
 // Constants
 const quantityModeOptions = [
   { label: 'Automático', value: 'auto', icon: 'pi pi-sparkles' },
@@ -51,12 +55,38 @@ const quantityModeOptions = [
 ]
 const presetOptions = [5, 10, 15, 20, 30]
 
+// Card type options with icons
+const cardTypeOptions = [
+  {
+    label: 'Básicos',
+    value: 'basic',
+    description: 'Cartões com frente e verso simples',
+    icon: 'pi pi-file'
+  },
+  {
+    label: 'Cloze',
+    value: 'cloze',
+    description: 'Cartões com lacunas para preencher',
+    icon: 'pi pi-pencil'
+  },
+  {
+    label: 'Básicos + Cloze',
+    value: 'both',
+    description: 'Gerar ambos os tipos de cartão',
+    icon: 'pi pi-th-large'
+  }
+]
+
 // Local num cards value
 const localNumCards = ref(props.numCardsSlider)
 
-// Sync local state with prop
+// Sync local state with props
 watch(() => props.numCardsSlider, (val) => {
   localNumCards.value = val
+})
+
+watch(() => props.cardType, (val) => {
+  localCardType.value = val || 'basic'
 })
 
 // When modal opens, reset state
@@ -65,6 +95,7 @@ watch(() => props.visible, (visible) => {
     generateStep.value = '1'
     quantityMode.value = props.numCardsEnabled ? 'manual' : 'auto'
     localNumCards.value = props.numCardsSlider
+    localCardType.value = props.cardType || 'basic'
     customPrompts.value = null
   }
 })
@@ -92,9 +123,11 @@ function close() {
 
 function confirm() {
   emit('update:numCardsSlider', localNumCards.value)
+  emit('update:cardType', localCardType.value)
   emit('confirm', {
     quantityMode: quantityMode.value,
     numCards: localNumCards.value,
+    cardType: localCardType.value,
     customPrompts: customPrompts.value
   })
 }
@@ -179,9 +212,42 @@ function confirm() {
         <Step value="2">Prompts</Step>
       </StepList>
       <StepPanels>
-        <!-- STEP 1: Quantidade -->
+        <!-- STEP 1: Tipo e Quantidade -->
         <StepPanel value="1">
           <div class="flex flex-column gap-4 p-3">
+            <!-- Seleção de Tipo de Cartão -->
+            <div class="text-center">
+              <h4 class="m-0 mb-2">Tipo de Cartão</h4>
+              <p class="text-color-secondary m-0 text-sm">
+                Selecione o formato dos cards
+              </p>
+            </div>
+
+            <div class="card-type-selector">
+              <div
+                v-for="option in cardTypeOptions"
+                :key="option.value"
+                class="card-type-option"
+                :class="{ 'selected': localCardType === option.value }"
+                @click="localCardType = option.value"
+              >
+                <div class="card-type-icon">
+                  <i :class="option.icon" />
+                </div>
+                <div class="card-type-content">
+                  <span class="card-type-label">{{ option.label }}</span>
+                  <span class="card-type-desc">{{ option.description }}</span>
+                </div>
+                <div class="card-type-check" v-if="localCardType === option.value">
+                  <i class="pi pi-check" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Separador -->
+            <div class="separator"></div>
+
+            <!-- Seleção de Quantidade -->
             <div class="text-center">
               <h4 class="m-0 mb-2">Quantos cards criar?</h4>
               <p class="text-color-secondary m-0 text-sm">
@@ -332,5 +398,92 @@ function confirm() {
 /* Model info panel */
 .model-info-panel {
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Separator */
+.separator {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(148, 163, 184, 0.15) 50%, transparent 100%);
+  margin: 0.5rem 0;
+}
+
+/* Card Type Selector */
+.card-type-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.card-type-option {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.5);
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.card-type-option:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.card-type-option.selected {
+  border-color: rgba(99, 102, 241, 0.5);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.card-type-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.08);
+  color: #6366f1;
+  font-size: 1.25rem;
+  transition: all 0.25s ease;
+}
+
+.card-type-option.selected .card-type-icon {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+}
+
+.card-type-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-type-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.card-type-desc {
+  font-size: 0.8rem;
+  color: rgba(148, 163, 184, 0.8);
+}
+
+.card-type-check {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  font-size: 0.7rem;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
 }
 </style>
