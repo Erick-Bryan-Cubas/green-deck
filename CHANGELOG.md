@@ -5,6 +5,55 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.3.0-beta] - 2026-02-05
+
+### Adicionado
+
+- **Seletor de tipo de cartão**
+  - Interface para escolher entre tipos de cartão (Basic, Cloze, Mixed)
+  - Estilos visuais de CTA em verde
+
+- **WebSocket Extraction Manager**
+  - Gerenciador de extração via WebSocket
+  - Indicador de progresso na UI durante extração
+
+- **Suporte a temas**
+  - Sistema de theming com CSS variables
+  - Refatoração para variáveis CSS centralizadas
+
+- **Zen Mode**
+  - Modo de leitura imersivo (Zen mode switch)
+  - Controles reorganizados na interface
+
+- **Melhorias em PDF**
+  - Endpoint de thumbnails para PDFs
+  - Endpoint rápido de metadados PDF
+  - Performance de preview melhorada
+  - Feedback de progresso aprimorado
+
+- **Extração de documentos**
+  - Timeouts configuráveis para extração
+  - Streaming de progresso durante extração
+
+- **Geração AllInOne**
+  - Suporte a geração de questões AllInOne
+  - Parsing de features avançadas
+
+### Segurança
+
+- **Headers de segurança aprimorados**
+  - Atualização da função de hash
+  - Headers mais robustos
+
+### Alterado
+
+- Layout do header refinado
+- CSS responsivo melhorado
+- Filtros de logging aprimorados
+- Documentação Docker atualizada
+
+---
+
 ## [1.2.0-beta] - 2026-01-23
 
 ### Adicionado
