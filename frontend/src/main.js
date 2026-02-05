@@ -7,11 +7,16 @@ import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
 import Aura from '@primevue/themes/aura'
 
+import './style.css'
+import { initTheme } from '@/composables/useTheme'
+
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 
+initTheme()
+
 createApp(App)
   .use(router)
-  .use(PrimeVue, { theme: { preset: Aura }, ripple: true })
+  .use(PrimeVue, { theme: { preset: Aura, options: { darkModeSelector: '.theme-dark' } }, ripple: true })
   .use(ToastService)
   .mount('#app')

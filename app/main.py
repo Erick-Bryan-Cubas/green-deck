@@ -16,6 +16,7 @@ from app.api import (
     health_router,
     history_router,
     models_router,
+    questions_router,
     start_broadcaster,
     stop_broadcaster,
     websocket_router,
@@ -35,7 +36,9 @@ class AnkiStatusFilter(logging.Filter):
             and "/api/health/ollama" not in msg
             and "/ws/status" not in msg
             and "http://127.0.0.1:8765" not in msg
+            and "http://host.docker.internal:8765" not in msg
             and "http://127.0.0.1:11434/api/tags" not in msg
+            and "http://host.docker.internal:11434" not in msg
         )
 
 logging.basicConfig(level=logging.INFO)
@@ -80,6 +83,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(anki_router)
 app.include_router(flashcards_router)
+app.include_router(questions_router)
 app.include_router(history_router)
 app.include_router(dashboard_router)
 app.include_router(models_router)

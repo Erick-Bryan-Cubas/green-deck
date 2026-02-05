@@ -2535,3 +2535,187 @@ async def detect_card_languages(req: DetectLanguageRequest):
             },
             status_code=500,
         )
+
+
+# =============================================================================
+# Upload Questions to Anki (AllInOne kprim, mc, sc)
+# =============================================================================
+
+class QuestionOption(BaseModel):
+    text: str
+    isCorrect: bool
+
+
+class AllInOneQuestion(BaseModel):
+    question: str
+    qtype: int  # 0=kprim, 1=mc, 2=sc
+    options: List[QuestionOption]
+    answers: str  # Gabarito codificado
+    comment: str = ""
+    sources: str = ""
+    domain: str = ""
+    deck: Optional[str] = None
+
+
+class AllInOneUpload(BaseModel):
+    questions: List[AllInOneQuestion]
+    deckName: Optional[str] = None
+    tags: Optional[str] = ""
+
+
+@router.post("/upload-questions-to-anki")
+async def upload_questions_to_anki(request: AllInOneUpload):
+    """
+    Upload questions to Anki using AllInOne (kprim, mc, sc) note type.
+    Maps question fields to AllInOne model fields.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    MODEL_NAME = "AllInOne (kprim, mc, sc)"
+
+    # Field mapping from AllInOne note type
+    # Based on screenshot: Question, QType (0=kprim,1=mc,2=sc), Q_1, Q_2, Q_3, Q_4, Q_5, Answers, Comment, Sources, Domain
+
+    results = []
+    tags = [t.strip() for t in request.tags.split(",") if t.strip()] if request.tags else []
+
+    logger.info(f"[Anki Question Export] Starting export of {len(request.questions)} questions")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # First, check if AllInOne model exists
+        try:
+            r = await client.post(ANKI_CONNECT_URL, json={"action": "modelNames", "version": 6})
+            model_names = r.json().get("result", [])
+
+            if MODEL_NAME not in model_names:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "success": False,
+                        "error": f"Modelo '{MODEL_NAME}' não encontrado no Anki",
+                        "message": "Instale a extensão Multiple Choice for Anki: https://ankiweb.net/shared/info/1566095810",
+                        "availableModels": model_names,
+                    }
+                )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Erro ao conectar com Anki: {str(e)}",
+                    "message": "Verifique se o Anki está aberto e o AnkiConnect está instalado",
+                }
+            )
+
+        for i, q in enumerate(request.questions):
+            try:
+                deck_name = request.deckName or q.deck or "Default"
+
+                # Build fields for AllInOne note type
+                fields = {
+                    "Question": q.question,
+                    "QType (0=kprim,1=mc,2=sc)": str(q.qtype),
+                    "Q_1": q.options[0].text if len(q.options) > 0 else "",
+                    "Q_2": q.options[1].text if len(q.options) > 1 else "",
+                    "Q_3": q.options[2].text if len(q.options) > 2 else "",
+                    "Q_4": q.options[3].text if len(q.options) > 3 else "",
+                    "Q_5": q.options[4].text if len(q.options) > 4 else "",
+                    "Answers": q.answers,
+                    "Comment": q.comment,
+                    "Sources": q.sources,
+                    "Domain": q.domain,
+                }
+
+                note = {
+                    "deckName": deck_name,
+                    "modelName": MODEL_NAME,
+                    "fields": fields,
+                    "options": {"allowDuplicate": False},
+                    "tags": tags,
+                }
+
+                logger.info(f"[Anki Question Export] Question {i+1}: deck={deck_name}, qtype={q.qtype}")
+
+                rr = await client.post(
+                    ANKI_CONNECT_URL,
+                    json={"action": "addNote", "version": 6, "params": {"note": note}},
+                )
+                data = rr.json()
+                logger.info(f"[Anki Question Export] Question {i+1} response: {data}")
+
+                if data.get("error"):
+                    raise Exception(data["error"])
+                results.append({"success": True, "id": data["result"], "index": i})
+            except Exception as e:
+                logger.error(f"[Anki Question Export] Question {i+1} failed: {str(e)}")
+                results.append({"success": False, "error": str(e), "index": i})
+
+    total_success = sum(1 for r in results if r["success"])
+    total_questions = len(request.questions)
+
+    # Count by type
+    type_counts = {
+        "kprim": sum(1 for q in request.questions if q.qtype == 0),
+        "mc": sum(1 for q in request.questions if q.qtype == 1),
+        "sc": sum(1 for q in request.questions if q.qtype == 2),
+    }
+
+    response_data = {
+        "success": total_success > 0,
+        "results": results,
+        "totalSuccess": total_success,
+        "totalQuestions": total_questions,
+        "typeCounts": type_counts,
+    }
+
+    if total_success == 0:
+        return JSONResponse(status_code=422, content=response_data)
+    elif total_success < total_questions:
+        return JSONResponse(status_code=207, content=response_data)
+    else:
+        return response_data
+
+
+@router.get("/check-allinone-model")
+async def check_allinone_model():
+    """
+    Check if AllInOne (kprim, mc, sc) model is available in Anki.
+    """
+    MODEL_NAME = "AllInOne (kprim, mc, sc)"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(ANKI_CONNECT_URL, json={"action": "modelNames", "version": 6})
+            data = r.json()
+
+            if data.get("error"):
+                raise Exception(data["error"])
+
+            model_names = data.get("result", [])
+            has_model = MODEL_NAME in model_names
+
+            # If model exists, get its fields
+            fields = []
+            if has_model:
+                rf = await client.post(
+                    ANKI_CONNECT_URL,
+                    json={"action": "modelFieldNames", "version": 6, "params": {"modelName": MODEL_NAME}},
+                )
+                fields = rf.json().get("result", [])
+
+            return {
+                "success": True,
+                "hasModel": has_model,
+                "modelName": MODEL_NAME,
+                "fields": fields,
+                "installUrl": "https://ankiweb.net/shared/info/1566095810" if not has_model else None,
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "hasModel": False,
+            "modelName": MODEL_NAME,
+            "installUrl": "https://ankiweb.net/shared/info/1566095810",
+        }

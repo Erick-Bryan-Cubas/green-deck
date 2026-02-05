@@ -25,8 +25,17 @@ MAX_CTX_CHARS = None
 
 # Security
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173").split(",")
+CORS_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
+).split(",")
 
 # Rate Limiting
 RATE_LIMIT_DEFAULT = os.getenv("RATE_LIMIT_DEFAULT", "100/minute")
 RATE_LIMIT_GENERATE = os.getenv("RATE_LIMIT_GENERATE", "10/minute")
+
+# Document Processing Configuration
+DOCUMENT_EXTRACTION_TIMEOUT = int(os.getenv("DOCUMENT_EXTRACTION_TIMEOUT", "300"))  # 5 min
+DOCUMENT_PREVIEW_TIMEOUT = int(os.getenv("DOCUMENT_PREVIEW_TIMEOUT", "0"))  # 0 = sem timeout
+DOCUMENT_MAX_CONCURRENT_PAGES = int(os.getenv("DOCUMENT_MAX_CONCURRENT_PAGES", "10"))
+DOCUMENT_PREVIEW_BATCH_SIZE = int(os.getenv("DOCUMENT_PREVIEW_BATCH_SIZE", "50"))

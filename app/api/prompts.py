@@ -361,49 +361,145 @@ Responda APENAS no formato acima, sem explicacoes:
     ),
 
     # =========================
-    # Exam/Quiz Mode — instruções para textos de simulados e provas
+    # Question Generation (AllInOne kprim, mc, sc)
     # =========================
-    "FLASHCARDS_EXAM_MODE_INSTRUCTIONS": """<EXAM_MODE_CONTEXT>
-O texto de origem é de um simulado ou prova, contendo:
-- Questões com enunciados
-- Alternativas múltiplas (geralmente A, B, C, D, E)
-- Marcação de resposta correta (✅ ou indicação textual)
-- Explicações do por quê a resposta está correta ou incorreta
+    "QUESTION_GENERATION_SYSTEM": (
+        "Você gera questões de múltipla escolha para Anki no formato AllInOne.\n"
+        "Tipos suportados: kprim (4 afirmativas V/F), mc (várias corretas), sc (uma correta).\n"
+        "Responda SEMPRE em pt-BR.\n"
+        "NUNCA responda em espanhol.\n"
+    ),
 
-APROVEITAMENTO PEDAGÓGICO:
-1. **Alternativas incorretas são valiosas**: Elas revelam conceitos comumente confundidos
-2. **Contraste é aprendizado**: "Por que A está correto e B está incorreto?" é uma pergunta excelente
-3. **Explicações fornecem contexto**: Use-as para enriquecer os cards
+    "QUESTION_GENERATION_SYSTEM_KPRIM": (
+        "Você gera questões Kprim (4 afirmativas verdadeiras ou falsas) para Anki.\n"
+        "Cada questão deve ter EXATAMENTE 4 opções que podem ser marcadas como corretas (V) ou incorretas (F).\n"
+        "Responda sempre em pt-BR.\n"
+    ),
 
-ESTRATÉGIAS DE GERAÇÃO:
-- Crie cards que contraponham alternativas corretas vs incorretas
-- Explore explicações para cards do tipo "O que diferencia X de Y?"
-- Mantenha contexto da questão original (cite o enunciado quando relevante)
-- Evite copiar alternativas literalmente - reformule como conceitos
+    "QUESTION_GENERATION_SYSTEM_MC": (
+        "Você gera questões de múltipla escolha com várias respostas corretas para Anki.\n"
+        "Cada questão deve ter 4-5 opções, onde 2 ou mais podem ser corretas.\n"
+        "Responda sempre em pt-BR.\n"
+    ),
 
-EXEMPLOS:
-❌ EVITE (cópia literal):
-Q: "Qual é a resposta correta? A, B, C ou D?"
-R: "C"
+    "QUESTION_GENERATION_SYSTEM_SC": (
+        "Você gera questões de escolha única para Anki.\n"
+        "Cada questão deve ter 4-5 opções, onde EXATAMENTE uma é correta.\n"
+        "Responda sempre em pt-BR.\n"
+    ),
 
-✅ BOM (conceitual):
-Q: "Por que a criptografia de dados em repouso E em trânsito é essencial para conformidade com GDPR no Amazon Bedrock?"
-R: "Porque protege informações sensíveis em ambos os estados (armazenado e transmitido), garantindo conformidade com regulamentações de proteção de dados."
+    "QUESTION_GENERATION_GUIDELINES": """Crie questões de múltipla escolha de alta qualidade para estudo ativo.
 
-✅ EXCELENTE (contrastivo):
-Q: "Qual a diferença entre usar escalamento automático e criptografia de dados para garantir conformidade com GDPR no Amazon Bedrock?"
-R: "Escalamento automático é sobre performance/recursos, não proteção de dados. Criptografia (em repouso e trânsito) é a funcionalidade crucial para conformidade com GDPR, pois protege informações sensíveis contra acessos não autorizados."
-</EXAM_MODE_CONTEXT>
+QUALIDADE:
+- Questões claras, específicas e sem ambiguidade
+- Distratores plausíveis (não obviamente errados)
+- Comentário explicando o raciocínio correto e por que as outras estão erradas
+- Cite a fonte do conteúdo
+
+TIPOS DE QUESTÃO:
+- kprim: 4 afirmativas que podem ser V ou F independentemente
+- mc: 4-5 opções onde 2+ são corretas (marque todas corretas)
+- sc: 4-5 opções onde exatamente 1 é correta (escolha única)
+
+DICAS:
+- Evite "todas as anteriores" ou "nenhuma das anteriores"
+- Evite pistas gramaticais que entregam a resposta
+- Distratores devem ser erros conceituais comuns
+- O comentário deve ser educativo e completo
 """,
 
-    "FLASHCARDS_EXAM_MODE_ADDITIONAL_GUIDELINES": """
-DIRETRIZES ADICIONAIS PARA MODO SIMULADO/PROVA:
-- **Foco em diferenciação**: Muitos cards devem explorar "Por que X e não Y?"
-- **Use explicações**: Incorpore insights das explicações fornecidas
-- **Contexto do enunciado**: Quando relevante, mencione o cenário da questão
-- **Evite trivialidade**: Não crie cards que apenas repetem "qual alternativa está certa"
-- **Profundidade conceitual**: Extraia o conceito subjacente, não apenas a resposta da prova
-- **Aproveite os distratores**: Alternativas incorretas revelam erros comuns - crie cards que previnam esses erros
+    "QUESTION_GENERATION_FORMAT": """FORMATO DE SAÍDA (uma questão por bloco):
+
+QUESTION: <texto da pergunta em pt-BR>
+TYPE: kprim|mc|sc
+OPT_1: <texto da opção 1> [CORRECT]
+OPT_2: <texto da opção 2>
+OPT_3: <texto da opção 3> [CORRECT]
+OPT_4: <texto da opção 4>
+OPT_5: <texto da opção 5 (opcional para mc/sc)>
+COMMENT: <explicação detalhada do gabarito>
+SOURCE: "<trecho literal do texto-fonte>"
+DOMAIN: <categoria/assunto>
+
+REGRAS DO FORMATO:
+- Marque opções corretas com [CORRECT] no final
+- Para kprim: EXATAMENTE 4 opções (sem OPT_5)
+- Para mc: 4-5 opções, pelo menos 2 com [CORRECT]
+- Para sc: 4-5 opções, EXATAMENTE 1 com [CORRECT]
+- Linha em branco entre questões
+""",
+
+    "QUESTION_GENERATION_PROMPT": """${guidelines}
+
+<SOURCE>
+${src}
+</SOURCE>
+
+<CONTEXT purpose="understanding_only">
+${ctx_block}
+</CONTEXT>
+
+<INSTRUCTIONS>
+- Gere entre ${target_min} e ${target_max} questões do tipo ${question_type}.
+- APENAS use informações presentes em <SOURCE>.
+- <CONTEXT> serve APENAS para compreensão - NÃO crie questões baseadas apenas em <CONTEXT>.
+- Distribua questões entre conceitos diferentes do texto.
+- Cada questão deve testar compreensão, não memorização literal.
+${domain_instruction}
+</INSTRUCTIONS>
+
+<OUTPUT_FORMAT>
+${format_block}
+</OUTPUT_FORMAT>
+
+<OUTPUT_RULES>
+- Sem markdown/listas/numeração extra.
+- Uma linha em branco entre questões.
+- Marque [CORRECT] apenas nas opções corretas.
+</OUTPUT_RULES>
+
+COMECE:
+""",
+
+    "QUESTION_PARSE_SYSTEM": (
+        "Você é um assistente que interpreta questões de múltipla escolha de qualquer formato.\n"
+        "Extraia as questões e converta para o formato estruturado AllInOne.\n"
+        "Identifique automaticamente o tipo (kprim/mc/sc) com base nas respostas.\n"
+        "Responda APENAS no formato solicitado.\n"
+    ),
+
+    "QUESTION_PARSE_PROMPT": """Interprete o texto abaixo que contém questões de múltipla escolha e extraia cada questão no formato estruturado.
+
+<INPUT_TEXT>
+${text}
+</INPUT_TEXT>
+
+<INSTRUCTIONS>
+1. Identifique cada questão no texto (pode estar em qualquer formato: PDF, documento, etc.)
+2. Extraia o enunciado, alternativas e identifique quais são corretas
+3. Determine o tipo:
+   - kprim: se for 4 afirmativas V/F
+   - mc: se houver múltiplas respostas corretas
+   - sc: se houver exatamente uma resposta correta
+4. Gere explicação/comentário quando possível
+5. Identifique o domínio/categoria
+
+FORMATO DE SAÍDA (uma questão por bloco):
+QUESTION: <enunciado>
+TYPE: kprim|mc|sc
+OPT_1: <alternativa 1> [CORRECT se correta]
+OPT_2: <alternativa 2> [CORRECT se correta]
+OPT_3: <alternativa 3> [CORRECT se correta]
+OPT_4: <alternativa 4> [CORRECT se correta]
+OPT_5: <alternativa 5 se houver> [CORRECT se correta]
+COMMENT: <explicação>
+SOURCE: "<contexto relevante>"
+DOMAIN: <categoria>
+
+(linha em branco entre questões)
+</INSTRUCTIONS>
+
+COMECE:
 """,
 
 }

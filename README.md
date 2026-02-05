@@ -177,6 +177,30 @@ When running in Docker, configure these variables in your `.env` file:
 | `ANKI_CONNECT_URL` | `http://host.docker.internal:8765` | Access Anki on host machine |
 | `ENVIRONMENT` | `production` | Set to production for Docker |
 
+### Document Processing Configuration
+
+Green Deck supports extracting text from various document formats (PDF, DOCX, PPTX, etc.) with configurable timeout limits for large files. You can adjust these timeouts in your `.env` file:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOCUMENT_EXTRACTION_TIMEOUT` | `180` | Maximum time (seconds) for full document extraction (3 minutes) |
+| `DOCUMENT_PREVIEW_TIMEOUT` | `90` | Maximum time (seconds) for document preview (90 seconds) |
+
+**Recommendations:**
+- Small deployments (personal use): 120-180 seconds
+- Medium deployments (team use): 180-240 seconds
+- Large files (100+ pages): 300 seconds or use page selection
+
+**Tips for large files:**
+1. Select specific pages instead of extracting the entire document
+2. Use the "pdfplumber" extractor (faster but less formatting)
+3. Split large documents into smaller files
+
+**Real-time Progress:** When extracting documents, you'll see a real-time progress bar showing:
+- Percentage complete (e.g., "45%")
+- Current status (e.g., "Processing page 23 of 150...")
+- Cancel button to abort long-running extractions
+
 ### Running with Ollama Container
 
 To run Ollama as a Docker container alongside Green Deck:
@@ -200,6 +224,23 @@ docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compo
 ```
 
 This mounts your local `app/` directory for live code changes.
+
+### Rebuilding After Updates
+
+After pulling new changes or modifying the code, rebuild the containers to apply updates:
+
+```bash
+# Rebuild and restart all containers
+docker compose -p green-deck -f docker/docker-compose.yml up -d --build
+
+# Or rebuild a specific service
+docker compose -p green-deck -f docker/docker-compose.yml build green-deck
+docker compose -p green-deck -f docker/docker-compose.yml up -d green-deck
+
+# Force rebuild without cache (useful for major updates)
+docker compose -p green-deck -f docker/docker-compose.yml build --no-cache
+docker compose -p green-deck -f docker/docker-compose.yml up -d
+```
 
 ### Data Persistence
 
@@ -437,7 +478,7 @@ cp .env.example .env
 # Edite o .env conforme necessário (veja configuração Docker abaixo)
 
 # Build e execução
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml up -d --build
 
 # Ver logs
 docker compose -f docker/docker-compose.yml logs -f green-deck
@@ -474,10 +515,27 @@ docker exec ollama ollama pull nomic-embed-text
 Para desenvolvimento com hot-reload:
 
 ```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up
+docker compose -p green-deck -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d
 ```
 
 Isso monta seu diretório local `app/` para mudanças em tempo real.
+
+### Reconstruir Após Atualizações
+
+Após baixar novas mudanças ou modificar o código, reconstrua os containers para aplicar as atualizações:
+
+```bash
+# Reconstruir e reiniciar todos os containers
+docker compose -p green-deck -f docker/docker-compose.yml up -d --build
+
+# Ou reconstruir um serviço específico
+docker compose -p green-deck -f docker/docker-compose.yml build green-deck
+docker compose -p green-deck -f docker/docker-compose.yml up -d green-deck
+
+# Forçar reconstrução sem cache (útil para atualizações maiores)
+docker compose -p green-deck -f docker/docker-compose.yml build --no-cache
+docker compose -p green-deck -f docker/docker-compose.yml up -d
+```
 
 ### Persistência de Dados
 
