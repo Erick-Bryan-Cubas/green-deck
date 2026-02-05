@@ -1,6 +1,6 @@
 <!-- frontend/src/components/DocumentUpload.vue -->
 <script setup>
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onBeforeUnmount, nextTick } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import ProgressBar from 'primevue/progressbar'
@@ -9,11 +9,13 @@ import Checkbox from 'primevue/checkbox'
 import Skeleton from 'primevue/skeleton'
 import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
-import { VuePDF, usePDF } from '@tato30/vue-pdf'
 import {
   getDocumentExtractionStatus,
   getDocumentPagesPreview,
-  extractSelectedPages
+  getPdfMetadata,
+  getPdfThumbnails,
+  extractDocumentTextStream,
+  extractPagesWithWebSocket
 } from '@/services/api.js'
 
 const emit = defineEmits(['extracted', 'error'])
@@ -68,16 +70,19 @@ const extractionError = ref(null)
 const isServiceAvailable = ref(null)
 const supportedFormatsFromServer = ref({})
 const dragOver = ref(false)
+const extractionProgress = ref(0)
+const extractionProgressMessage = ref('')
+const isExtractingWithProgress = ref(false)
+const extractionAbortController = ref(null)
+const processedPages = ref(new Set())
 
 // File input ref
 const fileInputRef = ref(null)
 
 // PDF visual rendering (only for PDF files)
-const pdfSource = ref(null)
-const pdfData = ref(null)
 const totalPdfPages = ref(0)
-const loadedThumbnails = ref(new Set())
-const thumbnailScale = ref(0.5)
+const thumbnailsCache = ref({}) // { pageNum: base64DataUrl }
+const loadingThumbnails = ref(new Set()) // Pages currently being loaded
 
 // Document preview (for non-PDF files)
 const documentPreview = ref(null)
@@ -158,12 +163,16 @@ const dialogTitle = computed(() => {
 })
 
 const dialogWidth = computed(() => {
-  if (currentStep.value === 'pages' && isPdfFile.value) return '90vw'
+  if (currentStep.value === 'pages' && isPdfFile.value) {
+    return isExtractingWithProgress.value ? '650px' : '90vw'
+  }
   return '550px'
 })
 
 const dialogMaxWidth = computed(() => {
-  if (currentStep.value === 'pages' && isPdfFile.value) return '1200px'
+  if (currentStep.value === 'pages' && isPdfFile.value) {
+    return isExtractingWithProgress.value ? '650px' : '1200px'
+  }
   return '550px'
 })
 
@@ -212,11 +221,10 @@ function openDialog() {
   selectedFile.value = null
   pagesPreview.value = null
   selectedPages.value = []
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   selectedExtractor.value = 'docling'
   cleanupIntersectionObserver()
@@ -231,11 +239,10 @@ function closeDialog() {
   extractedResult.value = null
   extractionError.value = null
   currentStep.value = 'upload'
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   cleanupIntersectionObserver()
 }
@@ -307,8 +314,15 @@ async function loadPagesPreview() {
   if (!selectedFile.value) return
 
   isLoading.value = true
-  loadingMessage.value = 'Carregando preview do documento...'
   extractionError.value = null
+
+  // Mensagem diferente para PDFs grandes
+  const fileSizeMB = selectedFile.value.size / (1024 * 1024)
+  if (isPdfFile.value && fileSizeMB > 5) {
+    loadingMessage.value = `Carregando PDF grande (${fileSizeMB.toFixed(1)} MB). Isso pode levar alguns minutos...`
+  } else {
+    loadingMessage.value = 'Carregando preview do documento...'
+  }
 
   try {
     if (isPdfFile.value) {
@@ -333,51 +347,75 @@ async function loadPagesPreview() {
 }
 
 async function loadPdfPreview() {
-  // Converter File para ArrayBuffer para o vue-pdf
-  const arrayBuffer = await selectedFile.value.arrayBuffer()
+  try {
+    // 1. Obter metadados do backend (< 2 segundos para 13MB)
+    const metadata = await getPdfMetadata(selectedFile.value)
 
-  // Criar URL do blob para o PDF
-  const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
-  const blobUrl = URL.createObjectURL(blob)
-  pdfSource.value = blobUrl
+    if (!metadata.success) {
+      throw new Error(metadata.error || 'Falha ao analisar PDF')
+    }
 
-  // Usar usePDF para obter informacoes do PDF
-  const { pdf, pages } = usePDF(blobUrl)
+    // 2. Armazenar dados do PDF
+    totalPdfPages.value = metadata.num_pages
 
-  // Aguardar o PDF carregar
-  await new Promise((resolve, reject) => {
-    const checkLoaded = setInterval(() => {
-      if (pages.value && pdf.value) {
-        clearInterval(checkLoaded)
-        pdfData.value = pdf.value
-        totalPdfPages.value = pages.value
-        // Seleciona todas as paginas por padrao
-        selectedPages.value = Array.from({ length: pages.value }, (_, i) => i + 1)
-        resolve()
+    // 3. Selecionar todas as páginas por padrão
+    selectedPages.value = Array.from({ length: metadata.num_pages }, (_, i) => i + 1)
+
+    // 4. Transição para seleção de páginas
+    currentStep.value = 'pages'
+
+    // 5. Inicializar observer e carregar primeiros thumbnails
+    await nextTick()
+    setupIntersectionObserver()
+
+    // 6. Carregar thumbnails das primeiras páginas visíveis
+    loadThumbnailsBatch(1, Math.min(18, metadata.num_pages))
+
+    toast.add({
+      severity: 'info',
+      summary: 'PDF carregado',
+      detail: `${metadata.num_pages} páginas encontradas`,
+      life: 3000
+    })
+
+  } catch (error) {
+    console.error('Erro ao carregar PDF:', error)
+    throw new Error(`Falha ao processar PDF: ${error.message}`)
+  }
+}
+
+async function loadThumbnailsBatch(startPage, endPage) {
+  // Evitar carregar páginas já carregadas ou em carregamento
+  const pagesToLoad = []
+  for (let i = startPage; i <= endPage; i++) {
+    if (!thumbnailsCache.value[i] && !loadingThumbnails.value.has(i)) {
+      pagesToLoad.push(i)
+      loadingThumbnails.value.add(i)
+    }
+  }
+
+  if (pagesToLoad.length === 0) return
+
+  const pagesStr = `${Math.min(...pagesToLoad)}-${Math.max(...pagesToLoad)}`
+
+  try {
+    const result = await getPdfThumbnails(selectedFile.value, pagesStr, 150)
+
+    if (result.success && result.thumbnails) {
+      for (const thumb of result.thumbnails) {
+        if (thumb.data) {
+          thumbnailsCache.value[thumb.page] = thumb.data
+        }
+        loadingThumbnails.value.delete(thumb.page)
       }
-    }, 100)
-
-    // Timeout apos 30 segundos
-    setTimeout(() => {
-      clearInterval(checkLoaded)
-      if (!pages.value) {
-        reject(new Error('Timeout ao carregar PDF'))
-      }
-    }, 30000)
-  })
-
-  currentStep.value = 'pages'
-
-  // Inicializar lazy loading apos o DOM atualizar
-  await nextTick()
-  setupIntersectionObserver()
-
-  toast.add({
-    severity: 'info',
-    summary: 'PDF carregado',
-    detail: `${totalPdfPages.value} paginas encontradas`,
-    life: 3000
-  })
+    }
+  } catch (error) {
+    console.error('Erro ao carregar thumbnails:', error)
+    // Remover páginas do loading em caso de erro
+    for (const page of pagesToLoad) {
+      loadingThumbnails.value.delete(page)
+    }
+  }
 }
 
 async function loadDocumentPreview() {
@@ -412,25 +450,35 @@ function setupIntersectionObserver() {
 
   cleanupIntersectionObserver()
 
-  // Carregar as primeiras paginas imediatamente (viewport inicial)
-  const initialVisibleCount = Math.min(8, totalPdfPages.value)
-  for (let i = 1; i <= initialVisibleCount; i++) {
-    visiblePages.value.add(i)
-  }
-
-  // Criar observer para lazy loading das demais
+  // Criar observer para lazy loading de thumbnails
   intersectionObserver = new IntersectionObserver(
     (entries) => {
+      const pagesToLoad = []
+
       entries.forEach((entry) => {
         const pageNum = parseInt(entry.target.dataset.page, 10)
-        if (entry.isIntersecting && !visiblePages.value.has(pageNum)) {
+        if (entry.isIntersecting) {
           visiblePages.value.add(pageNum)
+          // Coletar páginas visíveis que não têm thumbnail
+          if (!thumbnailsCache.value[pageNum] && !loadingThumbnails.value.has(pageNum)) {
+            pagesToLoad.push(pageNum)
+          }
         }
       })
+
+      // Carregar thumbnails em batch para páginas visíveis
+      if (pagesToLoad.length > 0) {
+        const minPage = Math.min(...pagesToLoad)
+        const maxPage = Math.max(...pagesToLoad)
+        // Expandir range para carregar algumas páginas extras
+        const batchStart = Math.max(1, minPage - 3)
+        const batchEnd = Math.min(totalPdfPages.value, maxPage + 3)
+        loadThumbnailsBatch(batchStart, batchEnd)
+      }
     },
     {
       root: pagesGridRef.value,
-      rootMargin: '100px',
+      rootMargin: '200px',
       threshold: 0.1
     }
   )
@@ -455,14 +503,6 @@ onBeforeUnmount(() => {
   cleanupIntersectionObserver()
 })
 
-function onThumbnailLoaded(pageNum) {
-  loadedThumbnails.value.add(pageNum)
-}
-
-function onThumbnailError(pageNum, error) {
-  console.error(`Erro ao carregar thumbnail da pagina ${pageNum}:`, error)
-}
-
 function togglePageSelection(pageNumber) {
   const idx = selectedPages.value.indexOf(pageNumber)
   if (idx === -1) {
@@ -485,39 +525,126 @@ async function extractSelectedText() {
   if (!selectedFile.value || selectedPages.value.length === 0) return
 
   isLoading.value = true
-  loadingMessage.value = 'Extraindo texto do documento...'
+  isExtractingWithProgress.value = true
+  extractionProgress.value = 0
+  extractionProgressMessage.value = 'Iniciando extração...'
   extractionError.value = null
+  processedPages.value = new Set()
+
+  // Create abort controller for cancellation
+  extractionAbortController.value = new AbortController()
 
   try {
-    const result = await extractSelectedPages(
-      selectedFile.value,
-      selectedPages.value,
-      'cleaned',
-      isPdfFile.value ? selectedExtractor.value : 'docling'
-    )
+    // Progress callback - uses nextTick to ensure Vue reactivity in WebSocket context
+    const handleProgress = (percent, message) => {
+      console.log(`[Vue] handleProgress called: ${percent}% - ${message}`)
+      // Force reactive update immediately
+      extractionProgress.value = percent
+      extractionProgressMessage.value = message
+      if (message) {
+        const match = message.match(/p[aá]gina\s+(\d+)/i)
+        if (match) {
+          const pageNum = Number(match[1])
+          if (!Number.isNaN(pageNum)) {
+            const next = new Set(processedPages.value)
+            next.add(pageNum)
+            processedPages.value = next
+          }
+        }
+      }
+      // Force Vue to flush updates
+      nextTick(() => {
+        console.log(`[Vue] After nextTick: progress=${extractionProgress.value}, message=${extractionProgressMessage.value}`)
+      })
+    }
+
+    const extractionOptions = {
+      quality: 'cleaned',
+      pdfExtractor: isPdfFile.value ? selectedExtractor.value : 'docling'
+    }
+
+    let result
+
+    // For PDFs, use WebSocket-based extraction for real-time progress
+    if (isPdfFile.value && selectedPages.value.length > 0) {
+      // Extract only selected pages with WebSocket progress (fixes SSE buffering)
+      result = await extractPagesWithWebSocket(
+        selectedFile.value,
+        selectedPages.value,
+        extractionOptions,
+        handleProgress,
+        extractionAbortController.value?.signal // Pass abort signal for cancellation
+      )
+    } else {
+      // For non-PDF files, use the full document extraction
+      result = await extractDocumentTextStream(
+        selectedFile.value,
+        extractionOptions,
+        handleProgress,
+        extractionAbortController.value.signal
+      )
+    }
 
     extractedResult.value = result
     currentStep.value = 'result'
 
+    const pagesInfo = isPdfFile.value ? ` de ${selectedPages.value.length} páginas` : ''
     toast.add({
       severity: 'success',
-      summary: 'Extracao concluida',
-      detail: `${result.word_count} palavras extraidas de ${result.pages} pagina(s)`,
+      summary: 'Extração concluída',
+      detail: `${result.word_count} palavras extraídas${pagesInfo}`,
       life: 3000
     })
   } catch (error) {
+    // Check if extraction was cancelled
+    if (error.message === 'AbortError') {
+      toast.add({
+        severity: 'info',
+        summary: 'Extração cancelada',
+        detail: 'A extração foi cancelada pelo usuário.',
+        life: 3000
+      })
+      return
+    }
+
     console.error('Extraction error:', error)
-    extractionError.value = error.message
+
+    // Provide helpful error messages based on error type
+    let errorDetail = error.message || 'Erro desconhecido'
+    let summary = 'Erro na extração'
+
+    if (errorDetail.includes('timeout') || errorDetail.includes('tempo limite')) {
+      summary = 'Tempo limite excedido'
+      errorDetail = 'O documento é muito grande. Sugestões:\n' +
+                    '• Selecione apenas as páginas necessárias\n' +
+                    '• Use o extrator "pdfplumber" (mais rápido)\n' +
+                    '• Divida o documento em arquivos menores'
+    } else if (errorDetail.includes('network') || errorDetail.includes('fetch')) {
+      summary = 'Erro de conexão'
+      errorDetail = 'Verifique sua conexão com a internet e tente novamente.'
+    }
+
+    extractionError.value = errorDetail
     toast.add({
       severity: 'error',
-      summary: 'Erro na extracao',
-      detail: error.message,
-      life: 5000
+      summary,
+      detail: errorDetail,
+      life: 8000 // Longer display for error messages
     })
     emit('error', error)
   } finally {
     isLoading.value = false
-    loadingMessage.value = ''
+    isExtractingWithProgress.value = false
+    extractionProgress.value = 0
+    extractionProgressMessage.value = ''
+    extractionAbortController.value = null
+  }
+}
+
+function cancelExtraction() {
+  if (extractionAbortController.value) {
+    extractionAbortController.value.abort()
+    extractionAbortController.value = null
   }
 }
 
@@ -552,11 +679,10 @@ function goBackToUpload() {
   currentStep.value = 'upload'
   pagesPreview.value = null
   selectedPages.value = []
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   cleanupIntersectionObserver()
 }
@@ -567,11 +693,10 @@ function clearFile() {
   extractionError.value = null
   pagesPreview.value = null
   selectedPages.value = []
-  pdfSource.value = null
-  pdfData.value = null
   totalPdfPages.value = 0
   documentPreview.value = null
-  loadedThumbnails.value = new Set()
+  thumbnailsCache.value = {}
+  loadingThumbnails.value = new Set()
   visiblePages.value = new Set()
   cleanupIntersectionObserver()
 }
@@ -588,11 +713,9 @@ defineExpose({
   <Button
     icon="pi pi-file-import"
     label="Documento"
-    severity="secondary"
-    outlined
     @click="openDialog"
     title="Importar texto de documento (PDF, Word, PowerPoint, Excel, HTML, Markdown, Imagens)"
-    class="document-upload-btn"
+    class="document-upload-btn btn-shine"
   />
 
   <!-- Upload Dialog -->
@@ -686,10 +809,10 @@ defineExpose({
           <span>Imagens serao processadas com OCR para extrair texto</span>
         </div>
 
-        <!-- Progress -->
+        <!-- Loading indicator -->
         <div v-if="isLoading" class="upload-progress">
+          <span class="progress-message">{{ loadingMessage }}</span>
           <ProgressBar mode="indeterminate" style="height: 6px" />
-          <span class="progress-label">{{ loadingMessage }}</span>
         </div>
 
         <!-- Error Message -->
@@ -704,8 +827,28 @@ defineExpose({
     <!-- STEP 2: Select Pages (PDF) or Confirm (Other) -->
     <!-- ============================================== -->
     <template v-if="currentStep === 'pages'">
-      <!-- PDF with Visual Thumbnails -->
-      <div v-if="isPdfFile && hasPages" class="pages-selection">
+      <!-- Extraction Progress (shown during extraction) -->
+      <div v-if="isExtractingWithProgress" class="extraction-progress-container">
+        <div class="extraction-file-name">
+          <i class="pi pi-file-pdf" />
+          <span>{{ fileInfo?.name }}</span>
+        </div>
+
+        <div class="extraction-progress-main">
+          <ProgressBar
+            :value="extractionProgress"
+            :showValue="false"
+            class="extraction-bar"
+          />
+          <div class="extraction-stats">
+            <span class="extraction-pages">{{ extractionProgressMessage }}</span>
+            <span class="extraction-percent">{{ extractionProgress.toFixed(0) }}%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PDF with Visual Thumbnails (hidden during extraction) -->
+      <div v-else-if="isPdfFile && hasPages" class="pages-selection">
         <div class="pages-header">
           <div class="pages-info">
             <Tag severity="info">
@@ -731,7 +874,7 @@ defineExpose({
             :key="pageNum"
             :data-page="pageNum"
             class="page-card"
-            :class="{ 'selected': selectedPages.includes(pageNum) }"
+            :class="{ 'selected': selectedPages.includes(pageNum), 'processed': processedPages.has(pageNum) }"
             @click="togglePageSelection(pageNum)"
           >
             <div class="page-checkbox-overlay">
@@ -743,21 +886,22 @@ defineExpose({
               />
             </div>
 
+            <div v-if="processedPages.has(pageNum)" class="page-processed-badge">
+              <i class="pi pi-check" />
+            </div>
+
             <div class="thumbnail-container">
+              <img
+                v-if="thumbnailsCache[pageNum]"
+                :src="thumbnailsCache[pageNum]"
+                :alt="`Página ${pageNum}`"
+                class="pdf-thumbnail"
+              />
               <Skeleton
-                v-if="!loadedThumbnails.has(pageNum)"
+                v-else
                 width="100%"
                 height="180px"
                 class="thumbnail-skeleton"
-              />
-              <VuePDF
-                v-if="pdfData && visiblePages.has(pageNum)"
-                :pdf="pdfData"
-                :page="pageNum"
-                :scale="thumbnailScale"
-                class="pdf-thumbnail"
-                @loaded="onThumbnailLoaded(pageNum)"
-                @error="(e) => onThumbnailError(pageNum, e)"
               />
             </div>
 
@@ -803,10 +947,18 @@ defineExpose({
         </div>
       </div>
 
-      <!-- Loading -->
-      <div v-if="isLoading" class="upload-progress">
-        <ProgressBar mode="indeterminate" style="height: 6px" />
-        <span class="progress-label">{{ loadingMessage }}</span>
+      <!-- Loading (only for initial loading, not extraction) -->
+      <div v-if="isLoading && !isExtractingWithProgress" class="upload-progress pages-loading">
+        <div class="progress-card">
+          <div class="progress-header">
+            <div class="progress-title">
+              <i class="pi pi-sync progress-icon" />
+              <span>Carregando</span>
+            </div>
+          </div>
+          <ProgressBar mode="indeterminate" class="pdf-progress-bar is-indeterminate" />
+          <span class="progress-label">{{ loadingMessage }}</span>
+        </div>
       </div>
 
       <!-- Error -->
@@ -872,11 +1024,11 @@ defineExpose({
             text
             icon="pi pi-arrow-left"
             @click="goBackToUpload"
-            :disabled="isLoading"
+            :disabled="isLoading && !isExtractingWithProgress"
           />
 
-          <!-- PDF Extractor Selection -->
-          <div v-if="isPdfFile" class="extractor-selector">
+          <!-- PDF Extractor Selection - hidden during extraction -->
+          <div v-if="isPdfFile && !isExtractingWithProgress" class="extractor-selector">
             <SelectButton
               v-model="selectedExtractor"
               :options="extractorOptions"
@@ -895,7 +1047,17 @@ defineExpose({
             </SelectButton>
           </div>
 
+          <!-- Cancel button during extraction -->
           <Button
+            v-if="isExtractingWithProgress"
+            label="Cancelar"
+            icon="pi pi-times"
+            class="cancel-extraction-btn"
+            @click="cancelExtraction"
+          />
+          <!-- Extract button when not extracting -->
+          <Button
+            v-else
             label="Extrair Texto"
             icon="pi pi-download"
             @click="extractSelectedText"
@@ -927,6 +1089,40 @@ defineExpose({
 <style scoped>
 .document-upload-btn {
   gap: 0.5rem;
+}
+
+/* Botão premium - verde da logo #28ca73 */
+.document-upload-btn.btn-shine {
+  position: relative;
+  background: #28ca73 !important;
+  border: 1px solid #22b866 !important;
+  color: #ffffff !important;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.document-upload-btn.btn-shine::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transition: left 0.5s ease;
+  pointer-events: none;
+}
+
+.document-upload-btn.btn-shine:hover::before {
+  left: 100%;
+}
+
+.document-upload-btn.btn-shine:hover {
+  background: #22b866 !important;
+  border-color: #1da55a !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
 }
 
 .document-upload-dialog :deep(.p-dialog-content) {
@@ -1100,15 +1296,104 @@ defineExpose({
 .upload-progress {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 
-.upload-progress :deep(.p-progressbar) {
-  height: 6px;
-  border-radius: 3px;
+.pages-loading {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  padding-top: 0.5rem;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, var(--surface-0) 45%);
+}
+
+.progress-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 10px;
+  background: var(--surface-50);
+  border: 1px solid var(--surface-200);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.progress-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-color);
+}
+
+.progress-icon {
+  font-size: 0.9rem;
+  color: var(--primary-500);
+  animation: progress-spin 1.2s linear infinite;
+}
+
+.progress-percent {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--primary-600);
+}
+
+.pdf-progress-bar {
+  height: 16px;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--surface-200);
+}
+
+.pdf-progress-bar :deep(.p-progressbar) {
+  background: var(--surface-200);
+}
+
+.pdf-progress-bar :deep(.p-progressbar-value) {
+  background: linear-gradient(90deg, #16a34a, #22c55e);
+  transition: width 0.2s ease;
+}
+
+.pdf-progress-bar.is-indeterminate :deep(.p-progressbar-value) {
+  background: linear-gradient(90deg, #16a34a, #22c55e, #4ade80);
+  animation: pdf-progress-shimmer 1.2s ease-in-out infinite;
 }
 
 .progress-label {
+  font-size: 0.85rem;
+  color: var(--text-color-secondary);
+}
+
+@keyframes progress-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pdf-progress-shimmer {
+  0% {
+    filter: brightness(0.95);
+  }
+  50% {
+    filter: brightness(1.15);
+  }
+  100% {
+    filter: brightness(0.95);
+  }
+}
+
+.progress-message {
   font-size: 0.875rem;
   color: var(--text-color-secondary);
   text-align: center;
@@ -1128,6 +1413,87 @@ defineExpose({
 
 .extraction-error i {
   color: var(--red-500);
+}
+
+/* Extraction Progress */
+.extraction-progress-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.5rem;
+  width: 100%;
+}
+
+.extraction-file-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-color-secondary);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.extraction-file-name i {
+  color: var(--red-400);
+  flex-shrink: 0;
+}
+
+.extraction-file-name span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extraction-progress-main {
+  width: 100%;
+}
+
+.extraction-bar {
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.extraction-bar :deep(.p-progressbar) {
+  background: var(--surface-200);
+  height: 14px;
+  border-radius: 7px;
+}
+
+.extraction-bar :deep(.p-progressbar-value) {
+  background: linear-gradient(
+    90deg,
+    #16a34a 0%,
+    #22c55e 50%,
+    #16a34a 100%
+  );
+  background-size: 200% 100%;
+  animation: extraction-shimmer 1.5s ease-in-out infinite;
+  border-radius: 7px;
+}
+
+@keyframes extraction-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.extraction-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.extraction-pages {
+  color: var(--text-color-secondary);
+}
+
+.extraction-percent {
+  font-weight: 600;
+  color: var(--primary-400);
 }
 
 /* Pages Selection */
@@ -1187,6 +1553,28 @@ defineExpose({
 
 .page-card.selected .page-checkbox-overlay {
   opacity: 1;
+}
+
+.page-card.processed {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.15), 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.page-processed-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 11;
+  background: #16a34a;
+  color: #ffffff;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
 .page-checkbox-overlay {
@@ -1418,5 +1806,23 @@ defineExpose({
 
 .extractor-selector :deep(.p-togglebutton.p-highlight) .extractor-desc {
   color: var(--primary-100);
+}
+
+/* Cancel extraction button - purple gradient */
+.cancel-extraction-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #c084fc 100%) !important;
+  border: none !important;
+  color: white !important;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.cancel-extraction-btn:hover {
+  background: linear-gradient(135deg, #7c3aed 0%, #9333ea 50%, #a855f7 100%) !important;
+  transform: translateY(-1px);
+}
+
+.cancel-extraction-btn:active {
+  transform: translateY(0);
 }
 </style>

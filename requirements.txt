@@ -7,11 +7,13 @@ numpy>=1.24.0
 langid
 duckdb>=1.1.0
 python-multipart>=0.0.9
+sse-starlette>=1.6.5
 
 # Document Processing
 docling>=2.60.0
 pdfplumber>=0.11.0
 pikepdf>=8.0.0
+pymupdf>=1.24.0
 
 # Machine Learning
 scikit-learn>=1.3.0

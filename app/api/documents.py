@@ -15,10 +15,14 @@ Formatos suportados (via Docling):
 - Imagens (PNG, JPG, TIFF, BMP) via OCR
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import logging
+import asyncio
+import json
+import uuid
+from sse_starlette.sse import EventSourceResponse
 
 from app.services.document_extractor import (
     document_extractor,
@@ -26,6 +30,8 @@ from app.services.document_extractor import (
     PdfExtractor,
     SUPPORTED_FORMATS,
 )
+from app.config import DOCUMENT_EXTRACTION_TIMEOUT, DOCUMENT_PREVIEW_TIMEOUT
+from app.api.websocket import extraction_manager
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -85,6 +91,24 @@ class DocumentPreviewResponse(BaseModel):
     error: Optional[str] = None
 
 
+class PDFMetadataResponse(BaseModel):
+    """Resposta com metadados do PDF (carregamento rapido)."""
+    success: bool
+    num_pages: int = 0
+    file_size: int = 0
+    filename: str = ""
+    metadata: Dict[str, Any] = {}
+    error: Optional[str] = None
+
+
+class ExtractPagesAsyncResponse(BaseModel):
+    """Resposta do endpoint de extração assíncrona via WebSocket."""
+    task_id: str
+    total_pages: int
+    filename: str
+    message: str = "Extração iniciada. Conecte-se ao WebSocket para acompanhar o progresso."
+
+
 def get_file_extension(filename: str) -> str:
     """Extrai a extensao do arquivo de forma segura."""
     if not filename or "." not in filename:
@@ -100,6 +124,18 @@ def validate_file_extension(filename: str) -> tuple[bool, str]:
     return True, ext
 
 
+async def with_timeout(coro, timeout_seconds: int, operation_name: str):
+    """Execute coroutine with timeout and helpful error message."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"{operation_name} excedeu o tempo limite de {timeout_seconds}s. "
+                   f"Tente um arquivo menor, selecione menos páginas, ou use o extrator 'pdfplumber' (mais rápido)."
+        )
+
+
 @router.get("/status", response_model=ExtractionStatusResponse)
 async def get_extraction_status():
     """
@@ -113,6 +149,148 @@ async def get_extraction_status():
         supported_formats=list(SUPPORTED_FORMATS.keys()),
         format_descriptions=SUPPORTED_FORMATS,
         max_file_size_mb=MAX_FILE_SIZE_MB,
+    )
+
+
+@router.post("/pdf-metadata", response_model=PDFMetadataResponse)
+async def get_pdf_metadata(
+    file: UploadFile = File(..., description="Arquivo PDF para extrair metadados"),
+):
+    """
+    Obtem APENAS metadados do PDF de forma ULTRA-RAPIDA (< 2 segundos para 13MB).
+
+    Nao processa conteudo, apenas:
+    - Numero de paginas
+    - Tamanho do arquivo
+    - Metadados do documento (titulo, autor, datas)
+
+    Ideal para validar arquivo antes de processamento pesado.
+
+    Returns:
+        PDFMetadataResponse com metadados basicos
+    """
+    filename = file.filename or "document.pdf"
+    valid, ext = validate_file_extension(filename)
+
+    if not valid or ext != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Este endpoint e especifico para PDFs. Use /preview-pages para outros formatos."
+        )
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.exception("Erro ao ler arquivo PDF")
+        raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {str(e)}")
+
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo muito grande. Maximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+    # Executa de forma sincrona em thread pool (ultra-rapido)
+    result = await asyncio.to_thread(
+        document_extractor.get_pdf_metadata,
+        content,
+        filename
+    )
+
+    if result.error:
+        return PDFMetadataResponse(
+            success=False,
+            error=result.error,
+            filename=filename,
+            file_size=len(content),
+        )
+
+    return PDFMetadataResponse(
+        success=True,
+        num_pages=result.num_pages,
+        file_size=result.file_size,
+        filename=result.filename,
+        metadata=result.metadata,
+    )
+
+
+class ThumbnailInfo(BaseModel):
+    """Informacoes de um thumbnail."""
+    page: int
+    data: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    error: Optional[str] = None
+
+
+class PDFThumbnailsResponse(BaseModel):
+    """Resposta com thumbnails do PDF."""
+    success: bool
+    thumbnails: List[ThumbnailInfo] = []
+    error: Optional[str] = None
+
+
+@router.post("/pdf-thumbnails", response_model=PDFThumbnailsResponse)
+async def get_pdf_thumbnails(
+    file: UploadFile = File(..., description="Arquivo PDF"),
+    pages: str = Form(default="1-12", description="Range de paginas: '1-12' ou '1,5,10'"),
+    width: int = Form(default=150, description="Largura do thumbnail em pixels"),
+):
+    """
+    Gera thumbnails de paginas especificas do PDF.
+
+    Muito mais rapido que renderizar no frontend.
+    Retorna imagens em base64 para renderizacao imediata.
+
+    Args:
+        file: Arquivo PDF
+        pages: Range de paginas ("1-12") ou lista ("1,5,10")
+        width: Largura do thumbnail em pixels (default: 150)
+
+    Returns:
+        PDFThumbnailsResponse com lista de thumbnails em base64
+    """
+    filename = file.filename or "document.pdf"
+    valid, ext = validate_file_extension(filename)
+
+    if not valid or ext != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Este endpoint e especifico para PDFs."
+        )
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.exception("Erro ao ler arquivo PDF")
+        raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {str(e)}")
+
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo muito grande. Maximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+    # Limitar largura para evitar uso excessivo de memoria
+    width = min(max(50, width), 300)
+
+    # Gerar thumbnails em thread pool
+    thumbnails = await asyncio.to_thread(
+        document_extractor.generate_pdf_thumbnails,
+        content,
+        pages,
+        width
+    )
+
+    return PDFThumbnailsResponse(
+        success=True,
+        thumbnails=[ThumbnailInfo(**t) for t in thumbnails],
     )
 
 
@@ -208,13 +386,21 @@ async def extract_document(
     logger.info(f"Extraindo texto de: {filename} ({len(content)} bytes) com extrator: {pdf_extractor}")
 
     try:
-        result = await document_extractor.extract_from_bytes(
-            file_bytes=content,
-            filename=filename,
-            quality=quality_enum,
-            chunk_size=chunk_size,
-            pdf_extractor=pdf_extractor_enum,
+        # extract_from_bytes is async, call directly with timeout
+        result = await with_timeout(
+            document_extractor.extract_from_bytes(
+                file_bytes=content,
+                filename=filename,
+                quality=quality_enum,
+                chunk_size=chunk_size,
+                pdf_extractor=pdf_extractor_enum,
+            ),
+            DOCUMENT_EXTRACTION_TIMEOUT,
+            "Extração de documento"
         )
+    except HTTPException:
+        # Re-raise timeout errors
+        raise
     except Exception as e:
         logger.exception("Erro na extracao")
         raise HTTPException(status_code=500, detail=f"Erro na extracao: {str(e)}")
@@ -330,6 +516,7 @@ async def preview_document_pages(
         raise HTTPException(status_code=400, detail="Arquivo vazio")
 
     try:
+        # Preview sem timeout - processamento paralelo interno garante performance
         result = await document_extractor.get_document_preview(
             file_bytes=content,
             filename=filename,
@@ -448,13 +635,21 @@ async def extract_selected_pages(
     logger.info("Extraindo paginas %s de: %s com extrator: %s", pages_list, filename, pdf_extractor)
 
     try:
-        result = await document_extractor.extract_pages(
-            file_bytes=content,
-            page_numbers=pages_list,
-            filename=filename,
-            quality=quality_enum,
-            pdf_extractor=pdf_extractor_enum,
+        # extract_pages is async, call directly with timeout
+        result = await with_timeout(
+            document_extractor.extract_pages(
+                file_bytes=content,
+                page_numbers=pages_list,
+                filename=filename,
+                quality=quality_enum,
+                pdf_extractor=pdf_extractor_enum,
+            ),
+            DOCUMENT_EXTRACTION_TIMEOUT,
+            "Extração de páginas específicas"
         )
+    except HTTPException:
+        # Re-raise timeout errors
+        raise
     except Exception as e:
         logger.exception("Erro na extracao de paginas")
         raise HTTPException(status_code=500, detail=f"Erro na extracao: {str(e)}")
@@ -486,3 +681,559 @@ async def extract_selected_pages(
         pages_content=pages_content_list,
         metadata=result.metadata,
     )
+
+
+@router.post("/extract-stream")
+async def extract_document_stream(
+    file: UploadFile = File(..., description="Arquivo para extracao"),
+    quality: str = Form(default="cleaned"),
+    pdf_extractor: str = Form(default="docling"),
+):
+    """
+    Stream document extraction with real-time progress updates via Server-Sent Events (SSE).
+
+    This endpoint provides progress feedback during extraction for better UX with large files.
+    Progress is simulated based on file size and expected extraction speed.
+    """
+    filename = file.filename or "document"
+    valid, ext = validate_file_extension(filename)
+
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato nao suportado: {ext}. Formatos validos: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    if not document_extractor.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Servico de extracao nao disponivel. Instale docling: pip install docling"
+        )
+
+    try:
+        quality_enum = ExtractionQuality(quality)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Qualidade invalida: {quality}. Use: raw, cleaned, ou llm"
+        )
+
+    try:
+        pdf_extractor_enum = PdfExtractor(pdf_extractor)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Extrator invalido: {pdf_extractor}. Use: docling ou pdfplumber"
+        )
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.exception("Erro ao ler arquivo")
+        raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {str(e)}")
+
+    file_size = len(content)
+
+    if file_size > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo muito grande. Maximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+    # Async generator for SSE events
+    async def event_generator():
+        try:
+            # Send start event
+            yield {
+                "event": "start",
+                "data": json.dumps({
+                    "message": "Iniciando extração...",
+                    "file_size_mb": round(file_size / (1024 * 1024), 2)
+                })
+            }
+
+            # Get page count for PDFs to provide better progress estimates
+            total_pages = None
+            if ext == "pdf":
+                try:
+                    total_pages = document_extractor._get_pdf_page_count(content)
+                    yield {
+                        "event": "info",
+                        "data": json.dumps({
+                            "total_pages": total_pages,
+                            "message": f"Documento PDF com {total_pages} páginas"
+                        })
+                    }
+                except Exception:
+                    logger.warning("Could not get PDF page count for progress estimation")
+
+            # Create extraction task (extract_from_bytes is async)
+            extraction_task = asyncio.create_task(
+                with_timeout(
+                    document_extractor.extract_from_bytes(
+                        file_bytes=content,
+                        filename=filename,
+                        quality=quality_enum,
+                        pdf_extractor=pdf_extractor_enum
+                    ),
+                    DOCUMENT_EXTRACTION_TIMEOUT,
+                    "Extração de documento (streaming)"
+                )
+            )
+
+            # Simulate progress while extraction runs
+            # Estimate extraction speed: ~2 seconds per page for docling, ~0.5s for pdfplumber
+            if total_pages:
+                seconds_per_page = 0.5 if pdf_extractor_enum == PdfExtractor.PDFPLUMBER else 2.0
+                estimated_total_time = total_pages * seconds_per_page
+                progress_interval = min(2.0, max(0.5, estimated_total_time / 20))  # 20 updates max
+            else:
+                # For non-PDFs, estimate based on file size (rough estimate: 1MB per second)
+                estimated_total_time = max(2, file_size / (1024 * 1024))
+                progress_interval = min(2.0, max(0.5, estimated_total_time / 10))
+
+            elapsed = 0
+            while not extraction_task.done():
+                await asyncio.sleep(progress_interval)
+                elapsed += progress_interval
+
+                # Calculate progress (cap at 95% until actually complete)
+                if estimated_total_time > 0:
+                    progress = min(95, (elapsed / estimated_total_time) * 100)
+                else:
+                    progress = 50
+
+                if total_pages:
+                    current_page = min(total_pages, max(1, int((progress / 100) * total_pages)))
+                    message = f"Processando página {current_page} de {total_pages}..."
+                else:
+                    message = f"Processando documento... {int(progress)}%"
+
+                yield {
+                    "event": "progress",
+                    "data": json.dumps({
+                        "progress_percent": round(progress, 1),
+                        "message": message
+                    })
+                }
+
+            # Get result
+            result = await extraction_task
+
+            # Send completion
+            logger.info(f"Enviando evento 'complete' para {filename}: {result.word_count} palavras")
+            yield {
+                "event": "complete",
+                "data": json.dumps({
+                    "success": True,
+                    "text": result.text,
+                    "word_count": result.word_count,
+                    "total_pages": result.pages,
+                    "pages": result.pages,
+                    "quality": result.quality.value,
+                    "filename": filename,
+                    "metadata": result.metadata or {},
+                    "message": f"Extração concluída! {result.word_count} palavras extraídas."
+                })
+            }
+            logger.info(f"Evento 'complete' enviado com sucesso para {filename}")
+
+        except HTTPException as e:
+            # Timeout or other HTTP errors
+            yield {
+                "event": "error",
+                "data": json.dumps({
+                    "error": e.detail,
+                    "status_code": e.status_code
+                })
+            }
+        except Exception as e:
+            logger.exception("Error in streaming extraction")
+            yield {
+                "event": "error",
+                "data": json.dumps({
+                    "error": str(e)
+                })
+            }
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/extract-pages-stream")
+async def extract_pages_stream(
+    file: UploadFile = File(..., description="Arquivo para extracao"),
+    page_numbers: str = Form(..., description="Numeros das paginas separados por virgula (ex: 1,2,5)"),
+    quality: str = Form(default="cleaned"),
+    pdf_extractor: str = Form(default="docling"),
+):
+    """
+    Stream extraction of SELECTED PAGES with real-time progress via SSE.
+
+    Processes pages in batches for better progress feedback.
+    Each page is processed individually and progress is reported per page.
+    """
+    filename = file.filename or "document"
+    valid, ext = validate_file_extension(filename)
+
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato nao suportado: {ext}. Formatos validos: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    if not document_extractor.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Servico de extracao nao disponivel. Instale docling: pip install docling"
+        )
+
+    try:
+        pages_list = [int(p.strip()) for p in page_numbers.split(",") if p.strip()]
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Formato invalido para page_numbers. Use numeros separados por virgula."
+        )
+
+    if not pages_list:
+        raise HTTPException(status_code=400, detail="Nenhuma pagina especificada")
+
+    try:
+        quality_enum = ExtractionQuality(quality)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Qualidade invalida: {quality}. Use: raw, cleaned, ou llm"
+        )
+
+    try:
+        pdf_extractor_enum = PdfExtractor(pdf_extractor)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Extrator invalido: {pdf_extractor}. Use: docling ou pdfplumber"
+        )
+
+    try:
+        content = await file.read()
+    except Exception as e:
+        logger.exception("Erro ao ler arquivo")
+        raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo: {str(e)}")
+
+    file_size = len(content)
+
+    if file_size > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Arquivo muito grande. Maximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
+
+    total_pages = len(pages_list)
+    logger.info(f"Extraindo {total_pages} paginas selecionadas de: {filename}")
+
+    async def event_generator():
+        try:
+            # Send start event
+            yield {
+                "event": "start",
+                "data": json.dumps({
+                    "message": f"Iniciando extração de {total_pages} páginas...",
+                    "total_pages": total_pages,
+                    "pages": pages_list
+                })
+            }
+
+            # Process pages one by one for accurate progress
+            all_text_parts = []
+            total_words = 0
+            pages_content = []
+            processed_count = 0
+
+            for page_num in pages_list:
+                # Report progress BEFORE processing each page
+                progress = (processed_count / total_pages) * 100
+                yield {
+                    "event": "progress",
+                    "data": json.dumps({
+                        "progress_percent": round(progress, 1),
+                        "message": f"Processando página {page_num}... ({processed_count + 1}/{total_pages})",
+                        "current_page": page_num,
+                        "processed": processed_count,
+                        "total": total_pages
+                    })
+                }
+
+                # Extract this single page
+                try:
+                    page_result = await with_timeout(
+                        document_extractor.extract_pages(
+                            file_bytes=content,
+                            page_numbers=[page_num],
+                            filename=filename,
+                            quality=quality_enum,
+                            pdf_extractor=pdf_extractor_enum,
+                        ),
+                        DOCUMENT_EXTRACTION_TIMEOUT,
+                        f"Extração da página {page_num}"
+                    )
+
+                    if page_result.text:
+                        all_text_parts.append(page_result.text)
+                        total_words += page_result.word_count
+
+                    if page_result.pages_content:
+                        pages_content.extend(page_result.pages_content)
+
+                    processed_count += 1
+
+                except Exception as page_error:
+                    logger.warning(f"Erro na página {page_num}: {page_error}")
+                    processed_count += 1  # Still count as processed
+                    # Continue with other pages
+
+            # Combine all text
+            final_text = "\n\n".join(all_text_parts)
+
+            # Send completion
+            logger.info(f"Enviando evento 'complete' para {filename}: {total_words} palavras de {processed_count} paginas")
+            yield {
+                "event": "complete",
+                "data": json.dumps({
+                    "success": True,
+                    "text": final_text,
+                    "word_count": total_words,
+                    "total_pages": processed_count,
+                    "pages": processed_count,
+                    "quality": quality_enum.value,
+                    "filename": filename,
+                    "pages_content": pages_content,
+                    "metadata": {"selected_pages": pages_list},
+                    "message": f"Extração concluída! {total_words} palavras de {processed_count} páginas."
+                })
+            }
+            logger.info(f"Evento 'complete' enviado com sucesso para {filename}")
+
+        except HTTPException as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({
+                    "error": e.detail,
+                    "status_code": e.status_code
+                })
+            }
+        except Exception as e:
+            logger.exception("Error in streaming page extraction")
+            yield {
+                "event": "error",
+                "data": json.dumps({
+                    "error": str(e)
+                })
+            }
+
+    return EventSourceResponse(event_generator())
+
+
+# ============================================================================
+# WebSocket-based extraction (real-time progress)
+# ============================================================================
+
+@router.post("/extract-pages-async", response_model=ExtractPagesAsyncResponse)
+async def extract_pages_async(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    page_numbers: str = Form(...),
+    quality: str = Form(default="cleaned"),
+    pdf_extractor: str = Form(default="docling"),
+):
+    """
+    Inicia extração assíncrona de páginas e retorna task_id.
+
+    O progresso pode ser acompanhado via WebSocket em /ws/extraction.
+
+    Args:
+        file: Arquivo PDF para extração
+        page_numbers: Lista de páginas separadas por vírgula (ex: "1,2,3")
+        quality: Qualidade da extração (raw, cleaned, formatted)
+        pdf_extractor: Extrator a usar (docling, pymupdf)
+
+    Returns:
+        task_id: ID da tarefa para acompanhar via WebSocket
+    """
+    filename = file.filename or "document.pdf"
+    ext = get_file_extension(filename)
+
+    # Validações
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato não suportado: {ext}. Formatos aceitos: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    content = await file.read()
+    file_size = len(content)
+
+    if file_size > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Arquivo muito grande ({file_size / 1024 / 1024:.1f}MB). Máximo: {MAX_FILE_SIZE_MB}MB"
+        )
+
+    # Parsear páginas
+    try:
+        pages_list = [int(p.strip()) for p in page_numbers.split(",") if p.strip()]
+        if not pages_list:
+            raise ValueError("Lista de páginas vazia")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato de páginas inválido: {page_numbers}. Use números separados por vírgula."
+        )
+
+    # Validar enums
+    try:
+        quality_enum = ExtractionQuality(quality.lower())
+    except ValueError:
+        quality_enum = ExtractionQuality.CLEANED
+
+    try:
+        pdf_extractor_enum = PdfExtractor(pdf_extractor.lower())
+    except ValueError:
+        pdf_extractor_enum = PdfExtractor.DOCLING
+
+    # Criar task_id e registrar no ExtractionManager
+    task_id = str(uuid.uuid4())
+    extraction_manager.create_task(task_id, len(pages_list), filename)
+
+    logger.info(f"[Async Extraction] Task {task_id} created for {filename} ({len(pages_list)} pages)")
+
+    # Agendar execução em background
+    background_tasks.add_task(
+        run_extraction_task,
+        task_id,
+        content,
+        pages_list,
+        filename,
+        quality_enum,
+        pdf_extractor_enum
+    )
+
+    return ExtractPagesAsyncResponse(
+        task_id=task_id,
+        total_pages=len(pages_list),
+        filename=filename
+    )
+
+
+async def run_extraction_task(
+    task_id: str,
+    content: bytes,
+    pages_list: List[int],
+    filename: str,
+    quality_enum: ExtractionQuality,
+    pdf_extractor_enum: PdfExtractor
+):
+    """
+    Executa a extração de páginas em background e notifica via WebSocket.
+
+    Esta função é executada assincronamente após o endpoint retornar.
+    O progresso é enviado em tempo real para clientes WebSocket inscritos.
+    """
+    total_pages = len(pages_list)
+    all_texts = []
+    pages_content = []
+    total_words = 0
+
+    try:
+        logger.info(f"[Async Extraction] Starting task {task_id}: {total_pages} pages")
+
+        # Aguarda um momento para o frontend se inscrever no WebSocket
+        # Isso evita race condition onde a extração inicia antes do subscribe
+        await asyncio.sleep(0.5)
+
+        for i, page_num in enumerate(pages_list):
+            # Calcular progresso
+            progress = ((i + 1) / total_pages) * 100
+            message = f"Extraindo página {page_num}... ({i + 1}/{total_pages})"
+
+            # Atualizar progresso via WebSocket
+            await extraction_manager.update_progress(task_id, page_num, progress, message)
+
+            logger.debug(f"[Async Extraction] Task {task_id}: Processing page {page_num} ({progress:.1f}%)")
+
+            # Extrair página (usando versão async diretamente)
+            try:
+                result = await asyncio.wait_for(
+                    document_extractor.extract_pages(
+                        file_bytes=content,
+                        page_numbers=[page_num],
+                        filename=filename,
+                        quality=quality_enum,
+                        pdf_extractor=pdf_extractor_enum
+                    ),
+                    timeout=DOCUMENT_EXTRACTION_TIMEOUT
+                )
+
+                if result.error is None:
+                    page_text = result.text
+                    page_words = len(page_text.split())
+
+                    all_texts.append(page_text)
+                    total_words += page_words
+
+                    pages_content.append({
+                        "page_number": page_num,
+                        "text": page_text,
+                        "word_count": page_words
+                    })
+                else:
+                    logger.warning(f"[Async Extraction] Page {page_num} failed: {result.error}")
+                    pages_content.append({
+                        "page_number": page_num,
+                        "text": "",
+                        "word_count": 0,
+                        "error": result.error
+                    })
+
+            except asyncio.TimeoutError:
+                logger.error(f"[Async Extraction] Timeout on page {page_num}")
+                pages_content.append({
+                    "page_number": page_num,
+                    "text": "",
+                    "word_count": 0,
+                    "error": "Timeout na extração"
+                })
+            except Exception as e:
+                logger.error(f"[Async Extraction] Error on page {page_num}: {e}")
+                pages_content.append({
+                    "page_number": page_num,
+                    "text": "",
+                    "word_count": 0,
+                    "error": str(e)
+                })
+
+        # Combinar texto final
+        final_text = "\n\n".join(all_texts)
+
+        # Notificar conclusão via WebSocket
+        await extraction_manager.complete_task(task_id, {
+            "success": True,
+            "text": final_text,
+            "word_count": total_words,
+            "pages": total_pages,
+            "quality": quality_enum.value,
+            "filename": filename,
+            "pages_content": pages_content,
+            "metadata": {"selected_pages": pages_list}
+        })
+
+        logger.info(f"[Async Extraction] Task {task_id} completed: {total_words} words from {total_pages} pages")
+
+    except Exception as e:
+        logger.exception(f"[Async Extraction] Task {task_id} failed: {e}")
+        await extraction_manager.fail_task(task_id, str(e))

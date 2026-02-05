@@ -2,15 +2,18 @@
 # Green Deck - Docker Compose Configuration
 # =============================================================================
 # Usage:
-#   docker compose -p green-deck -f docker/docker-compose.yml up -d              # Start
-#   docker compose -p green-deck -f docker/docker-compose.yml logs -f            # View logs
-#   docker compose -p green-deck -f docker/docker-compose.yml down               # Stop
-#   docker compose -p green-deck -f docker/docker-compose.yml build --no-cache   # Rebuild
+#   docker compose -f docker/docker-compose.yml up -d --build    # Start
+#   docker compose -f docker/docker-compose.yml logs -f          # View logs
+#   docker compose -f docker/docker-compose.yml down             # Stop
+#   docker compose -f docker/docker-compose.yml build --no-cache # Rebuild
 # =============================================================================
+
+name: green-deck
 
 services:
   green-deck:
     image: green-deck:latest
+    pull_policy: build
     build:
       context: ..
       dockerfile: docker/Dockerfile

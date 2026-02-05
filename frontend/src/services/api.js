@@ -7,6 +7,10 @@
 // Local storage key for API keys
 const API_KEY_STORAGE_KEY = "flashcard_generator_api_keys";
 
+// Document extraction timeouts (milliseconds) - 0 = no timeout
+const DOCUMENT_EXTRACTION_TIMEOUT = 0; // No timeout for extraction
+const DOCUMENT_PREVIEW_TIMEOUT = 0; // No timeout for preview
+
 /**
  * Retrieves stored API keys from local storage
  * @returns {Object} Object containing API keys
@@ -529,8 +533,7 @@ async function generateCardsWithStream(
   validationModel = null,
   analysisModel = null,
   customPrompts = null,
-  numCards = null,
-  isExamMode = false
+  numCards = null
 ) {
   // Monta o body com campos opcionais de prompts customizados
   // Note: API keys are now sent via headers for security
@@ -548,11 +551,6 @@ async function generateCardsWithStream(
   // Adiciona quantidade de cards se especificada
   if (numCards && numCards > 0) {
     requestBody.numCards = numCards;
-  }
-
-  // Adiciona modo de simulado/prova se ativo
-  if (isExamMode) {
-    requestBody.isExamMode = true;
   }
 
   // Adiciona prompts customizados se fornecidos
@@ -703,7 +701,7 @@ async function extractDocumentText(file, options = {}, onProgress = null) {
     }
 
     const result = await response.json();
-    
+
     if (!result.success) {
       throw new Error(result.error || "Extraction failed");
     }
@@ -726,11 +724,18 @@ async function extractDocumentPreview(file, maxPreviewChars = 2000) {
   formData.append("file", file);
   formData.append("max_preview_chars", maxPreviewChars.toString());
 
+  // Add timeout control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_PREVIEW_TIMEOUT);
+
   try {
     const response = await fetch("/api/documents/extract-and-preview", {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -744,6 +749,16 @@ async function extractDocumentPreview(file, maxPreviewChars = 2000) {
 
     return await response.json();
   } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle timeout specifically
+    if (error.name === 'AbortError') {
+      throw new Error(
+        'A pré-visualização do documento excedeu o tempo limite de 90 segundos. ' +
+        'Tente um arquivo menor.'
+      );
+    }
+
     console.error("Error extracting document preview:", error);
     throw error;
   }
@@ -758,11 +773,18 @@ async function getDocumentPagesPreview(file) {
   const formData = new FormData();
   formData.append("file", file);
 
+  // Add timeout control
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOCUMENT_PREVIEW_TIMEOUT);
+
   try {
     const response = await fetch("/api/documents/preview-pages", {
       method: "POST",
       body: formData,
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -776,6 +798,16 @@ async function getDocumentPagesPreview(file) {
 
     return await response.json();
   } catch (error) {
+    clearTimeout(timeoutId);
+
+    // Handle timeout specifically
+    if (error.name === 'AbortError') {
+      throw new Error(
+        'A pré-visualização do documento excedeu o tempo limite de 90 segundos. ' +
+        'Tente um arquivo menor.'
+      );
+    }
+
     console.error("Error getting document pages preview:", error);
     throw error;
   }
@@ -783,6 +815,75 @@ async function getDocumentPagesPreview(file) {
 
 // Alias for backward compatibility
 const getPdfPagesPreview = getDocumentPagesPreview;
+
+/**
+ * Gets PDF metadata (number of pages) ULTRA-FAST (< 2 seconds for 13MB)
+ * Does not process page content, only reads PDF headers
+ * @param {File} file - PDF file
+ * @returns {Promise<Object>} Metadata result with num_pages, file_size, filename
+ */
+async function getPdfMetadata(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch("/api/documents/pdf-metadata", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Falha ao obter metadados do PDF");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error getting PDF metadata:", error);
+    throw error;
+  }
+}
+
+/**
+ * Gets PDF thumbnails from backend (fast, uses pymupdf)
+ * @param {File} file - PDF file
+ * @param {string} pages - Page range: "1-12" or "1,5,10"
+ * @param {number} width - Thumbnail width in pixels (default: 150)
+ * @returns {Promise<Object>} Thumbnails result with base64 images
+ */
+async function getPdfThumbnails(file, pages = "1-12", width = 150) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("pages", pages);
+  formData.append("width", width.toString());
+
+  try {
+    const response = await fetch("/api/documents/pdf-thumbnails", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        throw new Error(errorJson.detail || "Falha ao gerar thumbnails");
+      } catch {
+        throw new Error(errorText.substring(0, 200));
+      }
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error getting PDF thumbnails:", error);
+    throw error;
+  }
+}
 
 /**
  * Extracts text from selected pages of a document
@@ -816,7 +917,7 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
     }
 
     const result = await response.json();
-    
+
     if (!result.success) {
       throw new Error(result.error || "Extraction failed");
     }
@@ -826,6 +927,341 @@ async function extractSelectedPages(file, pageNumbers, quality = "cleaned", pdfE
     console.error("Error extracting selected pages:", error);
     throw error;
   }
+}
+
+/**
+ * Extract SELECTED PAGES with real-time progress updates via Server-Sent Events (SSE)
+ * Processes pages in batches and reports progress per batch.
+ * @param {File} file - Document file (PDF)
+ * @param {number[]} pageNumbers - Array of page numbers to extract
+ * @param {Object} options - Extraction options
+ * @param {Function} onProgress - Callback for progress updates (percent, message)
+ * @param {AbortSignal} signal - Optional abort signal for cancellation
+ * @returns {Promise<Object>} Final extraction result
+ */
+async function extractSelectedPagesStream(file, pageNumbers, options = {}, onProgress = null, signal = null) {
+  const { quality = "cleaned", pdfExtractor = "docling" } = options;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("page_numbers", pageNumbers.join(","));
+  formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
+
+  return new Promise((resolve, reject) => {
+    let result = null;
+    let aborted = false;
+
+    // Handle abort signal
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(new Error('AbortError'));
+      });
+    }
+
+    // Start the upload and stream
+    fetch("/api/documents/extract-pages-stream", {
+      method: "POST",
+      body: formData,
+      signal: signal,
+    })
+      .then(response => {
+        if (!response.ok) {
+          return response.json().then(err => {
+            throw new Error(err.detail || `HTTP ${response.status}`);
+          });
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream() {
+          if (aborted) {
+            reader.cancel();
+            return;
+          }
+
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              // Process any remaining data in buffer before closing
+              if (buffer.trim()) {
+                processEvent(buffer);
+              }
+              if (result) {
+                resolve(result);
+              } else {
+                reject(new Error("Stream ended without result"));
+              }
+              return;
+            }
+
+            // Decode chunk and add to buffer
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete SSE messages (separated by \n\n)
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || ''; // Keep incomplete message in buffer
+
+            for (const event of events) {
+              processEvent(event);
+            }
+
+            // Continue reading
+            readStream();
+          }).catch(error => {
+            if (error.name === 'AbortError') {
+              reject(error);
+            } else {
+              console.error("Stream read error:", error);
+              reject(error);
+            }
+          });
+        }
+
+        // Helper function to process a single SSE event
+        function processEvent(event) {
+          if (!event.trim()) return;
+
+          const lines = event.split("\n");
+          let eventType = "message";
+          let eventData = "";
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.substring(7).trim();
+            } else if (line.startsWith("data: ")) {
+              eventData = line.substring(6);
+            }
+          }
+
+          if (!eventData) return;
+
+          try {
+            const data = JSON.parse(eventData);
+            console.log(`[SSE] Event: ${eventType}`, data);
+
+            switch (eventType) {
+              case "start":
+                console.log(`[SSE] Start - calling onProgress(0, "${data.message}")`);
+                if (onProgress) {
+                  onProgress(0, data.message);
+                }
+                break;
+
+              case "progress":
+                console.log(`[SSE] Progress - calling onProgress(${data.progress_percent}, "${data.message}")`);
+                if (onProgress) {
+                  onProgress(
+                    data.progress_percent,
+                    data.message
+                  );
+                }
+                break;
+
+              case "complete":
+                result = {
+                  success: data.success,
+                  text: data.text,
+                  word_count: data.word_count,
+                  total_pages: data.total_pages,
+                  pages: data.pages,
+                  quality: data.quality,
+                  filename: data.filename,
+                  pages_content: data.pages_content || [],
+                  metadata: data.metadata || {},
+                };
+                if (onProgress) {
+                  onProgress(100, data.message);
+                }
+                break;
+
+              case "error":
+                reject(new Error(data.error || "Extraction failed"));
+                break;
+            }
+          } catch (e) {
+            console.error("Error parsing SSE event:", e, eventData);
+          }
+        }
+
+        readStream();
+      })
+      .catch(error => {
+        if (error.name === 'AbortError') {
+          reject(error);
+        } else {
+          reject(error);
+        }
+      });
+  });
+}
+
+/**
+ * Extract document text with real-time progress updates via Server-Sent Events (SSE)
+ * @param {File} file - Document file
+ * @param {Object} options - Extraction options
+ * @param {Function} onProgress - Callback for progress updates (percent, message)
+ * @param {AbortSignal} signal - Optional abort signal for cancellation
+ * @returns {Promise<Object>} Final extraction result
+ */
+async function extractDocumentTextStream(file, options = {}, onProgress = null, signal = null) {
+  const { quality = "cleaned", pdfExtractor = "docling" } = options;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
+
+  return new Promise((resolve, reject) => {
+    let result = null;
+    let aborted = false;
+
+    // Handle abort signal
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(new Error('AbortError'));
+      });
+    }
+
+    // Start the upload and stream
+    fetch("/api/documents/extract-stream", {
+      method: "POST",
+      body: formData,
+      signal: signal,
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function readStream() {
+          if (aborted) {
+            reader.cancel();
+            return;
+          }
+
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              // Process any remaining data in buffer before closing
+              if (buffer.trim()) {
+                processEvent(buffer);
+              }
+              if (result) {
+                resolve(result);
+              } else {
+                reject(new Error("Stream ended without result"));
+              }
+              return;
+            }
+
+            // Decode chunk and add to buffer
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete SSE messages (separated by \n\n)
+            const events = buffer.split("\n\n");
+            buffer = events.pop() || ''; // Keep incomplete message in buffer
+
+            for (const event of events) {
+              processEvent(event);
+            }
+
+            // Continue reading
+            readStream();
+          }).catch(error => {
+            if (error.name === 'AbortError') {
+              reject(error);
+            } else {
+              console.error("Stream read error:", error);
+              reject(error);
+            }
+          });
+        }
+
+        // Helper function to process a single SSE event
+        function processEvent(event) {
+          if (!event.trim()) return;
+
+          const lines = event.split("\n");
+          let eventType = "message";
+          let eventData = "";
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.substring(7).trim();
+            } else if (line.startsWith("data: ")) {
+              eventData = line.substring(6);
+            }
+          }
+
+          if (!eventData) return;
+
+          try {
+            const data = JSON.parse(eventData);
+
+            switch (eventType) {
+              case "start":
+                if (onProgress) {
+                  onProgress(0, data.message);
+                }
+                break;
+
+              case "info":
+                if (onProgress) {
+                  onProgress(0, data.message);
+                }
+                break;
+
+              case "progress":
+                if (onProgress) {
+                  onProgress(
+                    data.progress_percent,
+                    data.message
+                  );
+                }
+                break;
+
+              case "complete":
+                result = {
+                  success: data.success,
+                  text: data.text,
+                  word_count: data.word_count,
+                  total_pages: data.total_pages,
+                  pages: data.pages,
+                  quality: data.quality,
+                  filename: data.filename,
+                  metadata: data.metadata || {},
+                };
+                if (onProgress) {
+                  onProgress(100, data.message);
+                }
+                break;
+
+              case "error":
+                reject(new Error(data.error || "Extraction failed"));
+                break;
+            }
+          } catch (e) {
+            console.error("Error parsing SSE event:", e, eventData);
+          }
+        }
+
+        readStream();
+      })
+      .catch(error => {
+        if (error.name === 'AbortError') {
+          reject(error);
+        } else {
+          reject(error);
+        }
+      });
+  });
 }
 
 /**
@@ -843,6 +1279,219 @@ async function getDefaultPrompts() {
     console.error("Error fetching default prompts:", error);
     throw error;
   }
+}
+
+/**
+ * Extract SELECTED PAGES with real-time progress via WebSocket
+ * This is the preferred method for real-time progress updates (fixes SSE buffering issues)
+ *
+ * @param {File} file - PDF file to extract
+ * @param {number[]} pageNumbers - Array of page numbers (1-indexed)
+ * @param {Object} options - Extraction options
+ * @param {string} options.quality - 'raw', 'cleaned', or 'formatted'
+ * @param {string} options.pdfExtractor - 'docling' or 'pymupdf'
+ * @param {Function} onProgress - Callback (percent: number, message: string) => void
+ * @param {AbortSignal} signal - Optional abort signal for cancellation
+ * @returns {Promise<Object>} Extraction result with text, word_count, pages_content, etc.
+ */
+async function extractPagesWithWebSocket(file, pageNumbers, options = {}, onProgress = null, signal = null) {
+  const { quality = "cleaned", pdfExtractor = "docling" } = options;
+
+  // 1. Preparar FormData antes de conectar
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("page_numbers", pageNumbers.join(","));
+  formData.append("quality", quality);
+  formData.append("pdf_extractor", pdfExtractor);
+
+  return new Promise((resolve, reject) => {
+    // 2. Conectar WebSocket PRIMEIRO (antes do POST)
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws/extraction`;
+    const ws = new WebSocket(wsUrl);
+    let taskId = null;
+    let resolved = false;
+    let pingInterval = null;
+    let aborted = false;
+
+    // Handle abort signal
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        if (!resolved) {
+          aborted = true;
+          resolved = true;
+          if (pingInterval) clearInterval(pingInterval);
+          ws.close();
+          reject(new Error('AbortError'));
+        }
+      });
+    }
+
+    // No timeout - let the extraction run as long as needed
+    const timeout = null;
+
+    ws.onopen = async () => {
+      console.log("[WS] Connected, starting extraction...");
+
+      // Notificar progresso inicial
+      if (onProgress) {
+        onProgress(0, "Conectado. Iniciando extração...");
+      }
+
+      // 3. Agora fazer POST para iniciar extração
+      try {
+        const response = await fetch("/api/documents/extract-pages-async", {
+          method: "POST",
+          body: formData,
+          signal: signal, // Pass abort signal to fetch too
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          try {
+            const errorJson = JSON.parse(errorText);
+            throw new Error(errorJson.detail || "Failed to start extraction");
+          } catch {
+            throw new Error(errorText.substring(0, 200));
+          }
+        }
+
+        const data = await response.json();
+        taskId = data.task_id;
+        console.log(`[WS] Task created: ${taskId} (${data.total_pages} pages)`);
+
+        // Notificar que a tarefa foi criada
+        if (onProgress) {
+          onProgress(0, `Tarefa criada. Processando ${data.total_pages} páginas...`);
+        }
+
+        // 4. Inscrever na tarefa
+        ws.send(JSON.stringify({ action: "subscribe", task_id: taskId }));
+
+        // Iniciar pings para manter conexão viva
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: "ping" }));
+          } else {
+            clearInterval(pingInterval);
+          }
+        }, 30000);
+      } catch (err) {
+        if (err.name === 'AbortError' || aborted) {
+          // Already handled by abort listener
+          return;
+        }
+        resolved = true;
+        clearTimeout(timeout);
+        ws.close();
+        reject(err);
+      }
+    };
+
+    ws.onmessage = (event) => {
+      if (aborted) return;
+
+      try {
+        const data = JSON.parse(event.data);
+        console.log("[WS] Message:", data.type, data);
+
+        switch (data.type) {
+          case "extraction_status":
+            // Status inicial ao se inscrever
+            console.log(`[WS] Status: ${data.status}, progress: ${data.progress}, message: ${data.message}`);
+            if (data.status === "completed" && data.has_result) {
+              console.log("[WS] Task already completed");
+            } else if (data.status === "failed") {
+              resolved = true;
+              clearTimeout(timeout);
+              if (pingInterval) clearInterval(pingInterval);
+              ws.close();
+              reject(new Error(data.error || "Extraction failed"));
+            } else if (onProgress) {
+              const progress = data.progress || 0;
+              const message = data.message || "Processando...";
+              console.log(`[WS] Calling onProgress(${progress}, "${message}")`);
+              onProgress(progress, message);
+            }
+            break;
+
+          case "extraction_progress":
+            console.log(`[WS] Progress: ${data.progress}% - ${data.message}`);
+            if (onProgress) {
+              onProgress(data.progress, data.message);
+            }
+            break;
+
+          case "extraction_complete":
+            console.log("[WS] Extraction complete!");
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+
+            if (onProgress) {
+              onProgress(100, `Concluído! ${data.word_count} palavras.`);
+            }
+
+            resolve({
+              success: data.success,
+              text: data.text,
+              word_count: data.word_count,
+              pages: data.pages,
+              quality: data.quality,
+              filename: data.filename,
+              pages_content: data.pages_content || [],
+              metadata: data.metadata || {},
+            });
+            break;
+
+          case "extraction_error":
+            console.error("[WS] Extraction error:", data.error);
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+            reject(new Error(data.error || "Extraction failed"));
+            break;
+
+          case "error":
+            console.error("[WS] Error:", data.error);
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+            reject(new Error(data.error || "WebSocket error"));
+            break;
+
+          case "pong":
+            // Keepalive response, ignore
+            break;
+        }
+      } catch (e) {
+        console.error("[WS] Error parsing message:", e, event.data);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("[WS] WebSocket error:", error);
+      if (!resolved && !aborted) {
+        resolved = true;
+        clearTimeout(timeout);
+        if (pingInterval) clearInterval(pingInterval);
+        reject(new Error("WebSocket connection error"));
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("[WS] Connection closed");
+      if (pingInterval) clearInterval(pingInterval);
+      if (!resolved && !aborted) {
+        resolved = true;
+        clearTimeout(timeout);
+        reject(new Error("WebSocket closed unexpectedly"));
+      }
+    };
+  });
 }
 
 /**
@@ -890,10 +1539,15 @@ export {
   fetchOllamaInfo,
   getDocumentExtractionStatus,
   extractDocumentText,
+  extractDocumentTextStream,
   extractDocumentPreview,
   getDocumentPagesPreview,
   getPdfPagesPreview, // Alias for backward compatibility
+  getPdfMetadata,
+  getPdfThumbnails,
   extractSelectedPages,
+  extractSelectedPagesStream,
+  extractPagesWithWebSocket, // WebSocket-based extraction (real-time progress)
   getDefaultPrompts,
   rewriteCard,
 };

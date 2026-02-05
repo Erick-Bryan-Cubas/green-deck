@@ -10,6 +10,7 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import InputSwitch from 'primevue/inputswitch'
 import Checkbox from 'primevue/checkbox'
 import Card from 'primevue/card'
 import DataView from 'primevue/dataview'
@@ -30,6 +31,7 @@ import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import DocumentUpload from '@/components/DocumentUpload.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
+import { colorTokens, sidebarIconColors } from '@/config/theme'
 
 // Modal components
 import GenerateModal from '@/components/modals/GenerateModal.vue'
@@ -43,9 +45,15 @@ import ProgressDialog from '@/components/modals/ProgressDialog.vue'
 import OllamaSelectionDialog from '@/components/modals/OllamaSelectionDialog.vue'
 import TopicConfirmDialog from '@/components/modals/TopicConfirmDialog.vue'
 import CustomInstructionDialog from '@/components/modals/CustomInstructionDialog.vue'
-import ExamModeInfoDialog from '@/components/modals/ExamModeInfoDialog.vue'
+import QuestionGenerateModal from '@/components/modals/QuestionGenerateModal.vue'
+import QuestionExportDialog from '@/components/modals/QuestionExportDialog.vue'
+
+// Question components
+import QuestionCardItem from '@/components/QuestionCardItem.vue'
+import QuizInteractive from '@/components/QuizInteractive.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
+import { useTheme } from '@/composables/useTheme'
 
 // Services
 import {
@@ -57,18 +65,22 @@ import {
   hasAnyApiKey,
   fetchOllamaInfo
 } from '@/services/api.js'
+import { downloadTextFile, exportCardsAsMarkdown } from '@/services/export'
+import {
+  generateQuestionsStream,
+  parseQuestionsStream,
+  uploadQuestionsToAnki,
+  checkAllInOneModel
+} from '@/services/questionApi.js'
 
 // Security utilities
 import { sanitizeHtml } from '@/utils/sanitize.js'
 
 const toast = useToast()
 const router = useRouter()
-
+const { isDark, toggleTheme } = useTheme()
 // WebSocket status do Ollama (para detectar quando fica disponível)
 const { status: ollamaWsStatus } = useOllamaStatus()
-
-// ============================================================
-// Helpers
 // ============================================================
 function notify(message, severity = 'info', life = 3000) {
   toast.add({ severity, summary: message, life })
@@ -213,6 +225,11 @@ function toggleReader() {
       }
     }
   }
+}
+
+function setReaderEnabled(nextValue) {
+  if (nextValue === immersiveReader.value) return
+  toggleReader()
 }
 
 function setReaderTheme(theme) {
@@ -783,8 +800,8 @@ function buildActiveSessionSnapshot() {
     // Topic segmentation data
     topicSegments: topicSegments.value,
     topicDefinitions: topicDefinitions.value,
-    // Exam mode
-    isExamMode: isExamMode.value
+    // AllInOne questions
+    questionCards: questionCards.value
   }
 }
 
@@ -805,6 +822,7 @@ function schedulePersistActiveSession() {
     const hasAny =
       normalizePlainText(snap.plainText).length > 0 ||
       (Array.isArray(snap.cards) && snap.cards.length > 0) ||
+      (Array.isArray(snap.questionCards) && snap.questionCards.length > 0) ||
       normalizePlainText(snap.documentContext).length > 0
 
     if (!hasAny) {
@@ -848,8 +866,8 @@ async function restoreSessionById(id) {
     topicDefinitions.value = s.topicDefinitions || []
     showTopicLegend.value = topicSegments.value.length > 0
 
-    // Restaura exam mode
-    isExamMode.value = s.isExamMode || false
+    // Restaura AllInOne questions
+    questionCards.value = Array.isArray(s.questionCards) ? s.questionCards : []
 
     await nextTick()
 
@@ -858,7 +876,7 @@ async function restoreSessionById(id) {
       const highlightData = topicSegments.value.map(seg => ({
         start: seg.start,
         end: seg.end,
-        color: topicDefinitions.value.find(t => t.id === seg.topic_id)?.color || '#e5e7eb'
+        color: topicDefinitions.value.find(t => t.id === seg.topic_id)?.color || 'var(--app-text)'
       }))
       editorRef.value?.applyTopicHighlights(highlightData)
     }
@@ -908,8 +926,8 @@ function clearCurrentSession() {
     topicDefinitions.value = []
     showTopicLegend.value = false
 
-    // Limpa exam mode
-    isExamMode.value = false
+    // Limpa AllInOne questions
+    questionCards.value = []
 
     editorRef.value?.setDelta?.(null)
 
@@ -954,9 +972,6 @@ function newSession() {
   topicDefinitions.value = []
   showTopicLegend.value = false
 
-  // Limpa exam mode
-  isExamMode.value = false
-
   editorRef.value?.setDelta?.(null)
 
   activeSessionId.value = safeId()
@@ -972,8 +987,7 @@ function newSession() {
     cards: [],
     documentContext: '',
     topicSegments: [],
-    topicDefinitions: [],
-    isExamMode: false
+    topicDefinitions: []
   })
 
   notify('Nova sessão criada.', 'success', 2200)
@@ -995,9 +1009,17 @@ const documentContext = ref('')
 const currentAnalysisId = ref(null)
 const isAnalyzing = ref(false)
 
-// Exam/Quiz mode (textos de simulados/provas)
-const isExamMode = ref(false)
-const showExamModeInfo = ref(false)
+// ============================================================
+// Questions (AllInOne kprim, mc, sc)
+// ============================================================
+const questionCards = ref([])
+const showQuestionGenerateModal = ref(false)
+const showQuestionExportDialog = ref(false)
+const isGeneratingQuestions = ref(false)
+const isExportingQuestions = ref(false)
+const allInOneStatus = ref({ hasModel: false, checking: true })
+const questionPreviewVisible = ref(false)
+const questionPreviewData = ref(null)
 
 const decks = ref({})
 const currentDeck = ref(null)
@@ -1466,9 +1488,10 @@ function stopOllamaInfoPolling() {
 }
 
 // Handler para o novo componente GenerateModal
-function onGenerateModalConfirm({ quantityMode: qMode, numCards, customPrompts: prompts }) {
+function onGenerateModalConfirm({ quantityMode: qMode, numCards, cardType: cType, customPrompts: prompts }) {
   numCardsEnabled.value = (qMode === 'manual')
   numCardsSlider.value = numCards
+  if (cType) cardType.value = cType
   if (prompts) customPrompts.value = prompts
   generateModalVisible.value = false
   generateCardsFromSelection()
@@ -2199,7 +2222,7 @@ async function performTopicSegmentation(text) {
         return {
           start: s.start,
           end: s.end,
-          color: topic?.color || '#e5e7eb'
+          color: topic?.color || 'var(--app-text)'
         }
       })
       console.log('[TopicSegmentation] Applying', highlightData.length, 'highlights')
@@ -2504,8 +2527,7 @@ async function generateCardsFromSelection() {
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      numCardsEnabled.value ? numCardsSlider.value : null,
-      isExamMode.value
+      numCardsEnabled.value ? numCardsSlider.value : null
     )
 
     addLog(`Generated ${newCards.length} cards successfully`, 'success')
@@ -2531,6 +2553,193 @@ async function generateCardsFromSelection() {
     generating.value = false
     progressVisible.value = false
   }
+}
+
+// ============================================================
+// Questions Generation (AllInOne kprim, mc, sc)
+// ============================================================
+function openQuestionGenerateModal() {
+  showQuestionGenerateModal.value = true
+}
+
+async function handleGenerateQuestions(params) {
+  const { textSource, questionType, numQuestions, domain, model } = params
+
+  try {
+    isGeneratingQuestions.value = true
+    showQuestionGenerateModal.value = false
+
+    // Determine text to use
+    let text = ''
+    if (textSource === 'selection' && selectedText.value) {
+      text = selectedText.value
+    } else {
+      text = lastFullText.value
+    }
+
+    if (!text || text.trim().length < 50) {
+      notify('Texto insuficiente para gerar questões', 'warn')
+      return
+    }
+
+    progressVisible.value = true
+    progressStage.value = 'Gerando questões...'
+    progressPct.value = 10
+
+    const questions = await generateQuestionsStream({
+      text: text,
+      textContext: documentContext.value || '',
+      questionType: questionType,
+      numQuestions: numQuestions,
+      model: model,
+      domain: domain,
+      apiKeys: getStoredApiKeys()
+    }, (progress) => {
+      console.log('[Questions] Progress:', progress)
+      if (progress.event === 'generating') {
+        progressStage.value = 'Chamando modelo...'
+        progressPct.value = 30
+      } else if (progress.event === 'parsing') {
+        progressStage.value = 'Parseando questões...'
+        progressPct.value = 70
+      } else if (progress.event === 'parsed') {
+        progressStage.value = `${progress.data.count} questões geradas`
+        progressPct.value = 90
+      }
+    })
+
+    if (questions && questions.length > 0) {
+      questionCards.value = [...questionCards.value, ...questions]
+      notify(`${questions.length} questões geradas!`, 'success')
+      schedulePersistActiveSession()
+    } else {
+      notify('Nenhuma questão foi gerada', 'warn')
+    }
+
+    progressPct.value = 100
+    progressStage.value = 'Concluído!'
+
+  } catch (error) {
+    console.error('Error generating questions:', error)
+    notify('Erro ao gerar questões: ' + (error?.message || String(error)), 'error')
+  } finally {
+    isGeneratingQuestions.value = false
+    progressVisible.value = false
+  }
+}
+
+async function handleParseQuestions(params) {
+  const { text, model } = params
+
+  try {
+    isGeneratingQuestions.value = true
+    showQuestionGenerateModal.value = false
+
+    if (!text || text.trim().length < 50) {
+      notify('Texto insuficiente para interpretar', 'warn')
+      return
+    }
+
+    progressVisible.value = true
+    progressStage.value = 'Interpretando questões...'
+    progressPct.value = 10
+
+    const questions = await parseQuestionsStream({
+      text: text,
+      model: model,
+      apiKeys: getStoredApiKeys()
+    }, (progress) => {
+      console.log('[Questions] Parse Progress:', progress)
+      if (progress.event === 'parsing') {
+        progressStage.value = 'Chamando modelo...'
+        progressPct.value = 40
+      } else if (progress.event === 'parsed') {
+        progressStage.value = `${progress.data.count} questões identificadas`
+        progressPct.value = 90
+      }
+    })
+
+    if (questions && questions.length > 0) {
+      questionCards.value = [...questionCards.value, ...questions]
+      notify(`${questions.length} questões interpretadas!`, 'success')
+      schedulePersistActiveSession()
+    } else {
+      notify('Nenhuma questão identificada no texto', 'warn')
+    }
+
+    progressPct.value = 100
+    progressStage.value = 'Concluído!'
+
+  } catch (error) {
+    console.error('Error parsing questions:', error)
+    notify('Erro ao interpretar questões: ' + (error?.message || String(error)), 'error')
+  } finally {
+    isGeneratingQuestions.value = false
+    progressVisible.value = false
+  }
+}
+
+function deleteQuestion(index) {
+  questionCards.value.splice(index, 1)
+  notify('Questão removida', 'info')
+  schedulePersistActiveSession()
+}
+
+function openQuestionPreview(index) {
+  questionPreviewData.value = questionCards.value[index]
+  questionPreviewVisible.value = true
+}
+
+function openQuestionExportDialog() {
+  showQuestionExportDialog.value = true
+}
+
+async function checkAllInOneModelStatus() {
+  try {
+    allInOneStatus.value = { hasModel: false, checking: true }
+    const result = await checkAllInOneModel()
+    allInOneStatus.value = {
+      hasModel: result.hasModel,
+      checking: false,
+      fields: result.fields,
+      installUrl: result.installUrl
+    }
+  } catch (error) {
+    console.error('Error checking AllInOne model:', error)
+    allInOneStatus.value = { hasModel: false, checking: false }
+  }
+}
+
+async function handleExportQuestions(params) {
+  const { questions, deckName, tags } = params
+
+  try {
+    isExportingQuestions.value = true
+
+    const result = await uploadQuestionsToAnki({
+      questions: questions,
+      deckName: deckName,
+      tags: tags
+    })
+
+    if (result.success) {
+      notify(`${result.totalSuccess}/${result.totalQuestions} questões exportadas para Anki!`, 'success')
+      showQuestionExportDialog.value = false
+    } else {
+      notify('Falha ao exportar questões', 'error')
+    }
+  } catch (error) {
+    console.error('Error exporting questions:', error)
+    notify('Erro ao exportar: ' + (error?.message || String(error)), 'error')
+  } finally {
+    isExportingQuestions.value = false
+  }
+}
+
+function clearAllQuestions() {
+  questionCards.value = []
+  notify('Todas as questões removidas', 'info')
+  schedulePersistActiveSession()
 }
 
 // ============================================================
@@ -2700,8 +2909,7 @@ async function editGenerateCardConfirm() {
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      null, // numCards
-      isExamMode.value
+      null // numCards
     )
 
     newCards.forEach(card => {
@@ -2775,44 +2983,7 @@ function previewText(text, max = 260) {
 // Export Markdown
 // ============================================================
 function exportAsMarkdown() {
-  if (!cards.value.length) {
-    notify('No cards to export', 'info')
-    return
-  }
-
-  let markdown = `# Flashcards - ${new Date().toLocaleDateString()}\n\n`
-  const deckGroups = {}
-
-  cards.value.forEach((card) => {
-    const d = card.deck || 'General'
-    if (!deckGroups[d]) deckGroups[d] = []
-    deckGroups[d].push(card)
-  })
-
-  for (const [deckName, arr] of Object.entries(deckGroups)) {
-    markdown += `## ${deckName}\n\n`
-    arr.forEach((card, idx) => {
-      markdown += `### Card ${idx + 1}\n\n`
-      markdown += `**Question:** ${card.front}\n\n`
-      markdown += `---\n\n`
-      markdown += `**Answer:** ${card.back}\n\n`
-    })
-  }
-
-  const blob = new Blob([markdown], { type: 'text/markdown' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `flashcards-${new Date().toISOString().slice(0, 10)}.md`
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  setTimeout(() => {
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }, 100)
-
-  notify(`${cards.value.length} cards exportados em markdown`, 'success')
+  exportCardsAsMarkdown(cards.value, notify)
 }
 
 // ============================================================
@@ -2846,8 +3017,8 @@ function exportTextAs(format = 'txt') {
   <title>Documento - ${now}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; }
-    .cloze { background: #fef08a; padding: 2px 4px; border-radius: 3px; }
-    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    .cloze { background: var(--export-markdown-cloze-bg); padding: 2px 4px; border-radius: 3px; }
+    code { background: var(--export-markdown-code-bg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
   </style>
 </head>
 <body>
@@ -2862,19 +3033,8 @@ ${html}
     filename = `documento-${now}.txt`
     mimeType = 'text/plain'
   }
-  
-  const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  setTimeout(() => {
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }, 100)
+
+  downloadTextFile(content, filename, mimeType)
   
   notify(`Texto exportado como ${format.toUpperCase()}`, 'success')
 }
@@ -3184,11 +3344,11 @@ const sidebarMenuItems = computed(() => [
     key: 'sessions',
     label: 'Sessões',
     icon: 'pi pi-history',
-    iconColor: '#8B5CF6',
+    iconColor: colorTokens.primary,
     badge: sessions.value.length,
     tooltip: 'Gerenciar sessões de estudo',
     submenu: [
-      { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: '#10B981', command: newSession },
+      { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: colorTokens.success, command: newSession },
       { separator: true },
       ...sessions.value
         .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
@@ -3197,59 +3357,59 @@ const sidebarMenuItems = computed(() => [
           label: `${s.title}`,
           sublabel: formatSessionStamp(s.updatedAt),
           icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
-          iconColor: s.id === activeSessionId.value ? '#10B981' : '#64748B',
+          iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
           active: s.id === activeSessionId.value,
           command: () => restoreSessionById(s.id)
         })),
-      ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: '#64748B', disabled: true }] : []),
+      ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: colorTokens.neutral, disabled: true }] : []),
       { separator: true },
-      { label: 'Limpar sessão atual', icon: 'pi pi-refresh', iconColor: '#F59E0B', command: clearCurrentSession },
-      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: '#EF4444', danger: true, command: () => { clearAllSessions(); clearCurrentSession() } }
+      { label: 'Limpar sessão atual', icon: 'pi pi-refresh', iconColor: colorTokens.warning, command: clearCurrentSession },
+      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: () => { clearAllSessions(); clearCurrentSession() } }
     ]
   },
   {
     key: 'cards',
     label: 'Cards',
     icon: 'pi pi-clone',
-    iconColor: '#10B981',
+    iconColor: colorTokens.success,
     badge: cards.value.length,
     tooltip: 'Gerenciar flashcards gerados',
     submenu: [
-      { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: '#3B82F6', disabled: !cards.value.length, command: exportToAnkiOpenConfig },
-      { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: '#8B5CF6', disabled: !cards.value.length, command: exportAsMarkdown },
+      { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: colorTokens.info, disabled: !cards.value.length, command: exportToAnkiOpenConfig },
+      { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: colorTokens.primary, disabled: !cards.value.length, command: exportAsMarkdown },
       { separator: true },
-      { label: 'Limpar Cards', icon: 'pi pi-trash', iconColor: '#EF4444', danger: true, disabled: !cards.value.length, command: clearAllCards }
+      { label: 'Limpar Cards', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, disabled: !cards.value.length, command: clearAllCards }
     ]
   },
   {
     key: 'config',
     label: 'Configurações',
     icon: 'pi pi-cog',
-    iconColor: '#64748B',
+    iconColor: colorTokens.neutral,
     tooltip: 'Ajustes e preferências',
     submenu: [
-      { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: '#10B981', command: openModelSelection },
+      { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: colorTokens.success, command: openModelSelection },
       {
         label: 'Prompts de Geração',
         icon: 'pi pi-file-edit',
-        iconColor: '#8B5CF6',
+        iconColor: colorTokens.primary,
         command: openPromptSettings,
         badge: hasCustomPromptsSaved.value ? '✓' : null,
-        badgeColor: '#8B5CF6'
+        badgeColor: colorTokens.primary
       },
-      { label: 'Chaves de API', icon: 'pi pi-key', iconColor: '#F59E0B', command: openApiKeys }
+      { label: 'Chaves de API', icon: 'pi pi-key', iconColor: colorTokens.warning, command: openApiKeys }
     ]
   },
   { separator: true },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: '#3B82F6', tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: '#F59E0B', tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
-  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: '#EF4444', tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: colorTokens.info, tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
+  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: colorTokens.warning, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
+  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: colorTokens.danger, tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
 ])
 
 // Footer actions para o sidebar
 const sidebarFooterActions = computed(() => [
   { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: 'pi pi-moon', tooltip: 'Tema', command: () => notify('Tema alternativo em breve!', 'info') }
+  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
 ])
 
 // ============================================================
@@ -3291,8 +3451,18 @@ function contextRemoveHighlight() {
   editorRef.value?.clearHighlight?.()
 }
 
+function resolveColorToken(color) {
+  if (typeof color !== 'string') return color
+  if (!color.startsWith('var(')) return color
+  const match = color.match(/--[^)]+/)
+  const token = match ? match[0] : ''
+  if (!token || typeof window === 'undefined') return color
+  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  return value || color
+}
+
 function contextMark(color) {
-  editorRef.value?.formatBackground?.(color)
+  editorRef.value?.formatBackground?.(resolveColorToken(color))
 }
 
 const contextMenuModel = computed(() => [
@@ -3300,12 +3470,12 @@ const contextMenuModel = computed(() => [
     label: 'Marcar texto',
     disabled: !contextHasSelection.value,
     items: [
-      { label: 'Amarelo', command: () => contextMark('#fef08a') },
-      { label: 'Verde', command: () => contextMark('#bbf7d0') },
-      { label: 'Azul', command: () => contextMark('#bfdbfe') },
-      { label: 'Rosa', command: () => contextMark('#fbcfe8') },
-      { label: 'Roxo', command: () => contextMark('#ddd6fe') },
-      { label: 'Laranja', command: () => contextMark('#fed7aa') }
+      { label: 'Amarelo', command: () => contextMark('var(--highlight-palette-yellow)') },
+      { label: 'Verde', command: () => contextMark('var(--highlight-palette-green)') },
+      { label: 'Azul', command: () => contextMark('var(--highlight-palette-blue)') },
+      { label: 'Rosa', command: () => contextMark('var(--highlight-palette-pink)') },
+      { label: 'Roxo', command: () => contextMark('var(--highlight-palette-purple)') },
+      { label: 'Laranja', command: () => contextMark('var(--highlight-palette-orange)') }
     ]
   },
   { label: 'Remover marcação', disabled: !contextHasHighlight.value, command: contextRemoveHighlight },
@@ -3459,6 +3629,8 @@ function onDocumentError(error) {
 // ============================================================
 const hasSelection = computed(() => (selectedText.value || '').trim().length > 0)
 const hasCards = computed(() => cards.value.length > 0)
+const hasQuestions = computed(() => questionCards.value.length > 0)
+const hasAnyOutput = computed(() => hasCards.value || hasQuestions.value)
 
 // Verifica se há conteúdo disponível para geração (seleção, highlights ou texto)
 const canGenerate = computed(() => {
@@ -3495,11 +3667,6 @@ watch(
 )
 
 watch(documentContext, () => {
-  if (isRestoringSession.value) return
-  schedulePersistActiveSession()
-})
-
-watch(isExamMode, () => {
   if (isRestoringSession.value) return
   schedulePersistActiveSession()
 })
@@ -3724,9 +3891,18 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="header-badges">
-            <Tag class="pill subtle">
-              <i class="pi pi-book mr-2" /> Leitura
-            </Tag>
+            <div class="editor-switch" title="Modo Zen">
+              <span class="editor-switch-label">
+                <i class="pi pi-bullseye" />
+                Modo Zen
+              </span>
+              <InputSwitch
+                class="zen-switch"
+                :modelValue="immersiveReader"
+                @update:modelValue="setReaderEnabled"
+                title="Sair do Modo Zen (Esc)"
+              />
+            </div>
             <Tag class="pill subtle" :title="usePdfPagination ? 'Páginas do PDF original' : 'Páginas virtuais'">
               <i :class="usePdfPagination ? 'pi pi-file-pdf mr-2' : 'pi pi-file mr-2'" /> 
               Página {{ readerPage }} / {{ readerTotalPages }}
@@ -3872,24 +4048,6 @@ onBeforeUnmount(() => {
 
             <!-- Controles normais -->
             <template v-else>
-              <Button
-                icon="pi pi-book"
-                :label="immersiveReader ? 'Sair leitura' : 'Leitura'"
-                severity="secondary"
-                outlined
-                @click="toggleReader"
-                title="Ativar modo leitura"
-              />
-
-              <Button
-                :icon="showLineNumbers ? 'pi pi-list' : 'pi pi-align-left'"
-                severity="secondary"
-                :outlined="showLineNumbers"
-                :text="!showLineNumbers"
-                rounded
-                @click="showLineNumbers = !showLineNumbers"
-                :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
-              />
 
               <!-- Document Upload Button -->
               <DocumentUpload
@@ -3897,66 +4055,11 @@ onBeforeUnmount(() => {
                 @error="onDocumentError"
               />
 
-              <Select
-                v-model="cardType"
-                :options="cardTypeOptions"
-                optionLabel="label"
-                optionValue="value"
-                class="cardtype"
-                :disabled="generating || isAnalyzing"
-              >
-                <template #option="{ option }">
-                  <div class="card-type-item">
-                    <i class="pi pi-fw pi-book cardtype-icon" aria-hidden="true" />
-                    <div class="ct-body">
-                      <div class="ct-label">{{ option.label }}</div>
-                      <div class="ct-desc">{{ option.description }}</div>
-                    </div>
-                  </div>
-                </template>
-
-                <template #value="{ value }">
-                  <div class="card-type-selected">
-                    <i class="pi pi-fw pi-book cardtype-icon" aria-hidden="true" />
-                    <span class="ct-label">{{ (cardTypeOptions.find(o => o.value === value) || {}).label }}</span>
-                  </div>
-                </template>
-              </Select>
-
-              <!-- Exam Mode Toggle -->
-              <div class="exam-mode-toggle flex items-center gap-2">
-                <Checkbox
-                  v-model="isExamMode"
-                  inputId="examMode"
-                  :binary="true"
-                  :disabled="generating || isAnalyzing"
-                />
-                <label
-                  for="examMode"
-                  class="cursor-pointer select-none text-sm whitespace-nowrap"
-                  :class="{ 'opacity-50': generating || isAnalyzing }"
-                >
-                  <i class="pi pi-book mr-1" />
-                  Simulado
-                </label>
-                <Button
-                  v-if="isExamMode"
-                  icon="pi pi-info-circle"
-                  severity="secondary"
-                  text
-                  rounded
-                  size="small"
-                  class="p-0 w-6 h-6"
-                  @click="showExamModeInfo = true"
-                  v-tooltip.top="'Como funciona o modo simulado'"
-                />
-              </div>
-
               <!-- Analyze Button -->
               <Button
-                icon="pi pi-search-plus"
+                icon="pi pi-eye"
                 label="Analisar"
-                class="p-button-outlined"
+                class="btn-shine"
                 :disabled="!canGenerate || generating || isAnalyzing"
                 :loading="isAnalyzing"
                 title="Analisar texto para melhorar a qualidade dos cards gerados"
@@ -3973,6 +4076,15 @@ onBeforeUnmount(() => {
                 @click="openGenerateModal"
               />
 
+              <Button
+                icon="pi pi-question-circle"
+                label="Questões"
+                class="btn-shine"
+                :disabled="!canGenerate || isGeneratingQuestions"
+                :loading="isGeneratingQuestions"
+                title="Gerar questões AllInOne (kprim, mc, sc)"
+                @click="openQuestionGenerateModal"
+              />
 
             </template>
           </div>
@@ -4006,6 +4118,32 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="panel-actions">
+                <!-- Modo Zen + números de linha (movidos do header) -->
+                <div class="editor-zen-group">
+                  <div class="editor-switch" title="Ativar Modo Zen">
+                    <span class="editor-switch-label">
+                      <i class="pi pi-bullseye" />
+                      Modo Zen
+                    </span>
+                    <InputSwitch
+                      class="zen-switch"
+                      :modelValue="immersiveReader"
+                      @update:modelValue="setReaderEnabled"
+                      :title="immersiveReader ? 'Sair do Modo Zen (Esc)' : 'Ativar Modo Zen'"
+                    />
+                  </div>
+                  <div class="editor-switch" title="Mostrar/ocultar números de linha">
+                    <span class="editor-switch-label">
+                      <i class="pi pi-list" />
+                      Nº de linhas
+                    </span>
+                    <InputSwitch
+                      class="line-switch"
+                      v-model="showLineNumbers"
+                      :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
+                    />
+                  </div>
+                </div>
                 <!-- Undo/Redo do Editor -->
                 <div class="editor-undo-redo">
                   <Button
@@ -4402,7 +4540,7 @@ onBeforeUnmount(() => {
             </Transition>
 
             <div class="panel-body output-body">
-              <div v-if="!hasCards" class="empty-state">
+              <div v-if="!hasAnyOutput" class="empty-state">
                 <div class="empty-icon">✨</div>
                 <div class="empty-title">Nenhum card ainda</div>
                 <div class="empty-subtitle">
@@ -4421,7 +4559,54 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <DataView v-else :value="hierarchicalCards" layout="list" class="cards-view">
+              <!-- Questions Section -->
+              <div v-if="hasQuestions" class="questions-section">
+                <div class="section-header">
+                  <div class="section-title">
+                    <i class="pi pi-question-circle mr-2" />
+                    Questões ({{ questionCards.length }})
+                  </div>
+                  <div class="section-actions">
+                    <Button
+                      icon="pi pi-send"
+                      label="Exportar Questões"
+                      size="small"
+                      outlined
+                      @click="openQuestionExportDialog"
+                    />
+                    <Button
+                      icon="pi pi-trash"
+                      severity="danger"
+                      text
+                      size="small"
+                      @click="clearAllQuestions"
+                      title="Limpar todas as questões"
+                    />
+                  </div>
+                </div>
+                <div class="questions-list">
+                  <QuestionCardItem
+                    v-for="(q, idx) in questionCards"
+                    :key="q.id || idx"
+                    :question="q"
+                    :index="idx"
+                    @delete="deleteQuestion"
+                    @preview="openQuestionPreview"
+                  />
+                </div>
+              </div>
+
+              <!-- Cards Section -->
+              <div v-if="hasCards" class="cards-section">
+                <div v-if="hasQuestions" class="section-header">
+                  <div class="section-title">
+                    <i class="pi pi-clone mr-2" />
+                    Flashcards ({{ cards.length }})
+                  </div>
+                </div>
+              </div>
+
+              <DataView v-if="hasCards" :value="hierarchicalCards" layout="list" class="cards-view">
                 <template #list="{ items }">
                   <div class="cards-list">
                     <template v-for="(item, i) in items" :key="i">
@@ -4596,6 +4781,7 @@ onBeforeUnmount(() => {
       :getProviderSeverity="getProviderSeverity"
       :getProviderLabel="getProviderLabel"
       @update:numCardsSlider="numCardsSlider = $event"
+      @update:cardType="cardType = $event"
       @customPromptsUpdate="onCustomPromptsUpdate"
       @confirm="onGenerateModalConfirm"
     />
@@ -4695,11 +4881,6 @@ onBeforeUnmount(() => {
       @complete="onIntroComplete"
     />
 
-    <!-- EXAM MODE INFO DIALOG -->
-    <ExamModeInfoDialog
-      v-model:visible="showExamModeInfo"
-    />
-
     <!-- OLLAMA MODEL SELECTION (fallback) -->
     <OllamaSelectionDialog
       v-model:visible="ollamaModelSelectionVisible"
@@ -4743,6 +4924,50 @@ onBeforeUnmount(() => {
       :initialTags="ankiTags"
       @export="onAnkiExport"
     />
+
+    <!-- QUESTION GENERATE MODAL -->
+    <QuestionGenerateModal
+      v-model:visible="showQuestionGenerateModal"
+      :selectedModel="selectedModel"
+      :currentModelInfo="currentModelInfo"
+      :generating="isGeneratingQuestions"
+      :hasSelectedText="!!selectedText"
+      :selectedTextLength="selectedText?.length || 0"
+      :fullTextLength="lastFullText?.length || 0"
+      :getModelInfo="getModelInfo"
+      :getProviderSeverity="getProviderSeverity"
+      :getProviderLabel="getProviderLabel"
+      @generate="handleGenerateQuestions"
+      @parse="handleParseQuestions"
+    />
+
+    <!-- QUESTION EXPORT DIALOG -->
+    <QuestionExportDialog
+      v-model:visible="showQuestionExportDialog"
+      :questions="questionCards"
+      :ankiDecks="ankiModelsData?.decks || []"
+      :allTags="ankiAllTags"
+      :exporting="isExportingQuestions"
+      :allInOneStatus="allInOneStatus"
+      @export="handleExportQuestions"
+      @checkModel="checkAllInOneModelStatus"
+    />
+
+    <!-- QUESTION PREVIEW DIALOG -->
+    <Dialog
+      v-model:visible="questionPreviewVisible"
+      header="Preview da Questão"
+      modal
+      class="modern-dialog"
+      style="width: min(720px, 96vw);"
+    >
+      <QuizInteractive
+        v-if="questionPreviewData"
+        :question="questionPreviewData"
+        :compact="false"
+        :showActions="true"
+      />
+    </Dialog>
   </div>
 </template>
 
@@ -4762,15 +4987,9 @@ onBeforeUnmount(() => {
   border-radius: 24px;
   overflow: hidden;
   transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.22), transparent 55%),
-    radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.16), transparent 60%),
-    radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.12), transparent 55%),
-    linear-gradient(180deg, rgba(17, 24, 39, 0.95), rgba(10, 10, 12, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-border);
+  box-shadow: var(--shell-shadow);
 }
 
 .app-shell.sidebar-expanded {
@@ -4795,19 +5014,38 @@ onBeforeUnmount(() => {
   padding: 12px 16px;
   backdrop-filter: blur(16px);
   border-radius: 24px 24px 0 0;
-  background: rgba(17, 24, 39, 0.5);
+  background: var(--header-bg);
 }
 
 :deep(.p-toolbar) {
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--header-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.app-header :deep(.p-toolbar-group-left),
+.app-header :deep(.p-toolbar-group-right) {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-header :deep(.p-toolbar-group-right) {
+  justify-content: flex-end;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 16px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .brand {
@@ -4844,17 +5082,16 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .controls {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.cardtype {
-  width: 11rem;
-  min-width: 10rem;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .hdr-divider {
@@ -4862,17 +5099,106 @@ onBeforeUnmount(() => {
   opacity: 0.5;
 }
 
+.menu-toggle {
+  width: 40px;
+  height: 40px;
+}
+
+@media (max-width: 1200px) {
+  .app-header {
+    padding: 10px 12px;
+  }
+  .header-left,
+  .header-right {
+    gap: 10px;
+  }
+  .header-badges {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .status-wrap {
+    display: none;
+  }
+  .controls {
+    gap: 6px;
+  }
+  .menu-toggle {
+    width: 36px;
+    height: 36px;
+  }
+  .app-header :deep(.p-button) {
+    padding: 0.4rem 0.6rem;
+  }
+}
+
+/* CTA Create Cards - verde da logo #28ca73 com efeito de reflexo */
 :deep(.cta.p-button) {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  border: none;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+  position: relative;
+  background: #28ca73 !important;
+  border: 1px solid #22b866 !important;
+  color: #ffffff !important;
   font-weight: 700;
-  transition: all 0.2s ease;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+:deep(.cta.p-button)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transition: left 0.5s ease;
+  pointer-events: none;
+}
+
+:deep(.cta.p-button:hover)::before {
+  left: 100%;
 }
 
 :deep(.cta.p-button:hover) {
+  background: #22b866 !important;
+  border-color: #1da55a !important;
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
+}
+
+/* Botão secundário premium - verde da logo #28ca73 */
+:deep(.btn-shine.p-button) {
+  position: relative;
+  background: #28ca73 !important;
+  border: 1px solid #22b866 !important;
+  color: #ffffff !important;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+:deep(.btn-shine.p-button)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transition: left 0.5s ease;
+  pointer-events: none;
+}
+
+:deep(.btn-shine.p-button:hover)::before {
+  left: 100%;
+}
+
+:deep(.btn-shine.p-button:hover) {
+  background: #22b866 !important;
+  border-color: #1da55a !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
 }
 
 @media (max-width: 768px) {
@@ -4902,21 +5228,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   border-radius: 20px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.65) 0%, rgba(15, 23, 42, 0.75) 100%);
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
   backdrop-filter: blur(16px);
-  box-shadow: 
-    0 8px 24px rgba(0, 0, 0, 0.2),
-    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  box-shadow: var(--panel-shadow);
   overflow: hidden;
   transition: box-shadow 0.3s ease, border-color 0.3s ease;
 }
 
 .panel:hover {
-  border-color: rgba(148, 163, 184, 0.18);
-  box-shadow: 
-    0 12px 32px rgba(0, 0, 0, 0.25),
-    0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  border-color: var(--panel-border-hover);
+  box-shadow: var(--panel-shadow-hover);
 }
 
 .panel-head {
@@ -4925,8 +5247,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
-  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--panel-head-border);
+  background: var(--panel-head-bg);
 }
 
 .panel-title {
@@ -4955,7 +5277,7 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 :deep(.p-splitter-gutter-handle) {
-  background: rgba(148, 163, 184, 0.28);
+  background: var(--app-border);
   border-radius: 999px;
 }
 
@@ -4971,11 +5293,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(17, 24, 39, 0.95);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--searchbar-bg);
+  border: 1px solid var(--searchbar-border);
   border-radius: 12px;
   backdrop-filter: blur(12px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--searchbar-shadow);
 }
 
 .search-input-wrap {
@@ -4986,7 +5308,7 @@ onBeforeUnmount(() => {
 }
 
 .search-input-wrap .search-icon {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--searchbar-icon);
   font-size: 14px;
 }
 
@@ -4995,22 +5317,22 @@ onBeforeUnmount(() => {
   height: 32px;
   padding: 0 8px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: var(--searchbar-input-bg);
+  border: 1px solid var(--searchbar-input-border);
   font-size: 13px;
   color: inherit;
 }
 
 .editor-search-bar .search-input:focus {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  background: var(--searchbar-input-focus-bg);
+  border-color: var(--searchbar-input-focus-border);
+  box-shadow: var(--searchbar-input-focus-ring);
 }
 
 .search-results-label {
   font-size: 12px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--searchbar-label);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -5046,9 +5368,9 @@ onBeforeUnmount(() => {
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  color: rgba(255, 255, 255, 0.8);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  color: var(--chip-text);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -5058,16 +5380,16 @@ onBeforeUnmount(() => {
 }
 
 .search-toggle:hover {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(99, 102, 241, 0.4);
-  color: rgba(99, 102, 241, 0.9);
+  background: var(--chip-hover-bg);
+  border-color: var(--chip-hover-border);
+  color: var(--chip-hover-text);
   transform: scale(1.05);
 }
 
 .search-wrap.expanded .search-toggle {
-  background: rgba(99, 102, 241, 0.15);
-  border-color: rgba(99, 102, 241, 0.5);
-  color: rgba(99, 102, 241, 1);
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+  color: var(--chip-active-text);
 }
 
 .search {
@@ -5076,8 +5398,8 @@ onBeforeUnmount(() => {
   padding: 0;
   height: 40px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   font-size: 14px;
 }
@@ -5089,13 +5411,13 @@ onBeforeUnmount(() => {
 }
 
 .search:focus {
-  background: rgba(255, 255, 255, 0.09);
-  border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  background: var(--chip-hover-bg);
+  border-color: var(--chip-active-border);
+  box-shadow: var(--searchbar-input-focus-ring);
 }
 
 .search::placeholder {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--searchbar-placeholder);
   font-weight: 500;
 }
 
@@ -5131,6 +5453,48 @@ onBeforeUnmount(() => {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: center;
+}
+
+/* =========================
+   Questions Section
+========================= */
+.questions-section {
+  margin-bottom: 20px;
+}
+
+.questions-section .section-header,
+.cards-section .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--section-bg);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--section-title);
+}
+
+.section-title i {
+  color: var(--p-primary-color);
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.questions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 /* =========================
@@ -5196,8 +5560,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--selection-bg);
+  border: 1px solid var(--selection-border);
   border-radius: 12px;
   margin: 0 12px 12px 12px;
   backdrop-filter: blur(8px);
@@ -5212,7 +5576,7 @@ onBeforeUnmount(() => {
 .selection-count {
   font-weight: 700;
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--selection-text);
 }
 
 .selection-actions {
@@ -5226,9 +5590,9 @@ onBeforeUnmount(() => {
 }
 
 .card-item.card-selected :deep(.p-card) {
-  border: 2px solid rgba(99, 102, 241, 0.7);
-  background: rgba(99, 102, 241, 0.08);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  border: 2px solid var(--selection-card-border);
+  background: var(--selection-card-bg);
+  box-shadow: var(--selection-card-ring);
 }
 
 /* Slide up animation para selection bar */
@@ -5247,7 +5611,7 @@ onBeforeUnmount(() => {
    Highlight de busca
 ========================= */
 :deep(.search-highlight) {
-  background: linear-gradient(135deg, rgba(251, 191, 36, 0.4) 0%, rgba(245, 158, 11, 0.4) 100%);
+  background: var(--highlight-bg);
   padding: 1px 4px;
   border-radius: 4px;
   font-weight: 700;
@@ -5279,11 +5643,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 12px;
   padding-left: 16px;
-  border-left: 3px solid rgba(99, 102, 241, 0.3);
+  border-left: 3px solid var(--selection-border);
 }
 .card-item.card-child :deep(.p-card) {
-  background: rgba(99, 102, 241, 0.04);
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  background: var(--card-child-bg);
+  border: 1px solid var(--card-child-border);
 }
 .children-enter-active,
 .children-leave-active {
@@ -5332,8 +5696,8 @@ onBeforeUnmount(() => {
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(148,163,184,0.18);
+  background: var(--deck-pill-bg);
+  border: 1px solid var(--deck-pill-border);
   font-weight: 800;
   font-size: 12px;
   opacity: 0.95;
@@ -5347,14 +5711,13 @@ onBeforeUnmount(() => {
   .preview-grid {
     grid-template-columns: 1fr;
   }
-  .cardtype { width: 100%; }
   .search-wrap { width: 100%; }
 }
 .preview-block {
   border-radius: 14px;
   padding: 10px 12px;
-  border: 1px solid rgba(148,163,184,0.14);
-  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--preview-border);
+  background: var(--preview-bg);
 }
 .preview-label {
   font-weight: 900;
@@ -5380,8 +5743,8 @@ onBeforeUnmount(() => {
 .md-preview :deep(code) {
   padding: 2px 6px;
   border-radius: 8px;
-  background: rgba(0,0,0,0.35);
-  border: 1px solid rgba(148,163,184,0.18);
+  background: var(--highlight-help-bg);
+  border: 1px solid var(--highlight-help-border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
 }
@@ -5397,8 +5760,8 @@ onBeforeUnmount(() => {
 .md-preview :deep(.cloze) {
   padding: 2px 6px;
   border-radius: 999px;
-  background: rgba(251, 191, 36, 0.18);
-  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: var(--cloze-bg);
+  border: 1px solid var(--cloze-border);
   font-weight: 900;
 }
 
@@ -5409,7 +5772,7 @@ onBeforeUnmount(() => {
 
 /* Edit Card Dialog - Enhanced */
 :deep(.edit-card-dialog) {
-  --edit-accent: rgba(99, 102, 241, 0.9);
+  --edit-accent: var(--edit-accent);
 }
 
 .edit-dialog-header {
@@ -5477,7 +5840,7 @@ onBeforeUnmount(() => {
   font-weight: 800;
   font-size: 14px;
   margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--edit-field-label);
 }
 
 .edit-field-header i {
@@ -5493,20 +5856,20 @@ onBeforeUnmount(() => {
   flex-direction: column;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--edit-quill-border);
+  background: var(--ghost-bg-strong);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .edit-card-quill:focus-within {
   border-color: var(--edit-accent);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  box-shadow: var(--searchbar-input-focus-ring);
 }
 
 .edit-card-quill :deep(.ql-toolbar) {
   border: none;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--edit-quill-toolbar-border);
+  background: var(--modal-surface-bg);
   padding: 6px 8px;
   flex-shrink: 0;
 }
@@ -5530,7 +5893,7 @@ onBeforeUnmount(() => {
 
 .edit-card-quill :deep(.ql-editor.ql-blank::before) {
   font-style: normal;
-  color: rgba(148, 163, 184, 0.5);
+  color: var(--input-muted);
 }
 
 /* AI Rewrite Section */
@@ -5538,8 +5901,8 @@ onBeforeUnmount(() => {
   margin-top: 20px;
   padding: 14px 16px;
   border-radius: 12px;
-  background: rgba(99, 102, 241, 0.06);
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: var(--edit-ai-bg);
+  border: 1px solid var(--edit-ai-border);
 }
 
 .edit-ai-header {
@@ -5549,11 +5912,11 @@ onBeforeUnmount(() => {
   font-weight: 700;
   font-size: 13px;
   margin-bottom: 12px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--edit-ai-label);
 }
 
 .edit-ai-header i {
-  color: #fbbf24;
+  color: var(--edit-ai-icon);
   font-size: 14px;
 }
 
@@ -5582,8 +5945,8 @@ onBeforeUnmount(() => {
 .md-preview {
   border-radius: 14px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.14);
-  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--preview-border);
+  background: var(--modal-surface-bg);
   min-height: 120px;
   font-size: 13.5px;
   line-height: 1.35;
@@ -5592,21 +5955,21 @@ onBeforeUnmount(() => {
 
 /* Dialogs */
 .api-info {
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  border: 1px solid var(--selection-border);
 }
 .model-info {
   padding: 10px 12px;
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid var(--modal-surface-border);
+  background: var(--modal-surface-bg);
   margin-bottom: 14px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.req { color: #ef4444; font-weight: 900; margin-left: 6px; }
+.req { color: var(--required-color); font-weight: 900; margin-left: 6px; }
 .opt { opacity: 0.7; margin-left: 6px; }
-.err { color: #ef4444; margin-top: 8px; font-weight: 800; }
+.err { color: var(--required-color); margin-top: 8px; font-weight: 800; }
 
 /* Logs */
 .logs-wrap {
@@ -5624,13 +5987,13 @@ onBeforeUnmount(() => {
   padding: 6px 8px;
   border-radius: 10px;
   margin-bottom: 6px;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(148, 163, 184, 0.10);
+  background: var(--log-bg);
+  border: 1px solid var(--log-border);
 }
 .log-ts { opacity: 0.7; white-space: nowrap; }
 .log-msg { opacity: 0.92; }
-.log-row.t-success { border-color: rgba(16, 185, 129, 0.25); }
-.log-row.t-error { border-color: rgba(239, 68, 68, 0.25); }
+.log-row.t-success { border-color: var(--log-success-border); }
+.log-row.t-error { border-color: var(--log-error-border); }
 
 /* Pills */
 .pill {
@@ -5643,7 +6006,7 @@ onBeforeUnmount(() => {
   margin-left: 4px;
   font-size: 0.75em;
   opacity: 0.8;
-  color: #ef4444;
+  color: var(--required-color);
   font-weight: 600;
 }
 
@@ -5682,8 +6045,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 6px 12px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(148, 163, 184, 0.15);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
 }
 
 .status-item {
@@ -5703,7 +6066,7 @@ onBeforeUnmount(() => {
 .status-sep {
   width: 1px;
   height: 16px;
-  background: rgba(148, 163, 184, 0.2);
+  background: var(--status-sep);
 }
 
 /* =========================
@@ -5712,16 +6075,16 @@ onBeforeUnmount(() => {
 :deep(.p-dialog.modern-dialog) {
   border-radius: 20px;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(17, 24, 39, 0.92);
+  border: 1px solid var(--dialog-border);
+  background: var(--dialog-bg);
   backdrop-filter: blur(14px);
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--dialog-shadow);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-header) {
   padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--dialog-header-bg);
+  border-bottom: 1px solid var(--dialog-surface-border);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-title) {
@@ -5736,25 +6099,25 @@ onBeforeUnmount(() => {
 
 :deep(.p-dialog.modern-dialog .p-dialog-footer) {
   padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.03);
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--dialog-footer-bg);
+  border-top: 1px solid var(--dialog-surface-border);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-header-icon) {
   width: 36px;
   height: 36px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
 }
 
 :deep(.p-dialog.modern-dialog .p-dialog-header-icon:hover) {
-  background: rgba(255, 255, 255, 0.10);
+  background: var(--ghost-bg-strong);
 }
 
 :deep(.p-dialog-mask) {
   backdrop-filter: blur(8px);
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--dialog-mask);
 }
 
 :deep(.modern-dialog .p-inputtext),
@@ -5768,8 +6131,8 @@ onBeforeUnmount(() => {
 :deep(.modern-dialog .p-textarea:focus),
 :deep(.modern-dialog .p-dropdown:not(.p-disabled).p-focus),
 :deep(.modern-dialog .p-select:not(.p-disabled).p-focus) {
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
-  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: var(--focus-ring);
+  border-color: var(--focus-border);
 }
 
 /* =========================
@@ -5779,9 +6142,7 @@ onBeforeUnmount(() => {
   background: var(--p-content-background);
   border-radius: 20px;
   overflow: hidden;
-  box-shadow:
-    0 25px 50px -12px rgba(0, 0, 0, 0.25),
-    0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: var(--gen-modal-shadow);
   animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -5798,8 +6159,8 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .p-dialog-header) {
   padding: 1.5rem 1.75rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.05) 100%);
+  border-bottom: 1px solid var(--gen-header-border);
+  background: var(--gen-header-bg);
   backdrop-filter: blur(20px);
   position: relative;
   overflow: hidden;
@@ -5812,7 +6173,7 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  background: var(--gen-header-line);
 }
 
 :deep(.generate-modal .p-dialog-content) {
@@ -5822,8 +6183,8 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .p-dialog-footer) {
   padding: 1.25rem 1.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, var(--p-content-background) 0%, rgba(99, 102, 241, 0.02) 100%);
+  border-top: 1px solid var(--gen-footer-border);
+  background: var(--gen-footer-bg);
 }
 
 :deep(.generate-modal .generate-modal-header) {
@@ -5836,28 +6197,24 @@ onBeforeUnmount(() => {
   width: 52px;
   height: 52px;
   border-radius: 16px;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  background: var(--gen-icon-bg);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow:
-    0 8px 16px -4px rgba(99, 102, 241, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: var(--gen-icon-shadow), var(--gen-icon-inset);
   position: relative;
   animation: iconPulse 2s ease-in-out infinite;
 }
 
 @keyframes iconPulse {
   0%, 100% {
-    box-shadow:
-      0 8px 16px -4px rgba(99, 102, 241, 0.4),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    box-shadow: var(--gen-icon-shadow), var(--gen-icon-inset);
   }
   50% {
     box-shadow:
-      0 8px 24px -4px rgba(99, 102, 241, 0.6),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      0 8px 24px -4px color-mix(in srgb, var(--color-primary) 60%, transparent),
+      var(--gen-icon-inset);
   }
 }
 
@@ -5866,14 +6223,14 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   border-radius: 16px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, transparent 50%);
+  background: var(--gen-icon-gloss);
   pointer-events: none;
 }
 
 :deep(.generate-modal .generate-modal-header .header-icon i) {
   font-size: 1.6rem;
-  color: white;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+  color: var(--app-text);
+  filter: drop-shadow(0 2px 4px color-mix(in srgb, var(--app-text) 30%, transparent));
 }
 
 :deep(.generate-modal .generate-modal-header .header-text h3) {
@@ -5899,7 +6256,7 @@ onBeforeUnmount(() => {
 
 :deep(.generate-modal .generate-section) {
   background: var(--p-content-background);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--gen-section-border);
   border-radius: 16px;
   padding: 1.25rem;
   position: relative;
@@ -5914,14 +6271,14 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  background: var(--gen-section-line);
   opacity: 0;
   transition: opacity 0.25s ease;
 }
 
 :deep(.generate-modal .generate-section:hover) {
-  border-color: rgba(99, 102, 241, 0.2);
-  box-shadow: 0 4px 24px -8px rgba(99, 102, 241, 0.15);
+  border-color: var(--gen-section-hover-border);
+  box-shadow: var(--gen-section-hover-shadow);
 }
 
 :deep(.generate-modal .generate-section:hover::before) {
@@ -5939,12 +6296,12 @@ onBeforeUnmount(() => {
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  background: var(--gen-section-icon-bg);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 4px 12px -2px rgba(99, 102, 241, 0.35);
+  box-shadow: var(--gen-section-icon-shadow);
   position: relative;
 }
 
@@ -5953,12 +6310,12 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, transparent 50%);
+  background: var(--gen-section-icon-gloss);
 }
 
 :deep(.generate-modal .section-icon.prompt-icon) {
-  background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
-  box-shadow: 0 4px 12px -2px rgba(16, 185, 129, 0.35);
+  background: var(--gen-section-icon-prompt-bg);
+  box-shadow: var(--gen-section-icon-prompt-shadow);
 }
 
 :deep(.generate-modal .section-icon i) {
@@ -6316,6 +6673,69 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.editor-zen-group{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-switch{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.45), rgba(15, 23, 42, 0.65));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+  backdrop-filter: blur(8px);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.editor-switch:hover{
+  transform: translateY(-1px);
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.25), 0 0 10px rgba(99, 102, 241, 0.18);
+}
+
+.editor-switch-label{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.9);
+  letter-spacing: 0.01em;
+}
+
+.editor-switch-label i{
+  font-size: 0.9rem;
+}
+
+.zen-switch:deep(.p-inputswitch-slider){
+  background: rgba(71, 85, 105, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
+}
+
+.zen-switch:deep(.p-inputswitch.p-highlight .p-inputswitch-slider){
+  background: linear-gradient(135deg, #a855f7, #6366f1);
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.45),
+    0 0 14px rgba(168, 85, 247, 0.35);
+}
+
+.line-switch:deep(.p-inputswitch-slider){
+  background: rgba(71, 85, 105, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
+}
+
+.line-switch:deep(.p-inputswitch.p-highlight .p-inputswitch-slider){
+  background: linear-gradient(135deg, #a855f7, #6366f1);
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.45),
+    0 0 14px rgba(168, 85, 247, 0.35);
 }
 
 .export-group{
@@ -7020,71 +7440,6 @@ onBeforeUnmount(() => {
   .float-total {
     font-size: 12px;
   }
-}
-
-/* Card type select styling */
-.cardtype {
-  --cardtype-bg: rgba(255,255,255,0.04);
-}
-.cardtype :deep(.p-dropdown){
-  min-width: auto;
-  height: 36px;
-}
-.cardtype :deep(.p-dropdown .p-dropdown-label){
-  line-height: 36px;
-  height: 36px;
-  display: inline-block;
-  padding-left: 8px;
-}
-.cardtype :deep(.p-dropdown-trigger){
-  height: 36px;
-}
-.cardtype :deep(.p-dropdown-panel){
-  background: rgba(17,24,39,0.98);
-  border: 1px solid rgba(148,163,184,0.12);
-  border-radius: 12px;
-  padding: 6px 6px;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.45);
-  min-width: 12rem;
-}
-.cardtype :deep(.p-dropdown-items .p-dropdown-item){
-  padding: 6px 8px;
-  border-radius: 8px;
-}
-.cardtype :deep(.p-dropdown-items .p-dropdown-item:hover){
-  background: rgba(99,102,241,0.10);
-}
-.cardtype :deep(.p-dropdown-items .p-dropdown-item.p-highlight){
-  background: rgba(99,102,241,0.14);
-}
-.card-type-item{
-  display:flex;
-  gap:0.5rem;
-  align-items:center;
-  padding:6px 8px;
-}
-.cardtype-icon{
-  font-size:0.92rem;
-  color:var(--primary-color, #90caf9);
-  margin-top:0;
-}
-.ct-label{
-  font-size:0.82rem;
-  font-weight:700;
-  line-height:1;
-}
-.ct-desc{
-  font-size:0.70rem;
-  color:rgba(255,255,255,0.58);
-  margin-top:2px;
-}
-.card-type-selected{
-  display:flex;
-  gap:0.5rem;
-  align-items:center;
-}
-.cardtype :deep(.p-dropdown-label), .cardtype .card-type-selected .ct-label{
-  font-size:0.9rem;
 }
 
 /* Model selection styling */

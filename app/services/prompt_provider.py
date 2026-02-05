@@ -28,10 +28,8 @@ class PromptProvider:
     Uso:
         provider = PromptProvider()  # Usa prompts padrão
         provider = PromptProvider(custom_prompts={"system": "...", "guidelines": "..."})  # Customizado
-        provider = PromptProvider(is_exam_mode=True)  # Modo simulado/prova
     """
     custom_prompts: Dict[str, str] = field(default_factory=dict)
-    is_exam_mode: bool = False  # Modo para textos de simulados/provas
     
     def flashcards_system(self, card_type: CardType) -> str:
         # Se há prompt customizado, usa ele
@@ -57,22 +55,11 @@ class PromptProvider:
         }[card_type]
 
     def flashcards_guidelines(self) -> str:
-        """Retorna as diretrizes de criação de cards (customizável).
-
-        Se is_exam_mode está ativo, adiciona diretrizes específicas para
-        textos de simulados/provas.
-        """
-        base_guidelines = (
+        """Retorna as diretrizes de criação de cards (customizável)."""
+        return (
             self.custom_prompts.get("guidelines")
             or PROMPTS["FLASHCARDS_GUIDELINES"]
         ).strip()
-
-        # Se modo de exame está ativo, adiciona diretrizes específicas
-        if self.is_exam_mode:
-            exam_additions = PROMPTS["FLASHCARDS_EXAM_MODE_ADDITIONAL_GUIDELINES"]
-            return f"{base_guidelines}\n\n{exam_additions}"
-
-        return base_guidelines
 
     def build_flashcards_generation_prompt(
         self,
@@ -86,11 +73,6 @@ class PromptProvider:
     ) -> str:
         # Agora o contexto vai dentro do XML, entao nao precisa do prefixo antigo
         ctx_block = (ctx or "").strip() or "Nenhum contexto adicional fornecido."
-
-        # Se modo de exame está ativo, prepende instruções específicas ao contexto
-        if self.is_exam_mode:
-            exam_instructions = PROMPTS["FLASHCARDS_EXAM_MODE_INSTRUCTIONS"]
-            ctx_block = f"{exam_instructions}\n\n{ctx_block}"
 
         # Se ha prompt de geracao customizado, usa ele
         if self.custom_prompts.get("generation"):
@@ -232,7 +214,6 @@ def get_prompt_provider(
     custom_system: Optional[str] = None,
     custom_generation: Optional[str] = None,
     custom_guidelines: Optional[str] = None,
-    is_exam_mode: bool = False,
 ) -> PromptProvider:
     """
     Factory para criar PromptProvider com suporte a customização.
@@ -241,7 +222,6 @@ def get_prompt_provider(
         custom_system: Prompt de sistema customizado (opcional)
         custom_generation: Template de geração customizado (opcional)
         custom_guidelines: Diretrizes customizadas (opcional)
-        is_exam_mode: Se True, ativa modo simulado/prova com instruções específicas
 
     Returns:
         PromptProvider configurado
@@ -254,4 +234,4 @@ def get_prompt_provider(
     if custom_guidelines:
         custom["guidelines"] = custom_guidelines
 
-    return PromptProvider(custom_prompts=custom, is_exam_mode=is_exam_mode)
+    return PromptProvider(custom_prompts=custom)

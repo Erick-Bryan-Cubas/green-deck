@@ -8,8 +8,9 @@ com suporte para multiplos formatos: PDF, DOCX, PPTX, XLSX, HTML, Markdown, Asci
 import logging
 import tempfile
 import os
+import asyncio
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -120,6 +121,25 @@ class DocumentPreviewResult:
             "filename": self.filename,
             "file_size": self.file_size,
             "format_type": self.format_type,
+            "error": self.error,
+        }
+
+
+@dataclass
+class PDFMetadataResult:
+    """Resultado dos metadados do PDF (carregamento rápido)."""
+    num_pages: int
+    file_size: int
+    filename: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "num_pages": self.num_pages,
+            "file_size": self.file_size,
+            "filename": self.filename,
+            "metadata": self.metadata,
             "error": self.error,
         }
 
@@ -256,6 +276,160 @@ class DocumentExtractor:
 
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             return len(pdf.pages)
+
+    def get_pdf_metadata(self, pdf_bytes: bytes, filename: str) -> PDFMetadataResult:
+        """
+        Obtem APENAS metadados do PDF de forma ultra-rapida (< 100ms).
+
+        Nao processa conteudo das paginas, apenas le headers do PDF.
+        Ideal para validar arquivo antes de processamento pesado.
+
+        Args:
+            pdf_bytes: Conteudo binario do PDF
+            filename: Nome do arquivo
+
+        Returns:
+            PDFMetadataResult com numero de paginas e metadados basicos
+        """
+        import pdfplumber
+        from io import BytesIO
+
+        try:
+            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                num_pages = len(pdf.pages)
+                raw_metadata = pdf.metadata or {}
+
+                # Extrair metadados relevantes
+                metadata = {
+                    "title": raw_metadata.get("Title", ""),
+                    "author": raw_metadata.get("Author", ""),
+                    "creator": raw_metadata.get("Creator", ""),
+                    "producer": raw_metadata.get("Producer", ""),
+                    "creation_date": str(raw_metadata.get("CreationDate", "")),
+                    "modification_date": str(raw_metadata.get("ModDate", "")),
+                }
+
+                logger.info(f"PDF metadata extraido: {filename} - {num_pages} paginas")
+
+                return PDFMetadataResult(
+                    num_pages=num_pages,
+                    file_size=len(pdf_bytes),
+                    filename=filename,
+                    metadata=metadata,
+                )
+
+        except Exception as e:
+            logger.exception(f"Erro ao obter metadados do PDF {filename}: {e}")
+            return PDFMetadataResult(
+                num_pages=0,
+                file_size=len(pdf_bytes),
+                filename=filename,
+                error=f"Erro ao ler PDF: {str(e)}",
+            )
+
+    def generate_pdf_thumbnails(
+        self,
+        pdf_bytes: bytes,
+        pages_str: str = "1-12",
+        width: int = 150,
+    ) -> List[Dict[str, Any]]:
+        """
+        Gera thumbnails de paginas especificas do PDF usando pymupdf.
+
+        Muito mais rapido que renderizar no frontend com pdfjs.
+        Retorna imagens em base64 para renderizacao imediata.
+
+        Args:
+            pdf_bytes: Conteudo binario do PDF
+            pages_str: Range de paginas ("1-12") ou lista ("1,5,10")
+            width: Largura do thumbnail em pixels
+
+        Returns:
+            Lista de dicts com {page, data (base64), width, height}
+        """
+        try:
+            import fitz  # pymupdf
+            import base64
+
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_pages = len(doc)
+            thumbnails = []
+
+            # Parse pages string
+            page_numbers = self._parse_page_range(pages_str, total_pages)
+
+            for page_num in page_numbers:
+                if page_num < 1 or page_num > total_pages:
+                    continue
+
+                try:
+                    page = doc[page_num - 1]
+
+                    # Calcular escala para largura desejada
+                    zoom = width / page.rect.width
+                    mat = fitz.Matrix(zoom, zoom)
+
+                    # Renderizar pagina como imagem
+                    pix = page.get_pixmap(matrix=mat)
+
+                    # Converter para base64
+                    img_bytes = pix.tobytes("png")
+                    b64 = base64.b64encode(img_bytes).decode()
+
+                    thumbnails.append({
+                        "page": page_num,
+                        "data": f"data:image/png;base64,{b64}",
+                        "width": pix.width,
+                        "height": pix.height,
+                    })
+
+                except Exception as e:
+                    logger.warning(f"Erro ao gerar thumbnail da pagina {page_num}: {e}")
+                    thumbnails.append({
+                        "page": page_num,
+                        "data": None,
+                        "error": str(e),
+                    })
+
+            doc.close()
+            logger.info(f"Gerados {len(thumbnails)} thumbnails")
+            return thumbnails
+
+        except ImportError:
+            logger.error("pymupdf nao esta instalado. Execute: pip install pymupdf")
+            return []
+        except Exception as e:
+            logger.exception(f"Erro ao gerar thumbnails: {e}")
+            return []
+
+    def _parse_page_range(self, pages_str: str, total_pages: int) -> List[int]:
+        """
+        Parse string de paginas para lista de numeros.
+
+        Suporta:
+        - Range: "1-12" -> [1, 2, 3, ..., 12]
+        - Lista: "1,5,10" -> [1, 5, 10]
+        - Misto: "1-5,10,15-20" -> [1, 2, 3, 4, 5, 10, 15, 16, 17, 18, 19, 20]
+        """
+        page_numbers = []
+
+        for part in pages_str.split(","):
+            part = part.strip()
+            if "-" in part:
+                try:
+                    start, end = part.split("-", 1)
+                    start = max(1, int(start.strip()))
+                    end = min(total_pages, int(end.strip()))
+                    page_numbers.extend(range(start, end + 1))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    page_numbers.append(int(part))
+                except ValueError:
+                    continue
+
+        return sorted(set(page_numbers))
 
     async def _extract_pdf_with_pdfplumber(
         self,
@@ -789,42 +963,141 @@ class DocumentExtractor:
                 error=f"Erro ao obter preview: {str(e)}"
             )
 
+    async def _get_single_page_preview(
+        self,
+        pdf_bytes: bytes,
+        page_num: int,
+        preview_chars: int,
+        semaphore: asyncio.Semaphore,
+    ) -> PageInfo:
+        """
+        Obtém preview de uma única página do PDF de forma thread-safe.
+
+        Args:
+            pdf_bytes: Bytes do PDF
+            page_num: Número da página (0-indexed internamente, retorna 1-indexed)
+            preview_chars: Máximo de caracteres no preview
+            semaphore: Semáforo para controle de concorrência
+
+        Returns:
+            PageInfo com informações da página
+        """
+        async with semaphore:
+            def _extract_preview():
+                import pdfplumber
+                from io import BytesIO
+
+                try:
+                    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+                        if page_num >= len(pdf.pages):
+                            return PageInfo(
+                                page_number=page_num + 1,
+                                word_count=0,
+                                preview=""
+                            )
+
+                        page = pdf.pages[page_num]
+                        page_text = page.extract_text() or ""
+
+                        word_count = len(page_text.split()) if page_text else 0
+                        preview = page_text[:preview_chars].strip() if page_text else ""
+                        if len(page_text) > preview_chars:
+                            preview += "..."
+
+                        return PageInfo(
+                            page_number=page_num + 1,
+                            word_count=word_count,
+                            preview=preview,
+                        )
+                except Exception as e:
+                    logger.warning(f"Erro ao obter preview da página {page_num + 1}: {e}")
+                    return PageInfo(
+                        page_number=page_num + 1,
+                        word_count=0,
+                        preview=f"[Erro: {str(e)[:50]}]"
+                    )
+
+            return await asyncio.to_thread(_extract_preview)
+
     async def _get_pdf_preview(
         self,
         pdf_bytes: bytes,
         filename: str,
         preview_chars: int,
+        max_concurrent: int = 10,
+        batch_size: int = 50,
     ) -> DocumentPreviewResult:
-        """Preview especifico para PDFs usando pdfplumber."""
+        """
+        Preview de PDF com processamento PARALELO em lotes.
+
+        Args:
+            pdf_bytes: Bytes do PDF
+            filename: Nome do arquivo
+            preview_chars: Caracteres máximos por preview
+            max_concurrent: Máximo de páginas processadas simultaneamente
+            batch_size: Tamanho de cada lote para processamento
+
+        Returns:
+            DocumentPreviewResult com preview de todas as páginas
+        """
         try:
             import pdfplumber
             from io import BytesIO
 
+            # Obter total de páginas (operação rápida)
             with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
                 total_pages = len(pdf.pages)
 
-                pages_info = []
-                for i, page in enumerate(pdf.pages):
-                    page_text = page.extract_text() or ""
+            logger.info(
+                "Iniciando preview paralelo de %d páginas (lotes de %d, max %d concurrent)",
+                total_pages, batch_size, max_concurrent
+            )
 
-                    word_count = len(page_text.split()) if page_text else 0
-                    preview = page_text[:preview_chars].strip() if page_text else ""
-                    if len(page_text) > preview_chars:
-                        preview += "..."
+            # Semáforo para controlar concorrência
+            semaphore = asyncio.Semaphore(max_concurrent)
 
-                    pages_info.append(PageInfo(
-                        page_number=i + 1,
-                        word_count=word_count,
-                        preview=preview,
-                    ))
+            # Processar em lotes para PDFs muito grandes
+            all_pages_info = []
 
-                return DocumentPreviewResult(
-                    total_pages=total_pages,
-                    pages=pages_info,
-                    filename=filename,
-                    file_size=len(pdf_bytes),
-                    format_type="PDF Document",
-                )
+            for batch_start in range(0, total_pages, batch_size):
+                batch_end = min(batch_start + batch_size, total_pages)
+                batch_pages = range(batch_start, batch_end)
+
+                logger.debug("Processando lote: páginas %d a %d", batch_start + 1, batch_end)
+
+                # Criar tasks para o lote atual
+                tasks = [
+                    self._get_single_page_preview(
+                        pdf_bytes, page_num, preview_chars, semaphore
+                    )
+                    for page_num in batch_pages
+                ]
+
+                # Executar lote em paralelo
+                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Processar resultados do lote
+                for result in batch_results:
+                    if isinstance(result, Exception):
+                        logger.warning("Erro em página do lote: %s", result)
+                        continue
+                    all_pages_info.append(result)
+
+            # Ordenar por número da página (garantir ordem correta)
+            all_pages_info.sort(key=lambda x: x.page_number)
+
+            logger.info(
+                "Preview paralelo concluído: %d de %d páginas",
+                len(all_pages_info), total_pages
+            )
+
+            return DocumentPreviewResult(
+                total_pages=total_pages,
+                pages=all_pages_info,
+                filename=filename,
+                file_size=len(pdf_bytes),
+                format_type="PDF Document",
+            )
 
         except Exception as e:
             logger.exception("Erro ao obter preview do PDF: %s", e)

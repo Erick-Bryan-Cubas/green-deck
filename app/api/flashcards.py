@@ -124,8 +124,6 @@ class CardsRequest(BaseModel):
     customGuidelines: Optional[str] = None
     # Quantidade de cards desejada (opcional - se vazio, calcula automaticamente)
     numCards: Optional[int] = None
-    # Modo simulado/prova (textos com questões de múltipla escolha)
-    isExamMode: Optional[bool] = False
 
 
 def _norm_ws(s: str) -> str:
@@ -1585,7 +1583,6 @@ async def generate_cards_stream(
                 custom_system=request.customSystemPrompt,
                 custom_generation=request.customGenerationPrompt,
                 custom_guidelines=request.customGuidelines,
-                is_exam_mode=request.isExamMode or False,
             )
 
             using_custom = any([

@@ -28,6 +28,8 @@ import { useToast } from 'primevue/usetoast'
 import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
+import { useTheme } from '@/composables/useTheme'
+import { sidebarIconColors } from '@/config/theme'
 
 // API service
 import { getStoredApiKeys } from '@/services/api.js'
@@ -38,6 +40,7 @@ import { sanitizeHtml } from '@/utils/sanitize.js'
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+const { isDark, toggleTheme } = useTheme()
 
 // Sidebar ref
 const sidebarRef = ref(null)
@@ -46,16 +49,16 @@ const sidebarRef = ref(null)
 // Sidebar Menu Items
 // ============================================================
 const sidebarMenuItems = computed(() => [
-  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: '#10B981', tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: '#3B82F6', tooltip: 'Navegar pelos cards salvos', active: true },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: '#F59E0B', tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
+  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cards salvos', active: true },
+  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
   { separator: true },
-  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: '#EF4444', tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
+  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: sidebarIconColors.logs, tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
 ])
 
 const sidebarFooterActions = computed(() => [
   { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: 'pi pi-moon', tooltip: 'Tema', command: () => notify('Tema alternativo em breve!', 'info') }
+  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
 ])
 
 // ----------------------
@@ -2278,7 +2281,7 @@ onUnmounted(() => {
                 <span class="muted">Inglês → Português (BR)</span>
               </div>
 
-              <div class="hero-kpis" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+              <div class="hero-kpis hero-kpis-2">
                 <div class="kpi" v-if="!translateUseEntireDeck">
                   <div class="kpi-lbl">Cards selecionados</div>
                   <div class="kpi-val">{{ selected.length }}</div>
@@ -2293,7 +2296,7 @@ onUnmounted(() => {
                 </div>
                 <div class="kpi" v-if="translateAlreadyPtCount > 0">
                   <div class="kpi-lbl">Já em PT</div>
-                  <div class="kpi-val" style="color: #22c55e;">{{ translateAlreadyPtCount }}</div>
+                  <div class="kpi-val kpi-val-success">{{ translateAlreadyPtCount }}</div>
                 </div>
               </div>
             </div>
@@ -2307,9 +2310,9 @@ onUnmounted(() => {
           </div>
 
           <!-- Opção: Traduzir Deck Inteiro -->
-          <div style="display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(148,163,184,0.12); background: rgba(255,255,255,0.02);">
+          <div class="translate-deck-toggle">
             <InputSwitch v-model="translateUseEntireDeck" @change="() => { translateAlreadyPtCount = 0; translateDetectError = ''; }" />
-            <label style="flex: 1; cursor: pointer; font-size: 13px;">Traduzir deck inteiro "{{ deck }}"</label>
+            <label class="translate-deck-label">Traduzir deck inteiro "{{ deck }}"</label>
             <Button 
               v-if="translateUseEntireDeck || selected.length"
               icon="pi pi-search" 
@@ -2318,18 +2321,18 @@ onUnmounted(() => {
               @click="detectCardLanguages"
               :loading="translateDetectingLanguages"
               v-tooltip.top="'Detectar quantos já estão em português'"
-              style="padding: 6px 8px;"
+              class="translate-detect-btn"
             />
           </div>
 
           <!-- Detecção de Idioma -->
-          <div v-if="translateDetectError" style="padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(239,68,68,0.35); background: rgba(239,68,68,0.08); color: #ef4444; font-size: 12px;">
-            <i class="pi pi-exclamation-circle mr-2" style="color: #ef4444;"></i>
+          <div v-if="translateDetectError" class="translate-alert translate-alert-error">
+            <i class="pi pi-exclamation-circle mr-2"></i>
             {{ translateDetectError }}
           </div>
 
-          <div v-if="translateAlreadyPtCount > 0" style="padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); font-size: 12px;">
-            <i class="pi pi-info-circle mr-2" style="color: #22c55e;"></i>
+          <div v-if="translateAlreadyPtCount > 0" class="translate-alert translate-alert-success">
+            <i class="pi pi-info-circle mr-2"></i>
             <strong>{{ translateAlreadyPtCount }}</strong> cartões já estão em português
             <span v-if="translateNeedsTranslationCount">, <strong>{{ translateNeedsTranslationCount }}</strong> precisam tradução</span>
           </div>
@@ -2455,15 +2458,15 @@ onUnmounted(() => {
             </div>
             <div class="stat stat-success">
               <div class="stat-label">Traduzidas</div>
-              <div class="stat-value" style="color: #22c55e;">{{ translateTranslatedCount }}</div>
+              <div class="stat-value stat-value-success">{{ translateTranslatedCount }}</div>
             </div>
             <div class="stat stat-warning" v-if="translateFailedCount > 0">
               <div class="stat-label">Falhas</div>
-              <div class="stat-value" style="color: #ef4444;">{{ translateFailedCount }}</div>
+              <div class="stat-value stat-value-error">{{ translateFailedCount }}</div>
             </div>
             <div class="stat stat-info" v-if="translateSkippedCount > 0">
               <div class="stat-label">Puladas</div>
-              <div class="stat-value" style="color: #f59e0b;">{{ translateSkippedCount }}</div>
+              <div class="stat-value stat-value-warning">{{ translateSkippedCount }}</div>
             </div>
           </div>
 
@@ -2968,7 +2971,7 @@ onUnmounted(() => {
 
 .loading-spinner {
   font-size: 28px;
-  color: #6366F1;
+  color: var(--color-primary);
 }
 
 .loading-title {
@@ -2988,7 +2991,7 @@ onUnmounted(() => {
 }
 
 :deep(.loading-bar .p-progressbar-value) {
-  background: linear-gradient(90deg, #6366F1, #8B5CF6, #6366F1);
+  background: var(--loading-gradient);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
@@ -3026,15 +3029,9 @@ onUnmounted(() => {
   border-radius: 24px;
   overflow: hidden;
   transition: margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(99, 102, 241, 0.22), transparent 55%),
-    radial-gradient(900px 600px at 95% 10%, rgba(16, 185, 129, 0.16), transparent 60%),
-    radial-gradient(900px 600px at 60% 110%, rgba(236, 72, 153, 0.12), transparent 55%),
-    linear-gradient(180deg, rgba(17, 24, 39, 0.95), rgba(10, 10, 12, 0.98));
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  background: var(--shell-bg);
+  border: 1px solid var(--shell-border);
+  box-shadow: var(--shell-shadow);
 }
 
 .app-shell.sidebar-expanded {
@@ -3056,19 +3053,38 @@ onUnmounted(() => {
   padding: 12px 16px;
   backdrop-filter: blur(16px);
   border-radius: 24px 24px 0 0;
-  background: rgba(17, 24, 39, 0.5);
+  background: var(--header-bg);
 }
 
 :deep(.p-toolbar) {
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid var(--header-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.app-header :deep(.p-toolbar-group-left),
+.app-header :deep(.p-toolbar-group-right) {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-header :deep(.p-toolbar-group-right) {
+  justify-content: flex-end;
 }
 
 .header-left {
   display: flex;
   align-items: center;
   gap: 16px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .brand {
@@ -3105,6 +3121,38 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .app-header {
+    padding: 10px 12px;
+  }
+  .header-left,
+  .header-right {
+    gap: 10px;
+  }
+  .header-badges {
+    display: none;
+  }
+  .menu-toggle {
+    width: 38px;
+    height: 38px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .status-wrap {
+    display: none;
+  }
+  .menu-toggle {
+    width: 34px;
+    height: 34px;
+  }
+  .app-header :deep(.p-button) {
+    padding: 0.4rem 0.6rem;
+  }
 }
 
 @media (max-width: 768px) {
@@ -3137,8 +3185,8 @@ onUnmounted(() => {
   gap: 8px;
   padding: 6px 12px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(148, 163, 184, 0.15);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
 }
 
 .status-item {
@@ -3158,7 +3206,19 @@ onUnmounted(() => {
 .status-sep {
   width: 1px;
   height: 16px;
-  background: rgba(148, 163, 184, 0.2);
+  background: var(--status-sep);
+}
+
+.stat-value-success {
+  color: var(--color-success);
+}
+
+.stat-value-error {
+  color: var(--color-danger);
+}
+
+.stat-value-warning {
+  color: var(--color-warning);
 }
 
 /* deixa o AnkiStatus/OllamaStatus com "cara de chip" igual */
@@ -3175,10 +3235,10 @@ onUnmounted(() => {
 
 .card-surface{
   border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(17, 24, 39, 0.58);
+  border: 1px solid var(--app-border);
+  background: var(--app-card);
   backdrop-filter: blur(10px);
-  box-shadow: 0 14px 30px rgba(0,0,0,0.26);
+  box-shadow: var(--app-shadow);
   padding: 12px;
 }
 
@@ -3200,7 +3260,7 @@ onUnmounted(() => {
   align-items:center;
   gap: 4px;
   padding-right: 8px;
-  border-right: 1px solid rgba(148,163,184,0.15);
+  border-right: 1px solid var(--app-border);
   margin-right: 4px;
 }
 .select-all-btn{
@@ -3214,8 +3274,8 @@ onUnmounted(() => {
   transition: all 0.2s ease;
 }
 .selection-tag.has-selection{
-  background: rgba(59,130,246,0.2);
-  border-color: rgba(59,130,246,0.4);
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
 }
 
 .query-hint{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -3223,8 +3283,8 @@ onUnmounted(() => {
 .q{
   padding: 3px 10px;
   border-radius: 999px;
-  background: rgba(0,0,0,0.25);
-  border: 1px solid rgba(148,163,184,0.16);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
 }
@@ -3276,12 +3336,12 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
-  background: rgba(99, 102, 241, 0.08);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--section-bg);
+  border-bottom: 1px solid var(--app-border);
 }
 .query-help-header > i {
   font-size: 20px;
-  color: #6366F1;
+  color: var(--color-primary);
 }
 .query-help-title {
   font-weight: 900;
@@ -3308,8 +3368,8 @@ onUnmounted(() => {
 }
 
 .query-section {
-  background: rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: var(--ghost-bg-strong);
+  border: 1px solid var(--ghost-border);
   border-radius: 12px;
   padding: 10px;
 }
@@ -3335,23 +3395,23 @@ onUnmounted(() => {
   padding: 6px 8px;
   border: none;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--ghost-bg);
   cursor: pointer;
   transition: background 0.15s ease;
   text-align: left;
   width: 100%;
 }
 .query-item:hover {
-  background: rgba(99, 102, 241, 0.15);
+  background: var(--chip-active-bg);
 }
 .query-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   padding: 3px 6px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  color: #a5b4fc;
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
+  color: color-mix(in srgb, var(--color-primary) 70%, var(--app-text));
   white-space: nowrap;
 }
 .query-desc {
@@ -3364,15 +3424,15 @@ onUnmounted(() => {
 
 .query-help-footer {
   padding: 10px 16px;
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(0, 0, 0, 0.1);
+  border-top: 1px solid var(--app-border);
+  background: color-mix(in srgb, var(--app-bg) 90%, transparent);
 }
 .query-docs-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #6366F1;
+  color: var(--color-primary);
   text-decoration: none;
   font-weight: 600;
 }
@@ -3386,14 +3446,14 @@ onUnmounted(() => {
 :deep(.modern-dt .p-datatable-header){ background: transparent; border: 0; padding: 8px 6px 14px 6px; }
 :deep(.modern-dt .p-datatable-footer){ background: transparent; border: 0; padding: 12px 6px 6px 6px; }
 :deep(.modern-dt .p-datatable-thead > tr > th){
-  background: rgba(255,255,255,0.03);
-  border-color: rgba(148,163,184,0.14);
+  background: color-mix(in srgb, var(--app-card) 92%, transparent);
+  border-color: var(--app-border);
   font-weight: 900;
 }
-:deep(.modern-dt .p-datatable-tbody > tr > td){ border-color: rgba(148,163,184,0.12); }
-:deep(.modern-dt .p-datatable-tbody > tr){ background: rgba(255,255,255,0.01); }
+:deep(.modern-dt .p-datatable-tbody > tr > td){ border-color: var(--app-border); }
+:deep(.modern-dt .p-datatable-tbody > tr){ background: color-mix(in srgb, var(--app-card) 98%, transparent); }
 :deep(.modern-dt .p-datatable-tbody > tr.p-highlight){
-  background: rgba(99, 102, 241, 0.18) !important;
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent) !important;
 }
 
 .dt-header{
@@ -3413,10 +3473,10 @@ onUnmounted(() => {
 .flag-wrap{ display:inline-flex; align-items:center; justify-content:center; }
 .flag-ico{ font-size: 16px; }
 .flag-none{ opacity: .5; }
-.flag-red{ color: #ef4444; }
-.flag-orange{ color: #fb923c; }
-.flag-green{ color: #22c55e; }
-.flag-blue{ color: #3b82f6; }
+.flag-orange{ color: var(--color-warning); }
+.flag-green{ color: var(--color-success); }
+.flag-blue{ color: var(--color-info); }
+.flag-red{ color: var(--color-danger); }
 
 /* actions column */
 .actions-cell{
@@ -3470,6 +3530,60 @@ onUnmounted(() => {
 
 .dlg-body{ padding: 14px; }
 
+/* Translate modal tokens */
+.hero-kpis.hero-kpis-2{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.kpi-val-success{
+  color: var(--color-success);
+}
+
+.translate-deck-toggle{
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--app-border);
+  background: color-mix(in srgb, var(--app-card) 92%, transparent);
+}
+
+.translate-deck-label{
+  flex: 1;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.translate-detect-btn{
+  padding: 6px 8px !important;
+}
+
+.translate-alert{
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.translate-alert-error{
+  border: 1px solid color-mix(in srgb, var(--color-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+
+.translate-alert-success{
+  border: 1px solid color-mix(in srgb, var(--color-success) 45%, transparent);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+}
+
+.translate-alert-error i,
+.translate-alert-success i{
+  color: inherit;
+}
+
 /* footer */
 .dlg-footer{
   display:flex;
@@ -3487,18 +3601,18 @@ onUnmounted(() => {
   align-items:center;
   padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(148,163,184,0.16);
-  background: rgba(0,0,0,0.22);
+  border: 1px solid var(--ghost-border);
+  background: var(--ghost-bg-strong);
   font-weight: 900;
   font-size: 12px;
 }
 .svc-mini i{ font-size: 12px; }
-.svc-mini.on{ border-color: rgba(16, 185, 129, 0.35); }
-.svc-mini.off{ border-color: rgba(239, 68, 68, 0.35); }
-.svc-mini.idle{ border-color: rgba(148, 163, 184, 0.25); opacity: .9; }
-.svc-mini.on i{ color: #22c55e; }
-.svc-mini.off i{ color: #ef4444; }
-.svc-mini.idle i{ color: rgba(148, 163, 184, 0.9); }
+.svc-mini.on{ border-color: color-mix(in srgb, var(--color-success) 45%, transparent); }
+.svc-mini.off{ border-color: color-mix(in srgb, var(--color-danger) 45%, transparent); }
+.svc-mini.idle{ border-color: var(--app-border); opacity: .9; }
+.svc-mini.on i{ color: var(--color-success); }
+.svc-mini.off i{ color: var(--color-danger); }
+.svc-mini.idle i{ color: color-mix(in srgb, var(--app-text) 70%, transparent); }
 
 /* Preview */
 .preview{ display:flex; flex-direction:column; gap: 10px; }
@@ -3512,8 +3626,8 @@ onUnmounted(() => {
 .pv-box{
   border-radius: 14px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.14);
-  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--preview-border);
+  background: var(--preview-bg);
   min-height: 120px;
   max-height: 44vh;
   overflow: auto;
@@ -3528,23 +3642,23 @@ onUnmounted(() => {
   padding: 8px 10px;
   border-radius: 12px;
   margin-bottom: 8px;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(148, 163, 184, 0.10);
+  background: var(--log-bg);
+  border: 1px solid var(--log-border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
 }
 .log-ts{ opacity: 0.7; white-space: nowrap; }
 .log-msg{ opacity: 0.92; }
-.log-row.t-success{ border-color: rgba(16, 185, 129, 0.25); }
-.log-row.t-warn{ border-color: rgba(251, 191, 36, 0.25); }
-.log-row.t-error{ border-color: rgba(239, 68, 68, 0.25); }
+.log-row.t-success{ border-color: var(--log-success-border); }
+.log-row.t-warn{ border-color: color-mix(in srgb, var(--color-warning) 35%, transparent); }
+.log-row.t-error{ border-color: var(--log-error-border); }
 
 /* Note action dialog */
 .noteaction-box{
   border-radius: 16px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.12);
-  background: rgba(0,0,0,0.16);
+  border: 1px solid var(--ghost-border);
+  background: var(--ghost-bg-strong);
   display:flex;
   flex-direction:column;
   gap: 8px;
@@ -3565,8 +3679,8 @@ onUnmounted(() => {
 .kv{
   border-radius: 14px;
   padding: 10px;
-  border: 1px solid rgba(148,163,184,0.12);
-  background: rgba(0,0,0,0.16);
+  border: 1px solid var(--ghost-border);
+  background: var(--ghost-bg-strong);
   display:flex;
   gap: 8px;
   align-items:center;
@@ -3615,18 +3729,18 @@ onUnmounted(() => {
   align-items:center;
   padding: 14px 16px;
   border-radius: 14px;
-  border: 1px solid rgba(148,163,184,0.12);
-  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--modal-surface-border);
+  background: var(--modal-surface-bg);
 }
 .stat-icon{
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: rgba(59,130,246,0.15);
+  background: color-mix(in srgb, var(--color-info) 18%, transparent);
   display:flex;
   align-items:center;
   justify-content:center;
-  color: #3b82f6;
+  color: var(--color-info);
   font-size: 18px;
 }
 .stat-content{
@@ -3637,12 +3751,12 @@ onUnmounted(() => {
 .stat-value{
   font-size: 22px;
   font-weight: 800;
-  color: rgba(255,255,255,0.95);
+  color: var(--app-text);
   letter-spacing: -0.5px;
 }
 .stat-label{
   font-size: 12px;
-  color: rgba(148,163,184,0.7);
+  color: var(--app-text-muted);
 }
 .migrate-fields-row{
   display:flex;
@@ -3660,13 +3774,13 @@ onUnmounted(() => {
   align-items:center;
   justify-content:center;
   padding-top: 32px;
-  color: rgba(148,163,184,0.6);
+  color: var(--app-text-muted);
   font-size: 20px;
 }
 .migrate-label{
   font-size: 13px;
   font-weight: 600;
-  color: rgba(255,255,255,0.7);
+  color: var(--app-text-muted);
 }
 .migrate-warning{
   margin-top: 4px;
@@ -3676,21 +3790,21 @@ onUnmounted(() => {
   gap: 12px;
   padding: 14px 16px;
   border-radius: 14px;
-  border: 1px solid rgba(245,158,11,0.35);
-  background: rgba(245,158,11,0.08);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
 }
 .warning-box.warning-info{
-  border: 1px solid rgba(59,130,246,0.35);
-  background: rgba(59,130,246,0.08);
+  border: 1px solid color-mix(in srgb, var(--color-info) 40%, transparent);
+  background: color-mix(in srgb, var(--color-info) 12%, transparent);
 }
 .warning-box > i{
-  color: #f59e0b;
+  color: var(--color-warning);
   font-size: 20px;
   flex-shrink: 0;
   margin-top: 2px;
 }
 .warning-box.warning-info > i{
-  color: #3b82f6;
+  color: var(--color-info);
 }
 .warning-content{
   display:flex;
@@ -3699,15 +3813,15 @@ onUnmounted(() => {
 }
 .warning-title{
   font-weight: 700;
-  color: #f59e0b;
+  color: var(--color-warning);
   font-size: 14px;
 }
 .warning-box.warning-info .warning-title{
-  color: #3b82f6;
+  color: var(--color-info);
 }
 .warning-text{
   font-size: 13px;
-  color: rgba(255,255,255,0.75);
+  color: var(--app-text-muted);
   line-height: 1.5;
 }
 .warning-confirm{
@@ -3716,7 +3830,7 @@ onUnmounted(() => {
   gap: 10px;
   margin-top: 6px;
   font-size: 13px;
-  color: rgba(255,255,255,0.85);
+  color: var(--app-text);
 }
 .migrate-info{
   display:flex;
@@ -3724,10 +3838,10 @@ onUnmounted(() => {
   gap: 10px;
   padding: 10px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(59,130,246,0.35);
-  background: rgba(59,130,246,0.08);
+  border: 1px solid color-mix(in srgb, var(--color-info) 40%, transparent);
+  background: color-mix(in srgb, var(--color-info) 12%, transparent);
   font-size: 13px;
-  color: #3b82f6;
+  color: var(--color-info);
 }
 @media (max-width: 600px){
   .migrate-fields-row{ flex-direction:column; }
@@ -3748,17 +3862,17 @@ onUnmounted(() => {
   flex-wrap:wrap;
   border-radius: 18px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.14);
+  border: 1px solid var(--app-border);
   background:
-    radial-gradient(600px 180px at 0% 0%, rgba(59,130,246,0.18), transparent 60%),
-    radial-gradient(600px 180px at 100% 0%, rgba(16,185,129,0.14), transparent 60%),
-    rgba(255,255,255,0.02);
+    radial-gradient(600px 180px at 0% 0%, color-mix(in srgb, var(--color-info) 18%, transparent), transparent 60%),
+    radial-gradient(600px 180px at 100% 0%, color-mix(in srgb, var(--color-success) 14%, transparent), transparent 60%),
+    var(--modal-surface-bg);
 }
 .translate-info{
   border-radius: 16px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.12);
-  background: rgba(0,0,0,0.16);
+  border: 1px solid var(--modal-surface-border);
+  background: var(--ghost-bg-strong);
 }
 .info-box{
   display:flex;
@@ -3767,7 +3881,7 @@ onUnmounted(() => {
 }
 .info-box > i{
   font-size: 18px;
-  color: #3B82F6;
+  color: var(--color-info);
   margin-top: 2px;
 }
 .info-title{
@@ -3786,8 +3900,8 @@ onUnmounted(() => {
 .info-list code{
   padding: 2px 6px;
   border-radius: 6px;
-  background: rgba(0,0,0,0.25);
-  border: 1px solid rgba(148,163,184,0.16);
+  background: var(--ghost-bg);
+  border: 1px solid var(--ghost-border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
 }
@@ -3797,18 +3911,18 @@ onUnmounted(() => {
   align-items:flex-start;
   padding: 10px 12px;
   border-radius: 16px;
-  border: 1px dashed rgba(251,191,36,0.35);
-  background: rgba(251,191,36,0.08);
+  border: 1px dashed color-mix(in srgb, var(--color-warning) 40%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
 }
 .translate-warning > i{
-  color: #F59E0B;
+  color: var(--color-warning);
   margin-top: 2px;
 }
 .translate-model-section{
   border-radius: 16px;
   padding: 12px;
-  border: 1px solid rgba(148,163,184,0.12);
-  background: rgba(0,0,0,0.12);
+  border: 1px solid var(--ghost-border);
+  background: var(--ghost-bg-strong);
 }
 .translate-model-section .section-label{
   display: block;
@@ -3850,12 +3964,12 @@ onUnmounted(() => {
 :deep(.translate-progress-modal .p-progressbar) {
   height: 8px;
   border-radius: 4px;
-  background: rgba(148, 163, 184, 0.14);
+  background: var(--app-border);
   overflow: hidden;
 }
 
 :deep(.translate-progress-modal .p-progressbar-value) {
-  background: linear-gradient(90deg, #3B82F6, #10B981);
+  background: linear-gradient(90deg, var(--color-info), var(--color-success));
   transition: width 0.3s ease;
 }
 
@@ -3870,8 +3984,8 @@ onUnmounted(() => {
   flex-direction: column;
   padding: 12px;
   border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--app-border);
+  background: var(--preview-bg);
   text-align: center;
 }
 
@@ -3896,8 +4010,8 @@ onUnmounted(() => {
   gap: 8px;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--app-border);
+  background: var(--modal-surface-bg);
 }
 
 .status-item {
@@ -3914,10 +4028,10 @@ onUnmounted(() => {
 
 .status-error {
   font-size: 12px;
-  color: #ef4444;
+  color: var(--color-danger);
   padding: 6px 8px;
   border-radius: 8px;
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
 
 .progress-error,
@@ -3926,26 +4040,26 @@ onUnmounted(() => {
   gap: 12px;
   padding: 14px;
   border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--app-border);
   align-items: flex-start;
 }
 
 .progress-error {
-  background: rgba(239, 68, 68, 0.08);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
 
 .progress-error i {
-  color: #ef4444;
+  color: var(--color-danger);
   font-size: 20px;
   margin-top: 2px;
 }
 
 .progress-done {
-  background: rgba(34, 197, 94, 0.08);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
 }
 
 .progress-done i {
-  color: #22c55e;
+  color: var(--color-success);
   font-size: 20px;
   margin-top: 2px;
 }
