@@ -1488,9 +1488,10 @@ function stopOllamaInfoPolling() {
 }
 
 // Handler para o novo componente GenerateModal
-function onGenerateModalConfirm({ quantityMode: qMode, numCards, customPrompts: prompts }) {
+function onGenerateModalConfirm({ quantityMode: qMode, numCards, cardType: cType, customPrompts: prompts }) {
   numCardsEnabled.value = (qMode === 'manual')
   numCardsSlider.value = numCards
+  if (cType) cardType.value = cType
   if (prompts) customPrompts.value = prompts
   generateModalVisible.value = false
   generateCardsFromSelection()
@@ -4054,37 +4055,11 @@ onBeforeUnmount(() => {
                 @error="onDocumentError"
               />
 
-              <Select
-                v-model="cardType"
-                :options="cardTypeOptions"
-                optionLabel="label"
-                optionValue="value"
-                class="cardtype"
-                :disabled="generating || isAnalyzing"
-              >
-                <template #option="{ option }">
-                  <div class="card-type-item">
-                    <i class="pi pi-fw pi-book cardtype-icon" aria-hidden="true" />
-                    <div class="ct-body">
-                      <div class="ct-label">{{ option.label }}</div>
-                      <div class="ct-desc">{{ option.description }}</div>
-                    </div>
-                  </div>
-                </template>
-
-                <template #value="{ value }">
-                  <div class="card-type-selected">
-                    <i class="pi pi-fw pi-book cardtype-icon" aria-hidden="true" />
-                    <span class="ct-label">{{ (cardTypeOptions.find(o => o.value === value) || {}).label }}</span>
-                  </div>
-                </template>
-              </Select>
-
               <!-- Analyze Button -->
               <Button
-                icon="pi pi-search-plus"
+                icon="pi pi-eye"
                 label="Analisar"
-                class="p-button-outlined"
+                class="btn-shine"
                 :disabled="!canGenerate || generating || isAnalyzing"
                 :loading="isAnalyzing"
                 title="Analisar texto para melhorar a qualidade dos cards gerados"
@@ -4104,7 +4079,7 @@ onBeforeUnmount(() => {
               <Button
                 icon="pi pi-question-circle"
                 label="Questões"
-                severity="secondary"
+                class="btn-shine"
                 :disabled="!canGenerate || isGeneratingQuestions"
                 :loading="isGeneratingQuestions"
                 title="Gerar questões AllInOne (kprim, mc, sc)"
@@ -4806,6 +4781,7 @@ onBeforeUnmount(() => {
       :getProviderSeverity="getProviderSeverity"
       :getProviderLabel="getProviderLabel"
       @update:numCardsSlider="numCardsSlider = $event"
+      @update:cardType="cardType = $event"
       @customPromptsUpdate="onCustomPromptsUpdate"
       @confirm="onGenerateModalConfirm"
     />
@@ -5118,11 +5094,6 @@ onBeforeUnmount(() => {
   flex-wrap: nowrap;
 }
 
-.cardtype {
-  width: 11rem;
-  min-width: 10rem;
-}
-
 .hdr-divider {
   height: 24px;
   opacity: 0.5;
@@ -5144,10 +5115,6 @@ onBeforeUnmount(() => {
   .header-badges {
     display: none;
   }
-  .cardtype {
-    width: 9.5rem;
-    min-width: 9rem;
-  }
 }
 
 @media (max-width: 1024px) {
@@ -5166,17 +5133,72 @@ onBeforeUnmount(() => {
   }
 }
 
+/* CTA Create Cards - verde da logo #28ca73 com efeito de reflexo */
 :deep(.cta.p-button) {
-  background: var(--cta-bg);
-  border: none;
-  box-shadow: var(--cta-shadow);
+  position: relative;
+  background: #28ca73 !important;
+  border: 1px solid #22b866 !important;
+  color: #ffffff !important;
   font-weight: 700;
-  transition: all 0.2s ease;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+:deep(.cta.p-button)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transition: left 0.5s ease;
+  pointer-events: none;
+}
+
+:deep(.cta.p-button:hover)::before {
+  left: 100%;
 }
 
 :deep(.cta.p-button:hover) {
+  background: #22b866 !important;
+  border-color: #1da55a !important;
   transform: translateY(-1px);
-  box-shadow: var(--cta-shadow-hover);
+  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
+}
+
+/* Botão secundário premium - verde da logo #28ca73 */
+:deep(.btn-shine.p-button) {
+  position: relative;
+  background: #28ca73 !important;
+  border: 1px solid #22b866 !important;
+  color: #ffffff !important;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+:deep(.btn-shine.p-button)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transition: left 0.5s ease;
+  pointer-events: none;
+}
+
+:deep(.btn-shine.p-button:hover)::before {
+  left: 100%;
+}
+
+:deep(.btn-shine.p-button:hover) {
+  background: #22b866 !important;
+  border-color: #1da55a !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
 }
 
 @media (max-width: 768px) {
@@ -5689,7 +5711,6 @@ onBeforeUnmount(() => {
   .preview-grid {
     grid-template-columns: 1fr;
   }
-  .cardtype { width: 100%; }
   .search-wrap { width: 100%; }
 }
 .preview-block {
@@ -7419,71 +7440,6 @@ onBeforeUnmount(() => {
   .float-total {
     font-size: 12px;
   }
-}
-
-/* Card type select styling */
-.cardtype {
-  --cardtype-bg: rgba(255,255,255,0.04);
-}
-.cardtype :deep(.p-dropdown){
-  min-width: auto;
-  height: 36px;
-}
-.cardtype :deep(.p-dropdown .p-dropdown-label){
-  line-height: 36px;
-  height: 36px;
-  display: inline-block;
-  padding-left: 8px;
-}
-.cardtype :deep(.p-dropdown-trigger){
-  height: 36px;
-}
-.cardtype :deep(.p-dropdown-panel){
-  background: rgba(17,24,39,0.98);
-  border: 1px solid rgba(148,163,184,0.12);
-  border-radius: 12px;
-  padding: 6px 6px;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.45);
-  min-width: 12rem;
-}
-.cardtype :deep(.p-dropdown-items .p-dropdown-item){
-  padding: 6px 8px;
-  border-radius: 8px;
-}
-.cardtype :deep(.p-dropdown-items .p-dropdown-item:hover){
-  background: rgba(99,102,241,0.10);
-}
-.cardtype :deep(.p-dropdown-items .p-dropdown-item.p-highlight){
-  background: rgba(99,102,241,0.14);
-}
-.card-type-item{
-  display:flex;
-  gap:0.5rem;
-  align-items:center;
-  padding:6px 8px;
-}
-.cardtype-icon{
-  font-size:0.92rem;
-  color:var(--primary-color, #90caf9);
-  margin-top:0;
-}
-.ct-label{
-  font-size:0.82rem;
-  font-weight:700;
-  line-height:1;
-}
-.ct-desc{
-  font-size:0.70rem;
-  color:rgba(255,255,255,0.58);
-  margin-top:2px;
-}
-.card-type-selected{
-  display:flex;
-  gap:0.5rem;
-  align-items:center;
-}
-.cardtype :deep(.p-dropdown-label), .cardtype .card-type-selected .ct-label{
-  font-size:0.9rem;
 }
 
 /* Model selection styling */

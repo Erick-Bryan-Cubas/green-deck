@@ -713,11 +713,9 @@ defineExpose({
   <Button
     icon="pi pi-file-import"
     label="Documento"
-    severity="secondary"
-    outlined
     @click="openDialog"
     title="Importar texto de documento (PDF, Word, PowerPoint, Excel, HTML, Markdown, Imagens)"
-    class="document-upload-btn"
+    class="document-upload-btn btn-shine"
   />
 
   <!-- Upload Dialog -->
@@ -1091,6 +1089,40 @@ defineExpose({
 <style scoped>
 .document-upload-btn {
   gap: 0.5rem;
+}
+
+/* Botão premium - verde da logo #28ca73 */
+.document-upload-btn.btn-shine {
+  position: relative;
+  background: #28ca73 !important;
+  border: 1px solid #22b866 !important;
+  color: #ffffff !important;
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.document-upload-btn.btn-shine::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transition: left 0.5s ease;
+  pointer-events: none;
+}
+
+.document-upload-btn.btn-shine:hover::before {
+  left: 100%;
+}
+
+.document-upload-btn.btn-shine:hover {
+  background: #22b866 !important;
+  border-color: #1da55a !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
 }
 
 .document-upload-dialog :deep(.p-dialog-content) {
