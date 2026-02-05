@@ -26,6 +26,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Restrict browser features
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
 
+        # HTTP Strict Transport Security (HSTS)
+        # Only enable in production with HTTPS
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+
         # Content Security Policy
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "

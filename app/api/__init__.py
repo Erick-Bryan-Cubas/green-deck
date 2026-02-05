@@ -6,6 +6,7 @@ from .dashboard import router as dashboard_router
 from .models import router as models_router
 from .websocket import router as websocket_router, start_broadcaster, stop_broadcaster
 from .documents import router as documents_router
+from .questions import router as questions_router
 
 __all__ = [
     "health_router",
@@ -16,6 +17,7 @@ __all__ = [
     "models_router",
     "websocket_router",
     "documents_router",
+    "questions_router",
     "start_broadcaster",
     "stop_broadcaster",
 ]

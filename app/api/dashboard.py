@@ -350,7 +350,7 @@ def _get_cache_key(
         end_date or "",
     ]
     key_str = "|".join(key_parts)
-    return hashlib.md5(key_str.encode()).hexdigest()
+    return hashlib.sha256(key_str.encode()).hexdigest()
 
 
 def _get_cached_or_build(
