@@ -1,0 +1,213 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Serializar releases (não cancelar, enfileirar)
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    name: Bump versão + Tag + Release
+    runs-on: ubuntu-latest
+    # Não executar para commits de bump de versão (evitar loop infinito)
+    if: "!contains(github.event.head_commit.message, '[skip-release]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Ler versão atual
+        id: current
+        run: |
+          # Ler versão do pyproject.toml
+          CURRENT=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Versão atual: $CURRENT"
+
+          # Separar versão e sufixo
+          BASE_VERSION=$(echo "$CURRENT" | sed 's/-.*//')
+          CURRENT_SUFFIX=$(echo "$CURRENT" | grep -oP '(?<=-)\w+$' || echo "")
+
+          MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
+
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "suffix=$CURRENT_SUFFIX" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
+
+      - name: Detectar tipo de bump
+        id: bump
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Buscar o PR que causou este merge
+          PR_DATA=$(gh pr list --state merged --base main --limit 1 --json number,labels,title,body --jq '.[0]')
+
+          if [ -z "$PR_DATA" ] || [ "$PR_DATA" = "null" ]; then
+            echo "Nenhum PR mergeado encontrado. Usando patch bump."
+            echo "bump_type=patch" >> "$GITHUB_OUTPUT"
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+            echo "pr_labels=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title // ""')
+          PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+          PR_LABELS=$(echo "$PR_DATA" | jq -r '[.labels[].name] | join(",")')
+          PR_NUMBER=$(echo "$PR_DATA" | jq -r '.number')
+
+          echo "PR #${PR_NUMBER}: $PR_TITLE"
+          echo "Labels: $PR_LABELS"
+
+          # Verificar breaking change
+          if echo "$PR_TITLE" | grep -qiE '!:|BREAKING CHANGE'; then
+            BUMP="major"
+          elif echo "$PR_BODY" | grep -qi 'BREAKING CHANGE'; then
+            BUMP="major"
+          elif echo "$PR_LABELS" | grep -qi 'feature'; then
+            BUMP="minor"
+          else
+            BUMP="patch"
+          fi
+
+          # Verificar se é release estável
+          IS_STABLE="false"
+          if echo "$PR_LABELS" | grep -qi 'stable'; then
+            IS_STABLE="true"
+          fi
+
+          echo "bump_type=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
+          echo "pr_labels=$PR_LABELS" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          echo "Tipo de bump: $BUMP"
+          echo "Release estável: $IS_STABLE"
+
+      - name: Calcular nova versão
+        id: new_version
+        run: |
+          MAJOR=${{ steps.current.outputs.major }}
+          MINOR=${{ steps.current.outputs.minor }}
+          PATCH=${{ steps.current.outputs.patch }}
+          BUMP="${{ steps.bump.outputs.bump_type }}"
+          IS_STABLE="${{ steps.bump.outputs.is_stable }}"
+
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          if [ "$IS_STABLE" = "true" ]; then
+            SUFFIX=""
+            TAG="v${NEW_VERSION}"
+          else
+            SUFFIX="beta"
+            TAG="v${NEW_VERSION}-beta"
+          fi
+
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          echo "Nova versão: $TAG"
+
+      - name: Atualizar arquivos de versão
+        run: |
+          chmod +x scripts/bump-version.sh
+          ./scripts/bump-version.sh "${{ steps.new_version.outputs.version }}" "${{ steps.new_version.outputs.suffix }}"
+
+      - name: Commit e tag
+        run: |
+          TAG="${{ steps.new_version.outputs.tag }}"
+
+          git add -A
+          git commit -m "Bump version to ${TAG} [skip-release]"
+          git tag -a "$TAG" -m "Release ${TAG}"
+
+          git push origin main
+          git push origin "$TAG"
+
+      - name: Extrair notas do changelog
+        id: changelog
+        run: |
+          TAG="${{ steps.new_version.outputs.tag }}"
+          VERSION="${{ steps.new_version.outputs.version }}"
+          SUFFIX="${{ steps.new_version.outputs.suffix }}"
+
+          if [ -n "$SUFFIX" ]; then
+            SEARCH_VERSION="${VERSION}-${SUFFIX}"
+          else
+            SEARCH_VERSION="${VERSION}"
+          fi
+
+          # Tentar extrair seção do changelog
+          NOTES=$(awk "/^## \[${SEARCH_VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md 2>/dev/null || echo "")
+
+          if [ -z "$NOTES" ]; then
+            NOTES="Release ${TAG}"
+          fi
+
+          # Salvar em arquivo para preservar formatação
+          echo "$NOTES" > /tmp/release-notes.md
+          echo "notes_file=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Criar GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.new_version.outputs.tag }}"
+          SUFFIX="${{ steps.new_version.outputs.suffix }}"
+
+          PRERELEASE_FLAG=""
+          if [ -n "$SUFFIX" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "$TAG" \
+            --title "Release ${TAG}" \
+            --notes-file "${{ steps.changelog.outputs.notes_file }}" \
+            $PRERELEASE_FLAG \
+            --verify-tag
+
+          echo "GitHub Release criada: $TAG"
+
+      - name: Propagar versão para develop
+        run: |
+          TAG="${{ steps.new_version.outputs.tag }}"
+
+          # Fazer merge do commit de versão para develop
+          git fetch origin develop
+          git checkout develop
+          git merge origin/main -m "Merge version bump ${TAG} from main [skip-release]" --no-edit
+          git push origin develop
+
+          echo "Versão ${TAG} propagada para develop."
