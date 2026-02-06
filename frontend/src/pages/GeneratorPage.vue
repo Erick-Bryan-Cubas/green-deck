@@ -1368,7 +1368,7 @@ const defaultPromptsData = ref(null) // Cache dos prompts padrão do servidor
 const hasCustomPromptsSaved = computed(() => {
   const saved = savedCustomPrompts.value
   if (!saved) return false
-  return !!(saved.systemPrompt || saved.guidelines || saved.generationPrompt)
+  return !!(saved.userProfile || saved.systemPrompt || saved.guidelines || saved.generationPrompt)
 })
 
 const quantityMode = ref('auto')

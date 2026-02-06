@@ -4,7 +4,6 @@ Baseado em heuristica de ratio tokens/cards.
 
 Inspirado em test/text_size_checker.py que usa ML para detectar escassez.
 """
-import re
 from dataclasses import dataclass
 from typing import Optional
 

@@ -30,7 +30,7 @@ from app.services.document_extractor import (
     PdfExtractor,
     SUPPORTED_FORMATS,
 )
-from app.config import DOCUMENT_EXTRACTION_TIMEOUT, DOCUMENT_PREVIEW_TIMEOUT
+from app.config import DOCUMENT_EXTRACTION_TIMEOUT
 from app.api.websocket import extraction_manager
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -1089,7 +1089,7 @@ async def extract_pages_async(
         pages_list = [int(p.strip()) for p in page_numbers.split(",") if p.strip()]
         if not pages_list:
             raise ValueError("Lista de páginas vazia")
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=400,
             detail=f"Formato de páginas inválido: {page_numbers}. Use números separados por vírgula."

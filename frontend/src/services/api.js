@@ -555,6 +555,9 @@ async function generateCardsWithStream(
 
   // Adiciona prompts customizados se fornecidos
   if (customPrompts) {
+    if (customPrompts.userProfile) {
+      requestBody.userProfile = customPrompts.userProfile;
+    }
     if (customPrompts.systemPrompt) {
       requestBody.customSystemPrompt = customPrompts.systemPrompt;
     }

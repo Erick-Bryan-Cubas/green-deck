@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, Body
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Tuple, Literal
@@ -2150,9 +2150,10 @@ async def translate_cards(req: AnkiTranslateRequest):
                     temp_client, "findCards", {"query": f'deck:"{req.deckName}"'}
                 )
                 card_ids = list(deck_cards or [])
-        except Exception as e:
+        except Exception as exc:
+            error_msg = str(exc)
             async def error_gen():
-                yield f"event: error\ndata: {json.dumps({'success': False, 'requestId': request_id, 'error': f'Erro ao buscar deck: {str(e)}'})}\n\n"
+                yield f"event: error\ndata: {json.dumps({'success': False, 'requestId': request_id, 'error': f'Erro ao buscar deck: {error_msg}'})}\n\n"
             return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     target_language = (req.targetLanguage or "pt-br").strip().lower()
