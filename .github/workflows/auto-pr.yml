@@ -1,0 +1,100 @@
+name: Auto PR
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'bugfix/**'
+      - 'fix/**'
+      - 'hotfix/**'
+      - 'refactor/**'
+      - 'docs/**'
+      - 'style/**'
+      - 'perf/**'
+      - 'test/**'
+      - 'ci/**'
+      - 'chore/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  auto-pr:
+    name: Criar PR automático
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detectar tipo e criar PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          TYPE=$(echo "$BRANCH" | cut -d'/' -f1)
+          NAME=$(echo "$BRANCH" | cut -d'/' -f2- | tr '-' ' ' | tr '_' ' ')
+
+          echo "Branch: $BRANCH"
+          echo "Tipo: $TYPE"
+          echo "Nome: $NAME"
+
+          # Verificar se já existe PR para esta branch
+          EXISTING=$(gh pr list --head "$BRANCH" --base develop --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #${EXISTING} já existe para esta branch. Pulando criação."
+            exit 0
+          fi
+
+          # Mapear tipo para emoji e label
+          case "$TYPE" in
+            feature)  EMOJI="✨"; LABEL="feature";  DESC="Nova funcionalidade" ;;
+            bugfix)   EMOJI="🐛"; LABEL="bugfix";   DESC="Correção de bug" ;;
+            fix)      EMOJI="🐛"; LABEL="bugfix";   DESC="Correção de bug" ;;
+            hotfix)   EMOJI="🚑"; LABEL="hotfix";   DESC="Correção urgente" ;;
+            refactor) EMOJI="♻️";  LABEL="refactor"; DESC="Refatoração" ;;
+            docs)     EMOJI="📝"; LABEL="docs";     DESC="Documentação" ;;
+            style)    EMOJI="💄"; LABEL="style";    DESC="Estilo/UI" ;;
+            perf)     EMOJI="⚡"; LABEL="perf";     DESC="Performance" ;;
+            test)     EMOJI="✅"; LABEL="test";     DESC="Testes" ;;
+            ci)       EMOJI="👷"; LABEL="ci";       DESC="CI/CD" ;;
+            chore)    EMOJI="🔧"; LABEL="chore";    DESC="Manutenção" ;;
+            *)        EMOJI="📦"; LABEL="other";    DESC="Alteração" ;;
+          esac
+
+          # Gerar título do PR
+          TITLE="${EMOJI} ${DESC}: ${NAME}"
+
+          # Coletar commits da branch
+          COMMITS=$(git log origin/develop..HEAD --oneline --no-merges 2>/dev/null || echo "Commits não disponíveis")
+
+          # Criar corpo do PR
+          BODY=$(cat <<EOF
+          ## ${DESC}
+
+          **Branch:** \`${BRANCH}\`
+          **Tipo:** ${EMOJI} ${TYPE}
+
+          ### Commits
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ---
+          > PR criado automaticamente pelo pipeline CI/CD
+          EOF
+          )
+
+          # Criar label se não existir
+          gh label create "$LABEL" --description "$DESC" --color "0E8A16" 2>/dev/null || true
+
+          # Criar PR
+          gh pr create \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --base develop \
+            --head "$BRANCH" \
+            --label "$LABEL"
+
+          echo "PR criado com sucesso!"
