@@ -78,9 +78,9 @@ jobs:
 
             # Fazer merge (squash)
             echo "Fazendo merge do PR #${PR_NUM} (squash)..."
-            gh pr merge "$PR_NUM" --squash --auto || {
+            gh pr merge "$PR_NUM" --squash --delete-branch --auto || {
               echo "Falha ao fazer merge do PR #${PR_NUM}. Tentando merge direto..."
-              gh pr merge "$PR_NUM" --squash || echo "Merge falhou para PR #${PR_NUM}"
+              gh pr merge "$PR_NUM" --squash --delete-branch || echo "Merge falhou para PR #${PR_NUM}"
             }
           done
 
