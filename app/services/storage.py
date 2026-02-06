@@ -77,7 +77,7 @@ def _get_connection():
         conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS response_length INTEGER")
         conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS source_text_length INTEGER")
         conn.execute("ALTER TABLE llm_responses ADD COLUMN IF NOT EXISTS options TEXT")
-    except:
+    except Exception:
         pass  # Colunas já existem
     
     # Tabela de requests de geração (entrada do usuário)

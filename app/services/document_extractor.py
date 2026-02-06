@@ -10,7 +10,7 @@ import tempfile
 import os
 import asyncio
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
 

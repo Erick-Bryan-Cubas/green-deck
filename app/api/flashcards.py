@@ -59,21 +59,21 @@ def merge_api_keys(header_keys: ApiKeys, body_request) -> ApiKeys:
         openai_key=header_keys.openai or getattr(body_request, "openaiApiKey", None),
         perplexity_key=header_keys.perplexity or getattr(body_request, "perplexityApiKey", None),
     )
-from app.services.ollama import ollama_generate_stream
-from app.services.api_providers import openai_generate_stream, perplexity_generate_stream
-from app.services.parser import (
+from app.services.ollama import ollama_generate_stream  # noqa: E402
+from app.services.api_providers import openai_generate_stream, perplexity_generate_stream  # noqa: E402
+from app.services.parser import (  # noqa: E402
     parse_flashcards_qa,
     parse_flashcards_json,
     normalize_cards,
     pick_default_deck,
 )
-from app.utils.text import (
+from app.utils.text import (  # noqa: E402
     truncate_source,
     detect_language_pt_en_es,
 )
-from app.utils.validation import validate_content_sufficiency
-from app.utils.prompt_validation import validate_custom_prompt, log_injection_attempt
-from app.services.storage import (
+from app.utils.validation import validate_content_sufficiency  # noqa: E402
+from app.utils.prompt_validation import validate_custom_prompt, log_injection_attempt  # noqa: E402
+from app.services.storage import (  # noqa: E402
     save_analysis,
     save_cards,
     save_llm_response,
@@ -83,13 +83,12 @@ from app.services.storage import (
     _get_connection,
 )
 
-from app.services.prompt_provider import PromptProvider, get_prompt_provider
-from app.api.prompts import get_default_prompts_for_ui
-from app.api.models import get_provider_for_model, get_first_available_ollama_llm
-from app.api.topic_segmentation import (
+from app.services.prompt_provider import PromptProvider, get_prompt_provider  # noqa: E402
+from app.api.prompts import get_default_prompts_for_ui  # noqa: E402
+from app.api.models import get_provider_for_model, get_first_available_ollama_llm  # noqa: E402
+from app.api.topic_segmentation import (  # noqa: E402
     segment_with_langextract,
     is_langextract_available,
-    TOPIC_CATEGORIES,
 )
 
 router = APIRouter(prefix="/api", tags=["flashcards"])

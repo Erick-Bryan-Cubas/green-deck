@@ -5,27 +5,20 @@ Endpoints para geração de questões AllInOne (kprim, mc, sc).
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import Optional, List, Literal
+from pydantic import BaseModel
+from typing import Optional, Literal
 import json
-import re
 import logging
 import uuid
 from datetime import datetime, timezone
-
-from app.config import OLLAMA_MODEL, OLLAMA_VALIDATION_MODEL
-from app.middleware.rate_limit import limiter
 
 from app.services.ollama import ollama_generate_stream
 from app.services.api_providers import openai_generate_stream, perplexity_generate_stream
 from app.services.question_parser import (
     parse_questions,
     normalize_questions,
-    compute_answers_field,
-    qtype_to_str,
 )
-from app.utils.text import truncate_source, detect_language_pt_en_es
-from app.services.prompt_provider import PromptProvider, get_prompt_provider
+from app.utils.text import truncate_source
 from app.api.prompts import PROMPTS
 from app.api.models import get_provider_for_model, get_first_available_ollama_llm
 
