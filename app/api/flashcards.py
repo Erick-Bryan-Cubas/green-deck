@@ -122,6 +122,8 @@ class CardsRequest(BaseModel):
     customSystemPrompt: Optional[str] = None
     customGenerationPrompt: Optional[str] = None
     customGuidelines: Optional[str] = None
+    # Perfil do usuário (contexto pessoal para adaptar linguagem e exemplos)
+    userProfile: Optional[str] = None
     # Quantidade de cards desejada (opcional - se vazio, calcula automaticamente)
     numCards: Optional[int] = None
 
@@ -1583,12 +1585,14 @@ async def generate_cards_stream(
                 custom_system=request.customSystemPrompt,
                 custom_generation=request.customGenerationPrompt,
                 custom_guidelines=request.customGuidelines,
+                user_profile=request.userProfile,
             )
 
             using_custom = any([
                 request.customSystemPrompt,
                 request.customGenerationPrompt,
                 request.customGuidelines,
+                request.userProfile,
             ])
             if using_custom:
                 logger.info("Using custom prompts from request")
