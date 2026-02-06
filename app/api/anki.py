@@ -2151,8 +2151,9 @@ async def translate_cards(req: AnkiTranslateRequest):
                 )
                 card_ids = list(deck_cards or [])
         except Exception as exc:
+            error_msg = str(exc)
             async def error_gen():
-                yield f"event: error\ndata: {json.dumps({'success': False, 'requestId': request_id, 'error': f'Erro ao buscar deck: {str(exc)}'})}\n\n"
+                yield f"event: error\ndata: {json.dumps({'success': False, 'requestId': request_id, 'error': f'Erro ao buscar deck: {error_msg}'})}\n\n"
             return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     target_language = (req.targetLanguage or "pt-br").strip().lower()
