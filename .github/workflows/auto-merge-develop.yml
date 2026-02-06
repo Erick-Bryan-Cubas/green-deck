@@ -1,0 +1,88 @@
+name: Auto Merge → Develop
+
+on:
+  # Executar quando checks do PR completam
+  check_suite:
+    types: [completed]
+  # Executar quando status checks mudam
+  workflow_run:
+    workflows: ["PR Checks"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Auto-merge para develop
+    runs-on: ubuntu-latest
+    # Só roda se o check suite/workflow foi bem sucedido
+    if: >
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'success')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Buscar PRs aprovados para develop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Buscando PRs abertos para develop..."
+
+          # Listar PRs abertos para develop (somente do próprio repositório, não forks)
+          PRS=$(gh pr list --base develop --state open --json number,headRefName,headRepository,headRepositoryOwner,statusCheckRollup,labels --jq '
+            .[] | select(
+              (.headRepositoryOwner.login == "${{ github.repository_owner }}") and
+              (.statusCheckRollup | length > 0) and
+              (.statusCheckRollup | all(.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED"))
+            ) | .number
+          ')
+
+          if [ -z "$PRS" ]; then
+            echo "Nenhum PR com todos os checks passando encontrado."
+            exit 0
+          fi
+
+          echo "PRs com checks passando: $PRS"
+
+          for PR_NUM in $PRS; do
+            echo ""
+            echo "=== Processando PR #${PR_NUM} ==="
+
+            # Verificar que o PR NÃO é de um fork (contribuintes externos = review manual)
+            IS_FORK=$(gh pr view "$PR_NUM" --json isCrossRepository --jq '.isCrossRepository')
+            if [ "$IS_FORK" = "true" ]; then
+              echo "Pulando PR #${PR_NUM}: PR de fork (requer review manual)"
+              continue
+            fi
+
+            # Verificar que a branch de origem NÃO é develop (evitar loop)
+            HEAD=$(gh pr view "$PR_NUM" --json headRefName --jq '.headRefName')
+            if [ "$HEAD" = "develop" ]; then
+              echo "Pulando PR #${PR_NUM}: branch de origem é develop"
+              continue
+            fi
+
+            # Verificar se é uma branch com prefixo reconhecido
+            TYPE=$(echo "$HEAD" | cut -d'/' -f1)
+            case "$TYPE" in
+              feature|bugfix|fix|hotfix|refactor|docs|style|perf|test|ci|chore)
+                echo "Tipo reconhecido: $TYPE"
+                ;;
+              *)
+                echo "Pulando PR #${PR_NUM}: prefixo '$TYPE' não reconhecido para auto-merge"
+                continue
+                ;;
+            esac
+
+            # Fazer merge (squash)
+            echo "Fazendo merge do PR #${PR_NUM} (squash)..."
+            gh pr merge "$PR_NUM" --squash --auto || {
+              echo "Falha ao fazer merge do PR #${PR_NUM}. Tentando merge direto..."
+              gh pr merge "$PR_NUM" --squash || echo "Merge falhou para PR #${PR_NUM}"
+            }
+          done
+
+          echo ""
+          echo "Auto-merge concluído."
