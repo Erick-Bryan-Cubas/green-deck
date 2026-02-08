@@ -16,8 +16,6 @@ import { useToast } from 'primevue/usetoast'
 import DatePicker from 'primevue/datepicker'
 import MultiSelect from 'primevue/multiselect'
 import Dialog from 'primevue/dialog'
-import Knob from 'primevue/knob'
-import ProgressBar from 'primevue/progressbar'
 import Divider from 'primevue/divider'
 
 // App components - with lazy loading for performance
@@ -113,30 +111,39 @@ function format2(v) {
   if (!Number.isFinite(n)) return '—'
   return n.toFixed(2).replace('.', ',')
 }
+function formatStudyTime(totalMinutes) {
+  const n = Number(totalMinutes)
+  if (!Number.isFinite(n) || n <= 0) return '0 min'
+  if (n < 60) return `${n.toFixed(0)} min`
+  const h = Math.floor(n / 60)
+  const m = Math.round(n % 60)
+  return m > 0 ? `${h}h ${m}min` : `${h}h`
+}
 
 // --- state ---
 const loading = ref(true)
 const errorMsg = ref('')
 
 // payloads do backend
-const summary = ref(null) // { totalCards, totalDecks, createdTotal, avgPerDay, statusBreakdown, segmentsMeta }
-const byDay = ref([]) // [{day:"YYYY-MM-DD", created:123}]
+const summary = ref(null) // { totalCards, totalDecks, statusBreakdown, segmentsMeta, reviewKpis }
+const reviewsByDay = ref([]) // [{day, reviews}]
+const studyTimeByDay = ref([]) // [{day, minutes}]
+const successRateByDay = ref([]) // [{day, rate, correct, total}]
 const topDecks = ref([]) // [{deckName, count}]
 const segments = ref([]) // [{segment, count, avgInterval, avgEase, avgLapses, avgReps}]
 
 // ---------- KPIs ----------
 const kpiTotalCards = computed(() => summary.value?.totalCards ?? 0)
-const kpiCreated = computed(() => summary.value?.createdTotal ?? summary.value?.totalCards ?? 0)
-const kpiDecks = computed(() => summary.value?.totalDecks ?? 0)
-const kpiAvg = computed(() => summary.value?.avgPerDay ?? 0)
+const kpiTotalReviews = computed(() => summary.value?.reviewKpis?.totalReviews ?? 0)
+const kpiAvgReviewsPerDay = computed(() => summary.value?.reviewKpis?.avgReviewsPerDay ?? 0)
+const kpiTotalStudyTimeMin = computed(() => summary.value?.reviewKpis?.totalStudyTimeMin ?? 0)
+const kpiSuccessRate = computed(() => summary.value?.reviewKpis?.successRate ?? 0)
 
 // Animated KPI values
-const animatedTotalCards = useAnimatedNumber(kpiTotalCards)
-const animatedCreated = useAnimatedNumber(kpiCreated)
-const animatedDecks = useAnimatedNumber(kpiDecks)
-
-const firstDay = computed(() => (byDay.value?.length ? byDay.value[0]?.day : null))
-const lastDay = computed(() => (byDay.value?.length ? byDay.value[byDay.value.length - 1]?.day : null))
+const animatedTotalReviews = useAnimatedNumber(kpiTotalReviews)
+const animatedAvgReviews = useAnimatedNumber(kpiAvgReviewsPerDay)
+const animatedStudyTime = useAnimatedNumber(kpiTotalStudyTimeMin)
+const animatedSuccessRate = useAnimatedNumber(kpiSuccessRate)
 
 // ---------- Drill-down functions ----------
 function openDeckDetail(deck) {
@@ -184,32 +191,36 @@ const statusItems = computed(() => {
 const statusTotal = computed(() => statusItems.value.reduce((s, x) => s + (x.count || 0), 0))
 
 // ---------- Charts ----------
-const lineData = computed(() => {
-  const labels = byDay.value.map((x) => x.day)
-  const data = byDay.value.map((x) => Number(x.created || 0))
+
+// Reviews por dia (substitui "Cards criados")
+const reviewsLineData = computed(() => {
+  const labels = reviewsByDay.value.map((x) => x.day)
+  const data = reviewsByDay.value.map((x) => Number(x.reviews || 0))
   return {
     labels,
     datasets: [
       {
-        label: 'Cards criados (all-time)',
+        label: 'Reviews por dia',
         data,
         tension: 0.35,
         fill: true,
         pointRadius: 0,
-        pointHitRadius: 10
+        pointHitRadius: 10,
+        borderColor: '#6366F1',
+        backgroundColor: 'rgba(99, 102, 241, 0.15)'
       }
     ]
   }
 })
 
-const lineOptions = computed(() => ({
+const reviewsLineOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
   onClick: (event, elements) => {
     if (elements.length > 0) {
       const dataIndex = elements[0].index
-      const clickedDay = byDay.value[dataIndex]
+      const clickedDay = reviewsByDay.value[dataIndex]
       if (clickedDay) openDayDetail(clickedDay)
     }
   },
@@ -231,6 +242,94 @@ const lineOptions = computed(() => ({
     y: {
       beginAtZero: true,
       ticks: { maxTicksLimit: 6 },
+      grid: { drawBorder: false }
+    }
+  }
+}))
+
+// Tempo de estudo por dia
+const studyTimeLineData = computed(() => {
+  const labels = studyTimeByDay.value.map((x) => x.day)
+  const data = studyTimeByDay.value.map((x) => Number(x.minutes || 0))
+  return {
+    labels,
+    datasets: [
+      {
+        label: 'Tempo de estudo (min)',
+        data,
+        tension: 0.35,
+        fill: true,
+        pointRadius: 0,
+        pointHitRadius: 10,
+        borderColor: '#10B981',
+        backgroundColor: 'rgba(16, 185, 129, 0.15)'
+      }
+    ]
+  }
+})
+
+const studyTimeOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
+    tooltip: {
+      mode: 'index', intersect: false,
+      callbacks: {
+        label: (ctx) => `${ctx.parsed.y.toFixed(1)} min`
+      }
+    }
+  },
+  scales: {
+    x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
+    y: { beginAtZero: true, ticks: { maxTicksLimit: 6 }, grid: { drawBorder: false } }
+  }
+}))
+
+// Taxa de acerto ao longo do tempo
+const successRateLineData = computed(() => {
+  const labels = successRateByDay.value.map((x) => x.day)
+  const data = successRateByDay.value.map((x) => Number(x.rate || 0))
+  return {
+    labels,
+    datasets: [
+      {
+        label: 'Taxa de acerto (%)',
+        data,
+        tension: 0.35,
+        fill: true,
+        pointRadius: 0,
+        pointHitRadius: 10,
+        borderColor: '#F59E0B',
+        backgroundColor: 'rgba(245, 158, 11, 0.15)'
+      }
+    ]
+  }
+})
+
+const successRateOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
+    tooltip: {
+      mode: 'index', intersect: false,
+      callbacks: {
+        label: (ctx) => {
+          const dayData = successRateByDay.value[ctx.dataIndex]
+          return `${ctx.parsed.y.toFixed(1)}% (${dayData?.correct ?? 0}/${dayData?.total ?? 0})`
+        }
+      }
+    }
+  },
+  scales: {
+    x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
+    y: {
+      beginAtZero: true,
+      max: 100,
+      ticks: { maxTicksLimit: 6, callback: (v) => `${v}%` },
       grid: { drawBorder: false }
     }
   }
@@ -348,17 +447,21 @@ async function fetchDashboard() {
 
   try {
     // Parallel fetch for better performance
-    const [summaryRes, byDayRes, topDecksRes, segmentsRes] = await Promise.all([
+    const [summaryRes, reviewsByDayRes, studyTimeByDayRes, successRateByDayRes, topDecksRes, segmentsRes] = await Promise.all([
       fetch(`/api/dashboard/summary${qs}`),
-      fetch(`/api/dashboard/by-day${qs}`),
+      fetch(`/api/dashboard/reviews-by-day${qs}`),
+      fetch(`/api/dashboard/study-time-by-day${qs}`),
+      fetch(`/api/dashboard/success-rate-by-day${qs}`),
       fetch(`/api/dashboard/top-decks${qsTopDecks}`),
       fetch(`/api/dashboard/segments${qs}`)
     ])
 
     // Parse all responses
-    const [summaryData, byDayData, topDecksData, segmentsData] = await Promise.all([
+    const [summaryData, reviewsByDayData, studyTimeByDayData, successRateByDayData, topDecksData, segmentsData] = await Promise.all([
       readJsonSafe(summaryRes),
-      readJsonSafe(byDayRes),
+      readJsonSafe(reviewsByDayRes),
+      readJsonSafe(studyTimeByDayRes),
+      readJsonSafe(successRateByDayRes),
       readJsonSafe(topDecksRes),
       readJsonSafe(segmentsRes)
     ])
@@ -368,10 +471,20 @@ async function fetchDashboard() {
     if (summaryRes.status >= 400 || summaryData?.success === false) throw new Error(summaryData?.error || `summary HTTP ${summaryRes.status}`)
     summary.value = summaryData
 
-    // Validate and assign byDay
-    if (byDayData?.__nonJson) throw new Error(`by-day non-JSON: ${byDayData.__head}`)
-    if (byDayRes.status >= 400 || byDayData?.success === false) throw new Error(byDayData?.error || `by-day HTTP ${byDayRes.status}`)
-    byDay.value = Array.isArray(byDayData?.items) ? byDayData.items : []
+    // Validate and assign reviewsByDay
+    if (reviewsByDayData?.__nonJson) throw new Error(`reviews-by-day non-JSON: ${reviewsByDayData.__head}`)
+    if (reviewsByDayRes.status >= 400 || reviewsByDayData?.success === false) throw new Error(reviewsByDayData?.error || `reviews-by-day HTTP ${reviewsByDayRes.status}`)
+    reviewsByDay.value = Array.isArray(reviewsByDayData?.items) ? reviewsByDayData.items : []
+
+    // Validate and assign studyTimeByDay
+    if (studyTimeByDayData?.__nonJson) throw new Error(`study-time-by-day non-JSON: ${studyTimeByDayData.__head}`)
+    if (studyTimeByDayRes.status >= 400 || studyTimeByDayData?.success === false) throw new Error(studyTimeByDayData?.error || `study-time-by-day HTTP ${studyTimeByDayRes.status}`)
+    studyTimeByDay.value = Array.isArray(studyTimeByDayData?.items) ? studyTimeByDayData.items : []
+
+    // Validate and assign successRateByDay
+    if (successRateByDayData?.__nonJson) throw new Error(`success-rate-by-day non-JSON: ${successRateByDayData.__head}`)
+    if (successRateByDayRes.status >= 400 || successRateByDayData?.success === false) throw new Error(successRateByDayData?.error || `success-rate-by-day HTTP ${successRateByDayRes.status}`)
+    successRateByDay.value = Array.isArray(successRateByDayData?.items) ? successRateByDayData.items : []
 
     // Validate and assign topDecks
     if (topDecksData?.__nonJson) throw new Error(`top-decks non-JSON: ${topDecksData.__head}`)
@@ -525,12 +638,12 @@ onUnmounted(() => {
         <Card class="kpi kpi-accent-1 kpi-anim-1">
           <template #content>
             <div class="kpi-top">
-              <div class="kpi-ico"><i class="pi pi-clone" /></div>
+              <div class="kpi-ico"><i class="pi pi-history" /></div>
               <div class="kpi-txt">
-                <div class="kpi-lbl muted">Total de cards</div>
+                <div class="kpi-lbl muted">Total de reviews</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ formatInt(animatedTotalCards) }}</span>
+                  <span v-else>{{ formatInt(animatedTotalReviews) }}</span>
                 </div>
               </div>
             </div>
@@ -540,12 +653,12 @@ onUnmounted(() => {
         <Card class="kpi kpi-accent-2 kpi-anim-2">
           <template #content>
             <div class="kpi-top">
-              <div class="kpi-ico"><i class="pi pi-plus-circle" /></div>
+              <div class="kpi-ico"><i class="pi pi-chart-line" /></div>
               <div class="kpi-txt">
-                <div class="kpi-lbl muted">Criados (total)</div>
+                <div class="kpi-lbl muted">Média reviews/dia</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ formatInt(animatedCreated) }}</span>
+                  <span v-else>{{ format2(animatedAvgReviews) }}</span>
                 </div>
               </div>
             </div>
@@ -555,12 +668,12 @@ onUnmounted(() => {
         <Card class="kpi kpi-accent-3 kpi-anim-3">
           <template #content>
             <div class="kpi-top">
-              <div class="kpi-ico"><i class="pi pi-sitemap" /></div>
+              <div class="kpi-ico"><i class="pi pi-clock" /></div>
               <div class="kpi-txt">
-                <div class="kpi-lbl muted">Decks no DB</div>
+                <div class="kpi-lbl muted">Tempo total de estudo</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ formatInt(animatedDecks) }}</span>
+                  <span v-else>{{ formatStudyTime(animatedStudyTime) }}</span>
                 </div>
               </div>
             </div>
@@ -570,12 +683,12 @@ onUnmounted(() => {
         <Card class="kpi kpi-accent-4 kpi-anim-4">
           <template #content>
             <div class="kpi-top">
-              <div class="kpi-ico"><i class="pi pi-chart-line" /></div>
+              <div class="kpi-ico"><i class="pi pi-check-circle" /></div>
               <div class="kpi-txt">
-                <div class="kpi-lbl muted">Média / dia (all-time)</div>
+                <div class="kpi-lbl muted">Taxa de acerto</div>
                 <div class="kpi-val">
                   <Skeleton v-if="loading" width="9rem" height="1.7rem" />
-                  <span v-else>{{ format2(kpiAvg) }}</span>
+                  <span v-else>{{ format2(animatedSuccessRate) }}%</span>
                 </div>
               </div>
             </div>
@@ -588,15 +701,15 @@ onUnmounted(() => {
         <div class="card-surface chart-card">
           <div class="card-head">
             <div>
-              <div class="card-title">Criação de cards</div>
-              <div class="card-sub muted">Série diária (all-time)</div>
+              <div class="card-title">Reviews por dia</div>
+              <div class="card-sub muted">Histórico de revisões</div>
             </div>
             <Tag class="pill" severity="secondary">Linha</Tag>
           </div>
 
           <div class="chart-wrap">
             <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="line" :data="lineData" :options="lineOptions" height="300px" />
+            <LazyChart v-else type="line" :data="reviewsLineData" :options="reviewsLineOptions" height="300px" />
           </div>
         </div>
 
@@ -629,7 +742,40 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Charts row 2 -->
+      <!-- Charts row 2: Tempo de estudo + Taxa de acerto -->
+      <div class="grid">
+        <div class="card-surface chart-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Tempo de estudo</div>
+              <div class="card-sub muted">Minutos por dia</div>
+            </div>
+            <Tag class="pill" severity="secondary">Linha</Tag>
+          </div>
+
+          <div class="chart-wrap">
+            <Skeleton v-if="loading" width="100%" height="290px" />
+            <LazyChart v-else type="line" :data="studyTimeLineData" :options="studyTimeOptions" height="300px" />
+          </div>
+        </div>
+
+        <div class="card-surface chart-card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Taxa de acerto</div>
+              <div class="card-sub muted">% de acertos ao longo do tempo</div>
+            </div>
+            <Tag class="pill" severity="secondary">Linha</Tag>
+          </div>
+
+          <div class="chart-wrap">
+            <Skeleton v-if="loading" width="100%" height="290px" />
+            <LazyChart v-else type="line" :data="successRateLineData" :options="successRateOptions" height="300px" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts row 3: Decks + Segmentos -->
       <div class="grid">
         <div class="card-surface chart-card">
           <div class="card-head">
@@ -811,7 +957,7 @@ onUnmounted(() => {
           <div class="dlg-icon"><i class="pi pi-calendar"></i></div>
           <div class="dlg-hdr-txt">
             <div class="dlg-title">{{ selectedDay?.day || 'Data' }}</div>
-            <div class="dlg-sub muted">Cards criados neste dia</div>
+            <div class="dlg-sub muted">Detalhes do dia de estudo</div>
           </div>
         </div>
       </div>
@@ -820,8 +966,8 @@ onUnmounted(() => {
     <div class="dlg-body">
       <div class="day-stats">
         <div class="day-stat-big">
-          <div class="day-stat-value">{{ formatInt(selectedDay?.created) }}</div>
-          <div class="day-stat-label muted">cards criados</div>
+          <div class="day-stat-value">{{ formatInt(selectedDay?.reviews) }}</div>
+          <div class="day-stat-label muted">reviews realizados</div>
         </div>
       </div>
 
