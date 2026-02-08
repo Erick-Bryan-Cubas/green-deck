@@ -1,1 +1,1 @@
-from .text import *
+from .text import *  # noqa: F403

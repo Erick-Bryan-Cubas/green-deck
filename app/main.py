@@ -1,5 +1,4 @@
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -55,7 +54,7 @@ async def lifespan(app: FastAPI):
     # Shutdown: stop WebSocket broadcaster
     await stop_broadcaster()
 
-app = FastAPI(title="Green Deck", version="1.2.0-beta", lifespan=lifespan)
+app = FastAPI(title="Green Deck", version="1.3.1-beta", lifespan=lifespan)
 
 # Rate Limiting (must be configured before middlewares)
 setup_rate_limiting(app)

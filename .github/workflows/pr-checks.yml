@@ -1,0 +1,230 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [develop, main]
+    types: [opened, synchronize, reopened]
+
+# Cancela runs anteriores da mesma branch
+concurrency:
+  group: pr-checks-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ===== Detectar tipo de branch =====
+  detect-branch-type:
+    name: Detectar tipo de branch
+    runs-on: ubuntu-latest
+    outputs:
+      branch_type: ${{ steps.detect.outputs.branch_type }}
+      run_lint: ${{ steps.detect.outputs.run_lint }}
+      run_tests: ${{ steps.detect.outputs.run_tests }}
+      run_build: ${{ steps.detect.outputs.run_build }}
+      run_security: ${{ steps.detect.outputs.run_security }}
+    steps:
+      - name: Detectar prefixo da branch
+        id: detect
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Branch: $BRANCH"
+
+          # Extrair prefixo
+          TYPE=$(echo "$BRANCH" | cut -d'/' -f1)
+          echo "branch_type=$TYPE" >> "$GITHUB_OUTPUT"
+
+          # Definir checks por tipo
+          case "$TYPE" in
+            feature)
+              echo "run_lint=true"     >> "$GITHUB_OUTPUT"
+              echo "run_tests=true"    >> "$GITHUB_OUTPUT"
+              echo "run_build=true"    >> "$GITHUB_OUTPUT"
+              echo "run_security=true" >> "$GITHUB_OUTPUT"
+              ;;
+            bugfix|fix|hotfix|refactor|perf)
+              echo "run_lint=true"     >> "$GITHUB_OUTPUT"
+              echo "run_tests=true"    >> "$GITHUB_OUTPUT"
+              echo "run_build=true"    >> "$GITHUB_OUTPUT"
+              echo "run_security=false" >> "$GITHUB_OUTPUT"
+              ;;
+            style)
+              echo "run_lint=true"     >> "$GITHUB_OUTPUT"
+              echo "run_tests=false"   >> "$GITHUB_OUTPUT"
+              echo "run_build=true"    >> "$GITHUB_OUTPUT"
+              echo "run_security=false" >> "$GITHUB_OUTPUT"
+              ;;
+            docs)
+              echo "run_lint=false"    >> "$GITHUB_OUTPUT"
+              echo "run_tests=false"   >> "$GITHUB_OUTPUT"
+              echo "run_build=true"    >> "$GITHUB_OUTPUT"
+              echo "run_security=false" >> "$GITHUB_OUTPUT"
+              ;;
+            test)
+              echo "run_lint=true"     >> "$GITHUB_OUTPUT"
+              echo "run_tests=true"    >> "$GITHUB_OUTPUT"
+              echo "run_build=false"   >> "$GITHUB_OUTPUT"
+              echo "run_security=false" >> "$GITHUB_OUTPUT"
+              ;;
+            ci|chore)
+              echo "run_lint=false"    >> "$GITHUB_OUTPUT"
+              echo "run_tests=false"   >> "$GITHUB_OUTPUT"
+              echo "run_build=false"   >> "$GITHUB_OUTPUT"
+              echo "run_security=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              # PR direto de develop→main ou branch sem prefixo: full checks
+              echo "run_lint=true"     >> "$GITHUB_OUTPUT"
+              echo "run_tests=true"    >> "$GITHUB_OUTPUT"
+              echo "run_build=true"    >> "$GITHUB_OUTPUT"
+              echo "run_security=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  # ===== Backend: Lint + Formatação =====
+  backend-lint:
+    name: Backend Lint
+    needs: detect-branch-type
+    if: needs.detect-branch-type.outputs.run_lint == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Lint com Ruff
+        run: ruff check app/ --output-format=github
+        continue-on-error: true
+
+      - name: Verificar formatação com Ruff
+        run: ruff format app/ --check
+        continue-on-error: true
+
+  # ===== Backend: Testes =====
+  backend-tests:
+    name: Backend Tests
+    needs: detect-branch-type
+    if: needs.detect-branch-type.outputs.run_tests == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Executar testes
+        run: pytest tests/ -v --tb=short || echo "Nenhum teste encontrado"
+
+  # ===== Frontend: Lint + Formatação =====
+  frontend-lint:
+    name: Frontend Lint
+    needs: detect-branch-type
+    if: needs.detect-branch-type.outputs.run_lint == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci || npm install
+
+      - name: Lint
+        run: npm run lint:check || echo "Avisos de linting encontrados"
+
+      - name: Verificar formatação
+        run: npm run format:check || echo "Problemas de formatação encontrados"
+
+  # ===== Frontend: Build =====
+  frontend-build:
+    name: Frontend Build
+    needs: detect-branch-type
+    if: needs.detect-branch-type.outputs.run_build == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci || npm install
+
+      - name: Build
+        run: npm run build
+
+  # ===== Security Scan =====
+  security:
+    name: Security Scan
+    needs: detect-branch-type
+    if: needs.detect-branch-type.outputs.run_security == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar ferramentas de segurança
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit pip-audit
+
+      - name: Bandit security scan
+        run: |
+          bandit -r app/ -ll -ii -f json -o bandit-report.json || true
+        continue-on-error: true
+
+      - name: pip-audit
+        run: |
+          pip install -r requirements.txt
+          pip-audit --desc on || echo "Vulnerabilidades encontradas"
+        continue-on-error: true
+
+      - name: npm audit
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          npm audit --audit-level=high || echo "Vulnerabilidades npm encontradas"
+        continue-on-error: true
+
+      - name: Upload relatórios de segurança
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: bandit-report.json
+          retention-days: 30

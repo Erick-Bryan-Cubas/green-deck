@@ -20,6 +20,30 @@
 
     <!-- Accordion com as seções de prompts -->
     <Accordion v-if="useCustomPrompts || isSettingsMode" :multiple="true" :activeIndex="activeIndices">
+      <!-- Perfil do Usuário -->
+      <AccordionTab>
+        <template #header>
+          <div class="flex align-items-center gap-2">
+            <i class="pi pi-user" />
+            <span>Perfil do Usuário</span>
+            <Tag v-if="isProfileConfigured" severity="success" value="ativo" class="ml-2" />
+          </div>
+        </template>
+        <div class="prompt-section">
+          <small class="text-color-secondary block mb-2">
+            Descreva sua formação, área de atuação e preferências. O modelo adaptará a linguagem,
+            os exemplos e a profundidade dos flashcards ao seu perfil.
+          </small>
+          <Textarea 
+            v-model="customUserProfile" 
+            autoResize 
+            class="w-full font-mono text-sm"
+            rows="3"
+            placeholder="Ex: Sou cientista de dados e analista Power BI. Programo em Python e trabalho com estatística, machine learning e visualização de dados. Prefiro exemplos práticos com código e dados tabulares."
+          />
+        </div>
+      </AccordionTab>
+
       <!-- System Prompt -->
       <AccordionTab>
         <template #header>
@@ -101,6 +125,7 @@
         <span class="font-semibold text-sm">{{ isSettingsMode ? 'Status das alterações:' : 'O que será usado:' }}</span>
       </div>
       <ul class="text-sm text-color-secondary m-0 pl-4">
+        <li>Perfil: {{ isProfileConfigured ? '✅ Configurado' : '—  Não definido' }}</li>
         <li>System: {{ isSystemModified ? 'Customizado' : 'Padrão' }}</li>
         <li>Diretrizes: {{ isGuidelinesModified ? 'Customizadas' : 'Padrão' }}</li>
         <li>Template: {{ isGenerationModified ? 'Customizado' : 'Padrão' }}</li>
@@ -148,6 +173,9 @@ const defaultPrompts = ref(null)
 const isLoading = ref(false)
 const activeIndices = ref([])
 
+// Perfil do usuário
+const customUserProfile = ref('')
+
 // Prompts customizados
 const customSystemPrompt = ref('')
 const customGuidelines = ref('')
@@ -170,8 +198,12 @@ const isGenerationModified = computed(() => {
   return customGenerationPrompt.value.trim() !== '' && customGenerationPrompt.value.trim() !== defaultPrompts.value.generation.default.trim()
 })
 
+const isProfileConfigured = computed(() => {
+  return customUserProfile.value.trim().length > 0
+})
+
 const hasChanges = computed(() => {
-  return isSystemModified.value || isGuidelinesModified.value || isGenerationModified.value
+  return isSystemModified.value || isGuidelinesModified.value || isGenerationModified.value || isProfileConfigured.value
 })
 
 // Carrega prompts padrão do servidor
@@ -196,6 +228,7 @@ function resetToDefaults() {
   const guidelinesDefault = defaultPrompts.value.guidelines?.default || ''
   const generationDefault = defaultPrompts.value.generation?.default || ''
 
+  customUserProfile.value = ''
   customSystemPrompt.value = systemDefault
   customGuidelines.value = guidelinesDefault
   customGenerationPrompt.value = generationDefault
@@ -222,7 +255,7 @@ function fillWithDefaults() {
 }
 
 // Emite os prompts customizados quando mudam
-watch([useCustomPrompts, customSystemPrompt, customGuidelines, customGenerationPrompt], () => {
+watch([useCustomPrompts, customUserProfile, customSystemPrompt, customGuidelines, customGenerationPrompt], () => {
   if (!useCustomPrompts.value) {
     emit('update:customPrompts', null)
     return
@@ -231,6 +264,11 @@ watch([useCustomPrompts, customSystemPrompt, customGuidelines, customGenerationP
   if (!defaultPrompts.value) return
 
   const prompts = {}
+
+  // Perfil do usuário - sempre envia se preenchido (não tem "padrão")
+  if (customUserProfile.value.trim()) {
+    prompts.userProfile = customUserProfile.value.trim()
+  }
 
   // Compara com os padrões - só envia se for diferente
   const systemDefault = defaultPrompts.value.system?.[props.cardType] || defaultPrompts.value.system?.basic || ''
@@ -272,6 +310,9 @@ async function initializeFromSavedPrompts() {
   await loadDefaultPrompts()
 
   // Preenche os campos com os prompts salvos
+  if (props.initialPrompts.userProfile) {
+    customUserProfile.value = props.initialPrompts.userProfile
+  }
   if (props.initialPrompts.systemPrompt) {
     customSystemPrompt.value = props.initialPrompts.systemPrompt
   }
@@ -283,7 +324,7 @@ async function initializeFromSavedPrompts() {
   }
 
   // Ativa a edição se houver algo customizado
-  if (props.initialPrompts.systemPrompt || props.initialPrompts.guidelines || props.initialPrompts.generationPrompt) {
+  if (props.initialPrompts.userProfile || props.initialPrompts.systemPrompt || props.initialPrompts.guidelines || props.initialPrompts.generationPrompt) {
     useCustomPrompts.value = true
   }
 }

@@ -30,15 +30,31 @@ class PromptProvider:
         provider = PromptProvider(custom_prompts={"system": "...", "guidelines": "..."})  # Customizado
     """
     custom_prompts: Dict[str, str] = field(default_factory=dict)
+    user_profile: Optional[str] = None
     
+    def _build_profile_instruction(self) -> str:
+        """Retorna instrução de perfil para injetar no system prompt."""
+        if not self.user_profile:
+            return ""
+        return (
+            f"\nAdapte a linguagem, os exemplos e a profundidade dos flashcards "
+            f"ao perfil do usuário: {self.user_profile}\n"
+        )
+
     def flashcards_system(self, card_type: CardType) -> str:
         # Se há prompt customizado, usa ele
         if self.custom_prompts.get("system"):
-            return self.custom_prompts["system"]
+            base = self.custom_prompts["system"]
+        elif card_type == "cloze":
+            base = PROMPTS["FLASHCARDS_SYSTEM_CLOZE"]
+        else:
+            base = PROMPTS["FLASHCARDS_SYSTEM_PTBR"]
         
-        if card_type == "cloze":
-            return PROMPTS["FLASHCARDS_SYSTEM_CLOZE"]
-        return PROMPTS["FLASHCARDS_SYSTEM_PTBR"]
+        # Injeta instrução de perfil do usuário, se houver
+        profile_instruction = self._build_profile_instruction()
+        if profile_instruction:
+            return base.rstrip() + profile_instruction
+        return base
 
     def flashcards_type_instruction(self, card_type: CardType) -> str:
         return {
@@ -74,9 +90,16 @@ class PromptProvider:
         # Agora o contexto vai dentro do XML, entao nao precisa do prefixo antigo
         ctx_block = (ctx or "").strip() or "Nenhum contexto adicional fornecido."
 
+        # Monta bloco de perfil do usuario se houver
+        user_profile_block = ""
+        if self.user_profile:
+            user_profile_block = (
+                f"\n<USER_PROFILE>\n{self.user_profile}\n</USER_PROFILE>\n"
+            )
+
         # Se ha prompt de geracao customizado, usa ele
         if self.custom_prompts.get("generation"):
-            return _render_custom(
+            rendered = _render_custom(
                 self.custom_prompts["generation"],
                 guidelines=self.flashcards_guidelines(),
                 src=src,
@@ -86,9 +109,14 @@ class PromptProvider:
                 target_max=str(target_max),
                 type_instruction=self.flashcards_type_instruction(card_type),
                 format_block=self.flashcards_format_block(card_type),
+                user_profile_block=user_profile_block,
             )
+            # Se o template customizado nao usa ${user_profile_block}, injeta manualmente
+            if user_profile_block and "${user_profile_block}" not in self.custom_prompts["generation"]:
+                rendered = user_profile_block + rendered
+            return rendered
 
-        return _render(
+        base = _render(
             "FLASHCARDS_GENERATION",
             guidelines=self.flashcards_guidelines(),
             src=src,
@@ -99,6 +127,11 @@ class PromptProvider:
             type_instruction=self.flashcards_type_instruction(card_type),
             format_block=self.flashcards_format_block(card_type),
         )
+
+        # Injeta bloco de perfil antes do prompt de geracao
+        if user_profile_block:
+            return user_profile_block + base
+        return base
 
     def build_flashcards_repair_prompt(
         self,
@@ -187,6 +220,7 @@ class PromptProvider:
         system: Optional[str] = None,
         generation: Optional[str] = None,
         guidelines: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> "PromptProvider":
         """
         Retorna um novo PromptProvider com prompts customizados.
@@ -195,6 +229,7 @@ class PromptProvider:
             system: Prompt de sistema customizado (opcional)
             generation: Template de geração customizado (opcional)
             guidelines: Diretrizes customizadas (opcional)
+            user_profile: Perfil do usuário (opcional)
             
         Returns:
             Novo PromptProvider com os prompts customizados
@@ -207,13 +242,14 @@ class PromptProvider:
         if guidelines:
             custom["guidelines"] = guidelines
         
-        return PromptProvider(custom_prompts=custom)
+        return PromptProvider(custom_prompts=custom, user_profile=user_profile or self.user_profile)
 
 
 def get_prompt_provider(
     custom_system: Optional[str] = None,
     custom_generation: Optional[str] = None,
     custom_guidelines: Optional[str] = None,
+    user_profile: Optional[str] = None,
 ) -> PromptProvider:
     """
     Factory para criar PromptProvider com suporte a customização.
@@ -222,6 +258,7 @@ def get_prompt_provider(
         custom_system: Prompt de sistema customizado (opcional)
         custom_generation: Template de geração customizado (opcional)
         custom_guidelines: Diretrizes customizadas (opcional)
+        user_profile: Perfil do usuário para adaptar linguagem e exemplos (opcional)
 
     Returns:
         PromptProvider configurado
@@ -234,4 +271,4 @@ def get_prompt_provider(
     if custom_guidelines:
         custom["guidelines"] = custom_guidelines
 
-    return PromptProvider(custom_prompts=custom)
+    return PromptProvider(custom_prompts=custom, user_profile=user_profile)
