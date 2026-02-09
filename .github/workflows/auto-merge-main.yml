@@ -1,19 +1,26 @@
-name: Auto Merge → Main (após aprovação)
+name: Auto Merge → Main (após aprovação ou checks)
 
 on:
   pull_request_review:
     types: [submitted]
+  # Também reagir quando checks completam em PRs para main
+  check_suite:
+    types: [completed]
+  workflow_run:
+    workflows: ["PR Checks"]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
+  # Job 1: Merge após aprovação manual (qualquer branch → main)
   auto-merge-on-approval:
-    name: Auto-merge develop → main
+    name: Auto-merge após aprovação
     runs-on: ubuntu-latest
-    # Só executa quando o review é aprovação E o PR é para main
     if: >
+      github.event_name == 'pull_request_review' &&
       github.event.review.state == 'approved' &&
       github.event.pull_request.base.ref == 'main'
     steps:
@@ -51,3 +58,44 @@ jobs:
           fi
 
           echo "Merge configurado com sucesso para PR #${PR_NUM}!"
+
+  # Job 2: Auto-merge develop → main quando checks passam (sem aprovação)
+  auto-merge-develop-to-main:
+    name: Auto-merge develop → main (checks passed)
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'success')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Buscar PR de develop → main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Buscando PRs abertos de develop → main..."
+
+          PR_NUM=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+
+          if [ -z "$PR_NUM" ]; then
+            echo "Nenhum PR aberto de develop → main encontrado."
+            exit 0
+          fi
+
+          echo "Encontrado PR #${PR_NUM}"
+
+          # Verificar se todos os checks passaram
+          CHECKS_STATUS=$(gh pr checks "$PR_NUM" --json bucket --jq '[.[] | .bucket] | if all(. == "pass" or . == "skipped") then "ok" else "pending" end' 2>/dev/null || echo "pending")
+
+          if [ "$CHECKS_STATUS" = "ok" ]; then
+            echo "Todos os checks passaram. Fazendo merge do PR #${PR_NUM}..."
+            gh pr merge "$PR_NUM" --merge --delete-branch=false || {
+              echo "Merge direto falhou. Habilitando auto-merge..."
+              gh pr merge "$PR_NUM" --merge --auto --delete-branch=false
+            }
+          else
+            echo "Checks ainda pendentes. Habilitando auto-merge..."
+            gh pr merge "$PR_NUM" --merge --auto --delete-branch=false
+          fi
+
+          echo "Pipeline de release: develop → main configurado para PR #${PR_NUM}!"

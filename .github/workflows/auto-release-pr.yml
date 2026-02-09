@@ -1,0 +1,121 @@
+name: Auto PR → Main (Release)
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Evitar múltiplas execuções simultâneas
+concurrency:
+  group: auto-release-pr
+  cancel-in-progress: true
+
+jobs:
+  create-release-pr:
+    name: Criar/atualizar PR develop → main
+    runs-on: ubuntu-latest
+    # Não criar PR para commits de bump de versão (vindos do release.yml)
+    if: "!contains(github.event.head_commit.message, '[skip-release]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar se há diferenças
+        id: diff
+        run: |
+          git fetch origin main
+          DIFF_COUNT=$(git rev-list --count origin/main..origin/develop)
+          echo "commits_ahead=$DIFF_COUNT" >> "$GITHUB_OUTPUT"
+
+          if [ "$DIFF_COUNT" -eq 0 ]; then
+            echo "develop está sincronizado com main. Nada a fazer."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "develop está $DIFF_COUNT commits à frente de main."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Criar ou atualizar PR
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Verificar se já existe PR aberto de develop → main
+          EXISTING_PR=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #${EXISTING_PR} já existe. Será atualizado automaticamente com os novos commits."
+            echo "Habilitando auto-merge..."
+            gh pr merge "$EXISTING_PR" --merge --auto --delete-branch=false || true
+            exit 0
+          fi
+
+          # Coletar commits entre main e develop para o corpo do PR
+          COMMITS=$(git log origin/main..origin/develop --oneline --no-merges 2>/dev/null || echo "Commits não disponíveis")
+          COMMIT_COUNT=$(echo "$COMMITS" | wc -l)
+
+          # Detectar tipos de mudanças pelos prefixos dos commits/PRs mergeados
+          HAS_FEATURE=false
+          HAS_FIX=false
+          HAS_BREAKING=false
+
+          if echo "$COMMITS" | grep -qiE 'feat|feature|✨'; then
+            HAS_FEATURE=true
+          fi
+          if echo "$COMMITS" | grep -qiE 'fix|bug|🐛|🚑'; then
+            HAS_FIX=true
+          fi
+          if echo "$COMMITS" | grep -qiE 'BREAKING|!:'; then
+            HAS_BREAKING=true
+          fi
+
+          # Determinar título
+          if [ "$HAS_BREAKING" = "true" ]; then
+            TITLE="🚀 Release: breaking changes + atualizações"
+          elif [ "$HAS_FEATURE" = "true" ] && [ "$HAS_FIX" = "true" ]; then
+            TITLE="🚀 Release: novas features + correções"
+          elif [ "$HAS_FEATURE" = "true" ]; then
+            TITLE="🚀 Release: novas features"
+          elif [ "$HAS_FIX" = "true" ]; then
+            TITLE="🚀 Release: correções"
+          else
+            TITLE="🚀 Release: atualizações"
+          fi
+
+          # Criar corpo do PR
+          BODY=$(cat <<EOF
+          ## 🚀 Release automática
+
+          **Commits incluídos:** ${COMMIT_COUNT}
+
+          ### Alterações
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ---
+          > PR criado automaticamente pelo pipeline CI/CD.
+          > Será mergeado automaticamente quando os checks passarem.
+          EOF
+          )
+
+          # Criar PR
+          PR_URL=$(gh pr create \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --base main \
+            --head develop \
+            --label "release")
+
+          PR_NUM=$(echo "$PR_URL" | grep -oP '\d+$')
+          echo "PR #${PR_NUM} criado: $PR_URL"
+
+          # Habilitar auto-merge
+          echo "Habilitando auto-merge..."
+          gh pr merge "$PR_NUM" --merge --auto --delete-branch=false || true
+
+          echo "Pipeline de release configurado com sucesso!"

@@ -134,6 +134,18 @@ jobs:
             TAG="v${NEW_VERSION}-beta"
           fi
 
+          # Se a tag já existir, continuar incrementando o patch
+          while git rev-parse "$TAG" >/dev/null 2>&1; do
+            echo "Tag $TAG já existe, incrementando patch..."
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            if [ "$IS_STABLE" = "true" ]; then
+              TAG="v${NEW_VERSION}"
+            else
+              TAG="v${NEW_VERSION}-beta"
+            fi
+          done
+
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -151,6 +163,9 @@ jobs:
 
           git add -A
           git commit -m "Bump version to ${TAG} [skip-release]"
+
+          # Remover tag local se existir (segurança extra)
+          git tag -d "$TAG" 2>/dev/null || true
           git tag -a "$TAG" -m "Release ${TAG}"
 
           git push origin main
