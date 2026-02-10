@@ -750,6 +750,33 @@ def _dedupe_key(card: dict) -> str:
     return (card.get("front") or "").strip() + "||" + (card.get("back") or "").strip()
 
 
+def _merge_cards_dedup(cards: list) -> list:
+    out = []
+    seen = {}
+    for c in cards or []:
+        k = _dedupe_key(c)
+        if not k:
+            continue
+        if k in seen:
+            existing = seen[k]
+            if not existing.get("src") and c.get("src"):
+                existing["src"] = c.get("src")
+            continue
+        card_copy = dict(c)
+        out.append(card_copy)
+        seen[k] = card_copy
+    return out
+
+
+def _scale_targets_for_chunk(chunk_words: int, total_words: int, target_min: int, target_max: int) -> Tuple[int, int]:
+    if total_words <= 0:
+        return target_min, target_max
+    ratio = chunk_words / total_words
+    chunk_min = max(1, int(round(target_min * ratio)))
+    chunk_max = max(chunk_min, int(round(target_max * ratio)))
+    return chunk_min, chunk_max
+
+
 def _relax_src_if_needed(cards_with_src, cards_raw, *, target_min: int, target_max: int):
     """
     Se o filtro SRC for restritivo demais, mantém os cards com SRC válido e completa até target_min com cards sem SRC.
@@ -1681,6 +1708,27 @@ async def generate_cards_stream(
                 card_type = "both"
 
             word_count = len(src.split())
+            detected_lang = detect_language_pt_en_es(src[:500])
+            language = "portuguese" if detected_lang == "pt-br" else "english"
+
+            chunks = [src]
+            chunked = False
+            if len(src) > 12000 or word_count > 1800:
+                from app.services.ollama import chunk_text_semantic, chunk_text
+
+                chunks = chunk_text_semantic(
+                    src,
+                    max_words=400,
+                    overlap_sentences=2,
+                    language=language,
+                )
+                if not chunks:
+                    chunks = chunk_text(src, chunk_size=400)
+                chunked = len(chunks) > 1
+
+            if chunked:
+                logger.info("Generation chunking: %d chars -> %d chunks", len(src), len(chunks))
+                yield f"event: stage\ndata: {json.dumps({'stage': 'chunking', 'chunks': len(chunks)})}\n\n"
 
             # Se o usuario especificou numCards, usa com range de +-20%
             if payload.numCards and payload.numCards > 0:
@@ -1724,65 +1772,106 @@ async def generate_cards_stream(
 
             checklist_block = _format_checklist_block()
 
-            prompt = prompt_provider.build_flashcards_generation_prompt(
-                src=src,
-                ctx=ctx,
-                checklist_block=checklist_block,
-                target_min=target_min,
-                target_max=target_max,
-                card_type=card_type,  # type: ignore[arg-type]
-            )
-
             gen_tokens = _text_limit_for_provider(
                 provider, "num_predict_generation",
             )
             options = {"num_predict": gen_tokens, "temperature": 0.0}
             system_prompt = prompt_provider.flashcards_system(card_type)  # type: ignore[arg-type]
+            all_cards_raw = []
+            response_lengths = []
 
-            raw = ""
-            if use_openai:
-                async for piece in openai_generate_stream(api_keys.openai, model, prompt, system=system_prompt, options=options):
-                    raw += piece
-            elif use_perplexity:
-                async for piece in perplexity_generate_stream(api_keys.perplexity, model, prompt, system=system_prompt, options=options):
-                    raw += piece
-            else:
-                async for piece in ollama_generate_stream(model, prompt, system=system_prompt, options=options):
-                    raw += piece
+            for idx, chunk in enumerate(chunks):
+                if chunked:
+                    yield f"event: stage\ndata: {json.dumps({'stage': 'chunk_generation', 'chunk': idx + 1, 'total': len(chunks)})}\n\n"
 
-            save_llm_response(
-                provider=provider,
-                model=model,
-                prompt=prompt,
-                response=raw,
-                analysis_id=payload.analysisId,
-                system_prompt=system_prompt,
-                card_type=card_type,
-                source_text_length=len(src),
-                options=options,
-            )
+                chunk_words = len(chunk.split())
+                chunk_target_min, chunk_target_max = _scale_targets_for_chunk(
+                    chunk_words, word_count, target_min, target_max
+                )
+
+                prompt = prompt_provider.build_flashcards_generation_prompt(
+                    src=chunk,
+                    ctx=ctx,
+                    checklist_block=checklist_block,
+                    target_min=chunk_target_min,
+                    target_max=chunk_target_max,
+                    card_type=card_type,  # type: ignore[arg-type]
+                )
+
+                raw = ""
+                if use_openai:
+                    async for piece in openai_generate_stream(api_keys.openai, model, prompt, system=system_prompt, options=options):
+                        raw += piece
+                elif use_perplexity:
+                    async for piece in perplexity_generate_stream(api_keys.perplexity, model, prompt, system=system_prompt, options=options):
+                        raw += piece
+                else:
+                    async for piece in ollama_generate_stream(model, prompt, system=system_prompt, options=options):
+                        raw += piece
+
+                response_lengths.append(len(raw))
+
+                save_llm_response(
+                    provider=provider,
+                    model=model,
+                    prompt=prompt,
+                    response=raw,
+                    analysis_id=payload.analysisId,
+                    system_prompt=system_prompt,
+                    card_type=card_type,
+                    source_text_length=len(chunk),
+                    options=options,
+                )
+
+                save_pipeline_stage(
+                    request_id=request_id,
+                    stage="llm_generation_chunk",
+                    cards_in=0,
+                    cards_out=0,
+                    details={
+                        "response_length": len(raw),
+                        "model": model,
+                        "provider": provider,
+                        "chunk_index": idx + 1,
+                        "chunks_total": len(chunks),
+                    },
+                    analysis_id=payload.analysisId,
+                )
+
+                cards_raw = normalize_cards(parse_flashcards_qa(raw))
+                parse_mode = "qa"
+                if not cards_raw:
+                    cards_raw = normalize_cards(parse_flashcards_json(raw))
+                    parse_mode = "json"
+
+                save_pipeline_stage(
+                    request_id=request_id,
+                    stage="parsing_chunk",
+                    cards_in=0,
+                    cards_out=len(cards_raw),
+                    details={
+                        "parse_mode": parse_mode,
+                        "chunk_index": idx + 1,
+                        "chunks_total": len(chunks),
+                    },
+                    analysis_id=payload.analysisId,
+                )
+
+                all_cards_raw.extend(cards_raw)
+
+            cards_raw = _merge_cards_dedup(all_cards_raw)
 
             save_pipeline_stage(
                 request_id=request_id,
                 stage="llm_generation",
                 cards_in=0,
-                cards_out=0,
-                details={"response_length": len(raw), "model": model, "provider": provider},
-                analysis_id=payload.analysisId,
-            )
-
-            cards_raw = normalize_cards(parse_flashcards_qa(raw))
-            parse_mode = "qa"
-            if not cards_raw:
-                cards_raw = normalize_cards(parse_flashcards_json(raw))
-                parse_mode = "json"
-
-            save_pipeline_stage(
-                request_id=request_id,
-                stage="parsing",
-                cards_in=0,
                 cards_out=len(cards_raw),
-                details={"parse_mode": parse_mode},
+                details={
+                    "response_length": sum(response_lengths),
+                    "model": model,
+                    "provider": provider,
+                    "chunks": len(chunks),
+                },
                 analysis_id=payload.analysisId,
             )
 

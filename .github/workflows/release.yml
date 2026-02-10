@@ -80,6 +80,8 @@ jobs:
             BUMP="major"
           elif echo "$PR_BODY" | grep -qi 'BREAKING CHANGE'; then
             BUMP="major"
+          elif echo "$PR_LABELS" | grep -qi 'breaking'; then
+            BUMP="major"
           elif echo "$PR_LABELS" | grep -qi 'feature'; then
             BUMP="minor"
           else

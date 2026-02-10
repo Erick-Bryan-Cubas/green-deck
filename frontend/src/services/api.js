@@ -449,7 +449,7 @@ async function generateCards(text, deckOptions = "", textContext = "") {
         method: "POST",
         headers: createApiHeaders(),
         body: JSON.stringify({
-          text: truncateText(text),
+          text: text,
           textContext,
           deckOptions,
         }),
@@ -538,7 +538,7 @@ async function generateCardsWithStream(
   // Monta o body com campos opcionais de prompts customizados
   // Note: API keys are now sent via headers for security
   const requestBody = {
-    text: truncateText(text),
+    text: text,
     textContext,
     deckOptions,
     cardType,

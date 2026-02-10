@@ -44,16 +44,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Verificar se já existe PR aberto de develop → main
-          EXISTING_PR=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
-
-          if [ -n "$EXISTING_PR" ]; then
-            echo "PR #${EXISTING_PR} já existe. Será atualizado automaticamente com os novos commits."
-            echo "Habilitando auto-merge..."
-            gh pr merge "$EXISTING_PR" --merge --auto --delete-branch=false || true
-            exit 0
-          fi
-
           # Coletar commits entre main e develop para o corpo do PR
           COMMITS=$(git log origin/main..origin/develop --oneline --no-merges 2>/dev/null || echo "Commits não disponíveis")
           COMMIT_COUNT=$(echo "$COMMITS" | wc -l)
@@ -71,6 +61,33 @@ jobs:
           fi
           if echo "$COMMITS" | grep -qiE 'BREAKING|!:'; then
             HAS_BREAKING=true
+          fi
+
+          # Preparar labels para o PR de release
+          LABELS="release"
+          if [ "$HAS_FEATURE" = "true" ]; then
+            LABELS="$LABELS,feature"
+          fi
+          if [ "$HAS_FIX" = "true" ]; then
+            LABELS="$LABELS,fix"
+          fi
+          if [ "$HAS_BREAKING" = "true" ]; then
+            LABELS="$LABELS,breaking"
+          fi
+
+          # Garantir que as labels existam
+          for LABEL in release feature fix breaking; do
+            gh label create "$LABEL" --color "0E8A16" --description "Auto" 2>/dev/null || true
+          done
+
+          # Verificar se já existe PR aberto de develop → main
+          EXISTING_PR=$(gh pr list --head develop --base main --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #${EXISTING_PR} já existe. Atualizando labels e habilitando auto-merge."
+            gh pr edit "$EXISTING_PR" --add-label "$LABELS" || true
+            gh pr merge "$EXISTING_PR" --merge --auto --delete-branch=false || true
+            exit 0
           fi
 
           # Determinar título
@@ -109,7 +126,7 @@ jobs:
             --body "$BODY" \
             --base main \
             --head develop \
-            --label "release")
+            --label "$LABELS")
 
           PR_NUM=$(echo "$PR_URL" | grep -oP '\d+$')
           echo "PR #${PR_NUM} criado: $PR_URL"

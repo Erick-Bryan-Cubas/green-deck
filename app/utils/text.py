@@ -1,6 +1,6 @@
 import re
 import logging
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from app.config import MAX_SOURCE_CHARS
 
@@ -35,15 +35,23 @@ def _ensure_langid_ready() -> bool:
     return True
 
 
-def truncate_source(text: str, limit: int = MAX_SOURCE_CHARS) -> str:
+def truncate_source(text: str, limit: Optional[int] = MAX_SOURCE_CHARS) -> str:
     """
     Normaliza o texto-fonte para uso no prompt e validações.
 
     Nota:
-        O parâmetro `limit` existe para compatibilidade com chamadas antigas.
-        Se você quiser realmente truncar pelo limite, implemente aqui.
+        Se `limit` for None, não aplica truncamento.
     """
-    return (text or "").strip()
+    src = (text or "").strip()
+    if limit is None:
+        return src
+    try:
+        limit_int = int(limit)
+    except Exception:
+        return src
+    if limit_int > 0 and len(src) > limit_int:
+        return src[:limit_int].rstrip() + "... [truncated]"
+    return src
 
 
 def strip_src_lines(text: str) -> str:
