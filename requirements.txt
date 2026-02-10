@@ -10,7 +10,7 @@ python-multipart>=0.0.9
 sse-starlette>=1.6.5
 
 # Document Processing
-docling>=2.60.0
+docling>=2.72.0
 pdfplumber>=0.11.0
 pikepdf>=8.0.0
 pymupdf>=1.24.0
