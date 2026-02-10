@@ -33,6 +33,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
+          git fetch origin develop
+          AHEAD_COUNT=$(git rev-list --count origin/develop..HEAD)
+          if [ "$AHEAD_COUNT" -eq 0 ]; then
+            echo "Branch sem commits acima de develop. Nada a fazer."
+            exit 0
+          fi
           TYPE=$(echo "$BRANCH" | cut -d'/' -f1)
           NAME=$(echo "$BRANCH" | cut -d'/' -f2- | tr '-' ' ' | tr '_' ' ')
 
