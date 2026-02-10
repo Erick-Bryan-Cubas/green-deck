@@ -101,7 +101,7 @@ ${checklist_block}
 </CHECKLIST>
 
 <INSTRUCTIONS>
-- Gere entre ${target_min} e ${target_max} cards.
+- Gere entre ${target_min} e ${target_max} cards, priorizando conceitos relevantes para memorizacao.
 - APENAS use informacoes presentes em <SOURCE>.
 - <CONTEXT> serve APENAS para compreensao do assunto - NAO crie cards baseados apenas em <CONTEXT>.
 - Se a fonte estiver em ingles: traduza o card para pt-BR sem adicionar fatos.
@@ -267,6 +267,7 @@ CATEGORIAS (use estes IDs exatos):
 REGRAS IMPORTANTES:
 1. Extraia TRECHOS LITERAIS do texto (50-200 caracteres cada)
 2. Copie o texto EXATAMENTE como aparece - NÃO resuma nem modifique
+2.1 Se o trecho contiver aspas ", escape como \" para manter JSON válido
 3. Máximo 15 segmentos por texto
 4. Cada trecho deve ser único e educacionalmente relevante
 5. Use a categoria mais apropriada para cada trecho
