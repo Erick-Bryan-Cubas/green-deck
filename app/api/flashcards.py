@@ -95,6 +95,29 @@ router = APIRouter(prefix="/api", tags=["flashcards"])
 logger = logging.getLogger(__name__)
 
 
+def _text_limit_for_provider(provider: str, purpose: str) -> int:
+    """Returns char limit for text truncation based on provider capabilities."""
+    if provider in ("openai", "perplexity"):
+        limits = {
+            "src_validation": 30000,
+            "relevance_filter": 30000,
+            "text_analysis": 30000,
+            "num_predict_validation": 1024,
+            "num_predict_analysis": 2048,
+            "num_predict_generation": 8192,
+        }
+    else:  # ollama — conservative for local models
+        limits = {
+            "src_validation": 4000,
+            "relevance_filter": 2000,
+            "text_analysis": 4000,
+            "num_predict_validation": 512,
+            "num_predict_analysis": 1024,
+            "num_predict_generation": 4096,
+        }
+    return limits.get(purpose, 4000)
+
+
 class TextRequest(BaseModel):
     text: str
     analysisModel: Optional[str] = None  # Modelo para embeddings/análise
@@ -245,13 +268,15 @@ async def _validate_src_with_llm(
   SRC: "{src}"
 """
 
+    text_limit = _text_limit_for_provider(provider, "src_validation")
     prompt = prompt_provider.build_src_validation_prompt(
-        src_text=src_text[:4000],
+        src_text=src_text[:text_limit],
         cards_text=cards_text,
     )
     system = prompt_provider.src_validation_system()
 
-    options = {"num_predict": 512, "temperature": 0.0}
+    np = _text_limit_for_provider(provider, "num_predict_validation")
+    options = {"num_predict": np, "temperature": 0.0}
 
     logger.info("SRC validation using LLM model: %s (provider: %s)", model, provider)
 
@@ -375,13 +400,15 @@ async def _filter_cards_by_content_relevance_llm(
         back = (c.get("back") or "").strip()
         cards_text += f"[CARD {i+1}]\nQ: {front}\nA: {back}\n\n"
 
+    text_limit = _text_limit_for_provider(provider, "relevance_filter")
     prompt = prompt_provider.build_relevance_filter_prompt(
-        src_text=src_text[:2000],
+        src_text=src_text[:text_limit],
         cards_text=cards_text,
     )
     system = prompt_provider.relevance_filter_system()
 
-    options = {"num_predict": 512, "temperature": 0.0}
+    np = _text_limit_for_provider(provider, "num_predict_validation")
+    options = {"num_predict": np, "temperature": 0.0}
 
     logger.info("LLM relevance filter using model: %s (provider: %s)", model, provider)
 
@@ -825,17 +852,17 @@ def _is_embedding_model(model_name: str) -> bool:
 @router.post("/analyze-text-stream")
 @limiter.limit("20/minute")
 async def analyze_text_stream(
-    http_request: Request,
-    request: TextRequest,
+    request: Request,
+    payload: TextRequest,
     prompt_provider: PromptProvider = Depends(get_prompt_provider),
     header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
     # Merge API keys from headers (priority) and body (fallback for backward compatibility)
-    api_keys = merge_api_keys(header_keys, request)
+    api_keys = merge_api_keys(header_keys, payload)
 
     async def generate():
         try:
-            analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
+            analysis_model = payload.analysisModel or OLLAMA_ANALYSIS_MODEL
 
             # Fallback: buscar primeiro modelo Ollama disponível
             if not analysis_model:
@@ -844,7 +871,7 @@ async def analyze_text_stream(
                     yield f"event: error\ndata: {json.dumps({'error': 'Nenhum modelo disponível para análise.'})}\n\n"
                     return
 
-            analysis_mode = request.analysisMode or "auto"
+            analysis_mode = payload.analysisMode or "auto"
 
             # Detecta provider baseado no modelo e chaves API
             use_openai = api_keys.openai and ("gpt" in analysis_model.lower() or analysis_model.startswith("o1-"))
@@ -871,7 +898,7 @@ async def analyze_text_stream(
 
             yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing', 'mode': analysis_mode})}\n\n"
 
-            src = truncate_source(request.text or "")
+            src = truncate_source(payload.text or "")
 
             detected_lang = detect_language_pt_en_es(src[:500])
             language = "portuguese" if detected_lang == "pt-br" else "english"
@@ -933,12 +960,18 @@ async def analyze_text_stream(
 
                 full_text = "\n\n".join(chunks[:5])
 
+                text_limit = _text_limit_for_provider(
+                    provider, "text_analysis",
+                )
                 prompt = prompt_provider.build_text_analysis_prompt(
-                    text=full_text[:4000],
+                    text=full_text[:text_limit],
                     detected_lang=detected_lang,
                 )
                 system = prompt_provider.text_analysis_system()
-                options = {"num_predict": 1024, "temperature": 0.3}
+                np = _text_limit_for_provider(
+                    provider, "num_predict_analysis",
+                )
+                options = {"num_predict": np, "temperature": 0.3}
 
                 raw = ""
                 try:
@@ -1024,6 +1057,12 @@ def _clean_llm_json(raw: str) -> str:
     Limpa e corrige erros comuns de JSON gerado por LLMs.
     """
     cleaned = raw
+
+    # Remove code fences que alguns modelos adicionam
+    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.IGNORECASE)
+
+    # Normaliza quebras de linha para evitar strings inválidas em JSON
+    cleaned = cleaned.replace("\r\n", " ").replace("\n", " ")
 
     # Corrige todas as variações de "custom_name" (case insensitive)
     # Cobre: custom-Name, custom-name, customName, custom_Name, custom-than, etc.
@@ -1366,8 +1405,8 @@ def _build_topic_definitions(segments: list) -> list:
 @router.post("/segment-topics")
 @limiter.limit("20/minute")
 async def segment_topics(
-    http_request: Request,
-    request: SegmentTopicsRequest,
+    request: Request,
+    payload: SegmentTopicsRequest,
     prompt_provider: PromptProvider = Depends(get_prompt_provider),
     header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
@@ -1377,11 +1416,11 @@ async def segment_topics(
     com fallback para Ollama JSON Mode + str.find().
     """
     # Merge API keys from headers (priority) and body (fallback for backward compatibility)
-    api_keys = merge_api_keys(header_keys, request)
+    api_keys = merge_api_keys(header_keys, payload)
 
     async def generate():
         try:
-            analysis_model = request.analysisModel or OLLAMA_ANALYSIS_MODEL
+            analysis_model = payload.analysisModel or OLLAMA_ANALYSIS_MODEL
 
             # Fallback: buscar primeiro modelo Ollama disponível
             if not analysis_model:
@@ -1401,13 +1440,13 @@ async def segment_topics(
             yield f"event: progress\ndata: {json.dumps({'percent': 10, 'stage': 'preparing'})}\n\n"
 
             # Trunca texto se muito longo
-            src = request.text[:15000] if len(request.text) > 15000 else request.text
+            src = payload.text[:15000] if len(payload.text) > 15000 else payload.text
 
             segments = []
             method_used = "legacy"
 
             # Tenta usar LangExtract primeiro (posições exatas)
-            if is_langextract_available():
+            if is_langextract_available() and (use_ollama or use_openai):
                 yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_langextract', 'model': analysis_model})}\n\n"
 
                 try:
@@ -1460,12 +1499,48 @@ async def segment_topics(
 
                         try:
                             cleaned = _clean_llm_json(raw)
-                            json_match = re.search(r'\{[\s\S]*\}', cleaned)
+                            json_match = re.search(
+                                r'\{[\s\S]*\}', cleaned,
+                            )
                             if json_match:
-                                data = json.loads(json_match.group())
-                                segments_raw = data.get("segments", [])
+                                try:
+                                    data = json.loads(
+                                        json_match.group(),
+                                    )
+                                except json.JSONDecodeError:
+                                    arr = re.search(
+                                        r'\[[\s\S]*\]', cleaned,
+                                    )
+                                    if arr:
+                                        data = {
+                                            "segments": json.loads(
+                                                arr.group(),
+                                            ),
+                                        }
+                                    else:
+                                        raise
+                                segments_raw = data.get(
+                                    "segments", [],
+                                )
+                            else:
+                                arr = re.search(
+                                    r'\[[\s\S]*\]', cleaned,
+                                )
+                                if arr:
+                                    segments_raw = json.loads(
+                                        arr.group(),
+                                    )
                         except Exception as parse_error:
-                            logger.warning("[TopicSegmentation] Failed to parse external provider response: %s", parse_error)
+                            logger.warning(
+                                "[TopicSegmentation] Failed to parse"
+                                " external provider response: %s",
+                                parse_error,
+                            )
+                            logger.debug(
+                                "[TopicSegmentation] Raw response"
+                                " preview: %s",
+                                raw[:500],
+                            )
 
                 except Exception as llm_error:
                     logger.warning("Topic segmentation LLM failed: %s", llm_error)
@@ -1537,16 +1612,16 @@ async def get_default_prompts():
 @router.post("/generate-cards-stream")
 @limiter.limit(RATE_LIMIT_GENERATE)
 async def generate_cards_stream(
-    http_request: Request,
-    request: CardsRequest,
+    request: Request,
+    payload: CardsRequest,
     header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
     # Merge API keys from headers (priority) and body (fallback for backward compatibility)
-    api_keys = merge_api_keys(header_keys, request)
+    api_keys = merge_api_keys(header_keys, payload)
 
     async def generate():
         try:
-            model = request.model or OLLAMA_MODEL
+            model = payload.model or OLLAMA_MODEL
 
             # Fallback: buscar primeiro modelo Ollama disponível se nenhum especificado
             if not model:
@@ -1567,9 +1642,9 @@ async def generate_cards_stream(
 
             # Validate custom prompts for injection attempts
             custom_prompts_to_validate = [
-                ("customSystemPrompt", request.customSystemPrompt),
-                ("customGenerationPrompt", request.customGenerationPrompt),
-                ("customGuidelines", request.customGuidelines),
+                ("customSystemPrompt", payload.customSystemPrompt),
+                ("customGenerationPrompt", payload.customGenerationPrompt),
+                ("customGuidelines", payload.customGuidelines),
             ]
             for prompt_name, prompt_value in custom_prompts_to_validate:
                 if prompt_value:
@@ -1581,36 +1656,36 @@ async def generate_cards_stream(
 
             # Cria PromptProvider com prompts customizados (se fornecidos)
             prompt_provider = get_prompt_provider(
-                custom_system=request.customSystemPrompt,
-                custom_generation=request.customGenerationPrompt,
-                custom_guidelines=request.customGuidelines,
-                user_profile=request.userProfile,
+                custom_system=payload.customSystemPrompt,
+                custom_generation=payload.customGenerationPrompt,
+                custom_guidelines=payload.customGuidelines,
+                user_profile=payload.userProfile,
             )
 
             using_custom = any([
-                request.customSystemPrompt,
-                request.customGenerationPrompt,
-                request.customGuidelines,
-                request.userProfile,
+                payload.customSystemPrompt,
+                payload.customGenerationPrompt,
+                payload.customGuidelines,
+                payload.userProfile,
             ])
             if using_custom:
                 logger.info("Using custom prompts from request")
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'generation_started'})}\n\n"
 
-            src = truncate_source(request.text or "")
-            ctx = (request.textContext or "").strip()
+            src = truncate_source(payload.text or "")
+            ctx = (payload.textContext or "").strip()
 
-            card_type = (request.cardType or "both").strip().lower()
+            card_type = (payload.cardType or "both").strip().lower()
             if card_type not in ("basic", "cloze", "both"):
                 card_type = "both"
 
             word_count = len(src.split())
 
             # Se o usuario especificou numCards, usa com range de +-20%
-            if request.numCards and request.numCards > 0:
+            if payload.numCards and payload.numCards > 0:
                 # Validacao de escassez de conteudo
-                validation = validate_content_sufficiency(src, request.numCards)
+                validation = validate_content_sufficiency(src, payload.numCards)
                 if not validation.is_valid:
                     yield f"event: error\ndata: {json.dumps({'error': validation.message, 'type': 'content_scarcity', 'recommended_max': validation.recommended_max_cards, 'token_count': validation.token_count})}\n\n"
                     return
@@ -1618,18 +1693,21 @@ async def generate_cards_stream(
                     # Aviso (permite continuar)
                     yield f"event: warning\ndata: {json.dumps({'message': validation.message, 'recommended_max': validation.recommended_max_cards})}\n\n"
 
-                target_min = max(1, int(request.numCards * 0.8))
-                target_max = int(request.numCards * 1.2)
+                target_min = max(1, int(payload.numCards * 0.8))
+                target_max = int(payload.numCards * 1.2)
             else:
                 # Calculo automatico baseado em word count
                 if word_count < 140:
                     target_min, target_max = 3, 8
                 elif word_count < 320:
-                    target_min, target_max = 5, 12
+                    target_min, target_max = 5, 15
                 elif word_count < 700:
-                    target_min, target_max = 8, 18
+                    target_min, target_max = 8, 25
                 else:
-                    target_min, target_max = 10, 30
+                    # Escala dinamica: ~1 card por 80 palavras
+                    auto_target = max(15, word_count // 80)
+                    target_min = max(10, auto_target // 2)
+                    target_max = auto_target
 
             request_id = save_generation_request(
                 source_text=src,
@@ -1641,7 +1719,7 @@ async def generate_cards_stream(
                 word_count=word_count,
                 target_min=target_min,
                 target_max=target_max,
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
 
             checklist_block = _format_checklist_block()
@@ -1655,7 +1733,10 @@ async def generate_cards_stream(
                 card_type=card_type,  # type: ignore[arg-type]
             )
 
-            options = {"num_predict": 4096, "temperature": 0.0}
+            gen_tokens = _text_limit_for_provider(
+                provider, "num_predict_generation",
+            )
+            options = {"num_predict": gen_tokens, "temperature": 0.0}
             system_prompt = prompt_provider.flashcards_system(card_type)  # type: ignore[arg-type]
 
             raw = ""
@@ -1674,7 +1755,7 @@ async def generate_cards_stream(
                 model=model,
                 prompt=prompt,
                 response=raw,
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
                 system_prompt=system_prompt,
                 card_type=card_type,
                 source_text_length=len(src),
@@ -1687,7 +1768,7 @@ async def generate_cards_stream(
                 cards_in=0,
                 cards_out=0,
                 details={"response_length": len(raw), "model": model, "provider": provider},
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
 
             cards_raw = normalize_cards(parse_flashcards_qa(raw))
@@ -1702,14 +1783,14 @@ async def generate_cards_stream(
                 cards_in=0,
                 cards_out=len(cards_raw),
                 details={"parse_mode": parse_mode},
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
 
             cards_before_type_filter = len(cards_raw)
             cloze_count = sum(1 for c in cards_raw if "{{c1::" in (c.get("front") or ""))
             logger.info("Parsed %d cards (%d with cloze syntax), card_type=%s", cards_before_type_filter, cloze_count, card_type)
 
-            cards_raw = _filter_by_card_type(cards_raw, card_type, analysis_id=request.analysisId)
+            cards_raw = _filter_by_card_type(cards_raw, card_type, analysis_id=payload.analysisId)
 
             save_pipeline_stage(
                 request_id=request_id,
@@ -1717,12 +1798,12 @@ async def generate_cards_stream(
                 cards_in=cards_before_type_filter,
                 cards_out=len(cards_raw),
                 details={"card_type": card_type, "cloze_syntax_count": cloze_count},
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'parsed', 'mode': parse_mode, 'count': len(cards_raw), 'before_type_filter': cards_before_type_filter})}\n\n"
 
-            validation_model = request.validationModel or model
+            validation_model = payload.validationModel or model
             # Detecta o provider correto para o modelo de validação (usa cache)
             validation_provider = get_provider_for_model(
                 validation_model,
@@ -1740,7 +1821,7 @@ async def generate_cards_stream(
                 model=validation_model,
                 openai_key=api_keys.openai,
                 perplexity_key=api_keys.perplexity,
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
 
             save_pipeline_stage(
@@ -1749,7 +1830,7 @@ async def generate_cards_stream(
                 cards_in=cards_before_src,
                 cards_out=len(cards),
                 details={"method": "llm_validation", "validation_model": validation_model, "validation_provider": validation_provider},
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'src_filtered', 'kept': len(cards), 'dropped': max(0, len(cards_raw) - len(cards)), 'method': 'llm'})}\n\n"
@@ -1763,7 +1844,7 @@ async def generate_cards_stream(
                 model=validation_model,
                 openai_key=api_keys.openai,
                 perplexity_key=api_keys.perplexity,
-                analysis_id=request.analysisId,
+                analysis_id=payload.analysisId,
             )
             if len(cards) < cards_before_relevance:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'llm_relevance_filtered', 'kept': len(cards), 'dropped': cards_before_relevance - len(cards)})}\n\n"
@@ -1847,7 +1928,7 @@ async def generate_cards_stream(
                     cards2_raw = normalize_cards(parse_flashcards_json(raw2))
                     repair_mode = "json"
 
-                cards2_raw = _filter_by_card_type(cards2_raw, card_type, analysis_id=request.analysisId)
+                cards2_raw = _filter_by_card_type(cards2_raw, card_type, analysis_id=payload.analysisId)
 
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_parsed', 'mode': repair_mode, 'count': len(cards2_raw)})}\n\n"
 
@@ -1859,7 +1940,7 @@ async def generate_cards_stream(
                     model=validation_model,
                     openai_key=api_keys.openai,
                     perplexity_key=api_keys.perplexity,
-                    analysis_id=request.analysisId,
+                    analysis_id=payload.analysisId,
                 )
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2)), 'method': 'llm'})}\n\n"
 
@@ -1872,7 +1953,7 @@ async def generate_cards_stream(
                     model=validation_model,
                     openai_key=api_keys.openai,
                     perplexity_key=api_keys.perplexity,
-                    analysis_id=request.analysisId,
+                    analysis_id=payload.analysisId,
                 )
                 if len(cards2) < cards2_before_relevance:
                     yield f"event: stage\ndata: {json.dumps({'stage': 'repair_llm_relevance_filtered', 'kept': len(cards2), 'dropped': cards2_before_relevance - len(cards2)})}\n\n"
@@ -1905,7 +1986,7 @@ async def generate_cards_stream(
                 out_lang2 = _cards_lang_from_cards(cards)
                 yield f"event: stage\ndata: {json.dumps({'stage': 'lang_check_after_repair', 'lang': out_lang2, 'cards': len(cards)})}\n\n"
 
-            deck = pick_default_deck(request.deckOptions or "General")
+            deck = pick_default_deck(payload.deckOptions or "General")
 
             result_cards = []
             for c in cards:
@@ -1914,12 +1995,12 @@ async def generate_cards_stream(
                     item["src"] = c["src"]
                 result_cards.append(item)
 
-            cards_id = save_cards(result_cards, analysis_id=request.analysisId, source_text=src)
+            cards_id = save_cards(result_cards, analysis_id=payload.analysisId, source_text=src)
 
             conn = _get_connection()
             conn.execute(
                 "UPDATE llm_responses SET cards_id = ? WHERE analysis_id = ? AND cards_id = ''",
-                [cards_id, request.analysisId or ""],
+                [cards_id, payload.analysisId or ""],
             )
             conn.close()
 
@@ -1977,8 +2058,8 @@ def _parse_rewrite_response(raw: str) -> dict:
 @router.post("/rewrite-card")
 @limiter.limit("30/minute")
 async def rewrite_card(
-    http_request: Request,
-    request: CardRewriteRequest,
+    request: Request,
+    payload: CardRewriteRequest,
     header_keys: ApiKeys = Depends(get_api_keys_from_headers),
 ):
     """
@@ -1990,10 +2071,10 @@ async def rewrite_card(
     - simplify: Simplifica o card
     """
     # Merge API keys from headers (priority) and body (fallback for backward compatibility)
-    api_keys = merge_api_keys(header_keys, request)
+    api_keys = merge_api_keys(header_keys, payload)
 
     try:
-        model = request.model or OLLAMA_MODEL
+        model = payload.model or OLLAMA_MODEL
         # Fallback: buscar primeiro modelo Ollama disponível
         if not model:
             model = await get_first_available_ollama_llm()
@@ -2006,9 +2087,9 @@ async def rewrite_card(
 
         prompt_provider = PromptProvider()
         prompt = prompt_provider.build_card_rewrite_prompt(
-            front=request.front,
-            back=request.back,
-            action=request.action,
+            front=payload.front,
+            back=payload.back,
+            action=payload.action,
         )
         system_prompt = prompt_provider.card_rewrite_system()
 
@@ -2040,7 +2121,7 @@ async def rewrite_card(
             "success": True,
             "front": result["front"],
             "back": result["back"],
-            "action": request.action,
+            "action": payload.action,
         }
 
     except Exception as e:

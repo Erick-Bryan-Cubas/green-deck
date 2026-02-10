@@ -136,6 +136,25 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n))
 }
 
+function formatCount(value) {
+  const num = Number(value || 0)
+  if (!Number.isFinite(num)) return '0'
+  try {
+    return num.toLocaleString(undefined)
+  } catch {
+    return String(num)
+  }
+}
+
+function countWords(text) {
+  const cleaned = String(text || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!cleaned) return 0
+  return cleaned.split(' ').length
+}
+
 // ============================================================
 // localStorage Keys
 // ============================================================
@@ -2300,6 +2319,7 @@ function clearTopicHighlights() {
 // ============================================================
 const generating = ref(false)
 const lastGenerationSource = ref(null) // 'selection' | 'highlight' | 'full'
+const lastGenerationWordCount = ref(0)
 
 /**
  * Resolve which content to use for card generation
@@ -2394,6 +2414,7 @@ async function generateCardsFromSelection() {
   }
 
   lastGenerationSource.value = resolved.source
+  lastGenerationWordCount.value = countWords(resolved.content)
   const text = resolved.content
 
   try {
@@ -4395,8 +4416,11 @@ onBeforeUnmount(() => {
               <div class="panel-title">
                 <i class="pi pi-clone mr-2" />
                 Cards
-                <Tag :severity="hasCards ? 'success' : 'secondary'" class="pill ml-2">
-                  {{ hasCards ? `${cards.length} total` : 'Sem cards' }}
+                <Tag :severity="hasCards ? 'success' : 'secondary'" class="pill ml-2 cards-total-pill">
+                  <i class="pi pi-inbox mr-1" />
+                  <span class="total-label">Total</span>
+                  <span class="total-sep">•</span>
+                  <span class="total-value">{{ hasCards ? formatCount(cards.length) : '0' }}</span>
                 </Tag>
                 <Tag v-if="hasSelectedCards" severity="warning" class="pill ml-2">
                   {{ selectedCount }} selecionados
@@ -4407,10 +4431,15 @@ onBeforeUnmount(() => {
                     v-if="lastGenerationSource && hasCards" 
                     :severity="lastGenerationSource === 'selection' ? 'info' : lastGenerationSource === 'highlight' ? 'warning' : 'secondary'" 
                     class="pill ml-2 generation-source-tag"
-                    :title="'Última geração: ' + getSourceLabel()"
+                    :title="'Última geração: ' + getSourceLabel() + (lastGenerationSource === 'full' && lastGenerationWordCount ? ` (${formatCount(lastGenerationWordCount)} palavras)` : '')"
                   >
                     <i :class="lastGenerationSource === 'selection' ? 'pi pi-mouse' : lastGenerationSource === 'highlight' ? 'pi pi-palette' : 'pi pi-file'" class="mr-1" style="font-size: 0.75rem" />
-                    {{ lastGenerationSource === 'selection' ? 'Seleção' : lastGenerationSource === 'highlight' ? 'Marcações' : 'Texto completo' }}
+                    <span class="source-label">
+                      {{ lastGenerationSource === 'selection' ? 'Seleção' : lastGenerationSource === 'highlight' ? 'Marcações' : 'Texto completo' }}
+                    </span>
+                    <span v-if="lastGenerationSource === 'full' && lastGenerationWordCount" class="source-count">
+                      {{ formatCount(lastGenerationWordCount) }} palavras
+                    </span>
                   </Tag>
                 </Transition>
               </div>
@@ -7346,9 +7375,63 @@ onBeforeUnmount(() => {
 
 /* Indicador de fonte de geração */
 .generation-source-tag {
-  font-size: 0.7rem;
-  padding: 0.15rem 0.5rem;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.6rem;
   cursor: help;
+  gap: 6px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+}
+
+.generation-source-tag .source-label {
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.generation-source-tag .source-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+  position: relative;
+  padding-left: 10px;
+}
+
+.generation-source-tag .source-count::before {
+  content: '•';
+  position: absolute;
+  left: 2px;
+  opacity: 0.6;
+}
+
+.cards-total-pill {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(34, 197, 94, 0.05));
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.2);
+}
+
+.cards-total-pill .total-label {
+  font-weight: 700;
+  opacity: 0.8;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-size: 0.6rem;
+}
+
+.cards-total-pill .total-sep {
+  opacity: 0.6;
+}
+
+.cards-total-pill .total-value {
+  font-weight: 900;
+  font-size: 0.82rem;
 }
 
 /* Auto-hide controles */
