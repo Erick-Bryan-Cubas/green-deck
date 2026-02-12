@@ -820,11 +820,13 @@ defineExpose({
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
   font-size: 0.75em;
+  line-height: 1.42;
   color: var(--quill-line-number-text, rgba(226, 232, 240, 0.6));
   user-select: none;
   overflow-y: hidden;
   overflow-x: hidden;
   z-index: 1;
+  box-shadow: inset -6px 0 8px -6px rgba(0, 0, 0, 0.15);
 }
 
 .qe-line-number {
@@ -845,7 +847,8 @@ defineExpose({
 /* Toolbar gerada automaticamente pelo Quill */
 :deep(.ql-toolbar.ql-snow) {
   border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--quill-toolbar-bg, rgba(255, 255, 255, 0.03));
+  backdrop-filter: blur(8px);
   border-radius: 14px 14px 0 0;
   padding: 8px 12px;
   display: flex;
@@ -854,6 +857,7 @@ defineExpose({
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
+  box-shadow: inset 0 -1px 0 rgba(148, 163, 184, 0.08);
 }
 
 :deep(.ql-toolbar.ql-snow::-webkit-scrollbar) {
@@ -867,18 +871,22 @@ defineExpose({
   background: transparent;
 }
 
-/* Grupos de botões com separador visual */
+/* Grupos de botões com separador gradiente */
 :deep(.ql-toolbar.ql-snow .ql-formats) {
   display: inline-flex;
   align-items: center;
   margin-right: 8px;
   padding-right: 8px;
-  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  border-right: none;
+  background-image: linear-gradient(to bottom, transparent 15%, var(--quill-toolbar-sep) 50%, transparent 85%);
+  background-size: 1px 100%;
+  background-repeat: no-repeat;
+  background-position: right center;
   flex-shrink: 0;
 }
 
 :deep(.ql-toolbar.ql-snow .ql-formats:last-child) {
-  border-right: none;
+  background-image: none;
   margin-right: 0;
   padding-right: 0;
 }
@@ -889,16 +897,18 @@ defineExpose({
   height: 28px;
   padding: 4px;
   border-radius: 6px;
-  transition: background-color 0.15s, transform 0.1s;
+  transition: background-color 0.15s, transform 0.1s, box-shadow 0.15s;
 }
 
 :deep(.ql-toolbar.ql-snow button:hover) {
-  background-color: rgba(148, 163, 184, 0.15);
+  background-color: var(--quill-toolbar-hover);
   transform: scale(1.05);
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.15);
 }
 
 :deep(.ql-toolbar.ql-snow button.ql-active) {
-  background-color: rgba(59, 130, 246, 0.25);
+  background-color: var(--quill-accent-soft);
+  box-shadow: 0 0 0 1.5px var(--quill-accent), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 /* Botão customizado de marca-texto */
@@ -1012,11 +1022,34 @@ defineExpose({
   border: 1px solid var(--quill-container-border);
   border-top: none;
   border-radius: 0 0 14px 14px;
+  transition: border-color 0.2s;
+}
+
+/* Scrollbar do conteúdo do editor */
+:deep(.ql-editor::-webkit-scrollbar) {
+  width: 6px;
+}
+:deep(.ql-editor::-webkit-scrollbar-thumb) {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 3px;
+}
+:deep(.ql-editor::-webkit-scrollbar-thumb:hover) {
+  background: rgba(148, 163, 184, 0.4);
+}
+:deep(.ql-editor::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+/* Seleção de texto com cor accent */
+:deep(.ql-editor ::selection) {
+  background: var(--quill-accent-soft);
 }
 
 /* melhora o look do editor em dark UI */
 :deep(.ql-editor) {
   color: var(--text-color, #e5e7eb);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
 }
 /* Estilos para blockquote (citação) */
 :deep(.ql-editor blockquote) {

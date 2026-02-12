@@ -169,6 +169,7 @@
 
   --quill-accent: #3b82f6;
   --quill-accent-soft: rgba(59, 130, 246, 0.1);
+  --quill-toolbar-bg: rgba(15, 23, 42, 0.5);
   --quill-toolbar-hover: rgba(148, 163, 184, 0.15);
   --quill-toolbar-sep: rgba(148, 163, 184, 0.2);
   --quill-dropdown-bg: #1f2937;
@@ -188,7 +189,7 @@
   --quill-link: #60a5fa;
   --quill-link-hover: #93c5fd;
   --quill-placeholder: rgba(229, 231, 235, 0.65);
-  --quill-line-number-bg: rgba(15, 23, 42, 0.9);
+  --quill-line-number-bg: linear-gradient(90deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.8));
   --quill-line-number-border: rgba(148, 163, 184, 0.18);
   --quill-line-number-text: rgba(226, 232, 240, 0.6);
   --quill-picker-bg: #111827;
@@ -433,6 +434,7 @@
 
   --quill-accent: #2563eb;
   --quill-accent-soft: rgba(37, 99, 235, 0.1);
+  --quill-toolbar-bg: rgba(255, 255, 255, 0.85);
   --quill-toolbar-hover: rgba(148, 163, 184, 0.25);
   --quill-toolbar-sep: rgba(148, 163, 184, 0.35);
   --quill-dropdown-bg: #ffffff;
@@ -452,7 +454,7 @@
   --quill-link: #2563eb;
   --quill-link-hover: #1d4ed8;
   --quill-placeholder: rgba(15, 23, 42, 0.55);
-  --quill-line-number-bg: rgba(15, 23, 42, 0.06);
+  --quill-line-number-bg: linear-gradient(90deg, rgba(248, 250, 252, 0.98), rgba(248, 250, 252, 0.85));
   --quill-line-number-border: rgba(148, 163, 184, 0.3);
   --quill-line-number-text: rgba(15, 23, 42, 0.6);
   --quill-picker-bg: #ffffff;
@@ -555,7 +557,7 @@ a:hover {
 }
 
 .theme-light .ql-toolbar.ql-snow {
-  background: #ffffff !important;
+  background: var(--quill-toolbar-bg) !important;
 }
 
 .theme-light .ql-toolbar.ql-snow .ql-picker-options {
