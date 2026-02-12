@@ -185,6 +185,7 @@ class ExtractionManager:
     def __init__(self):
         self.tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> task_info
         self.subscribers: Dict[str, Set[WebSocket]] = {}  # task_id -> websockets
+        self.running_tasks: Dict[str, asyncio.Task] = {}  # task_id -> asyncio task
         self._lock = asyncio.Lock()
 
     def create_task(self, task_id: str, total_pages: int, filename: str) -> None:
@@ -201,6 +202,42 @@ class ExtractionManager:
         }
         self.subscribers[task_id] = set()
         logger.info(f"[Extraction] Task {task_id} created for {filename} ({total_pages} pages)")
+
+    def attach_running_task(self, task_id: str, task: asyncio.Task) -> None:
+        """Associa a task asyncio real para permitir cancelamento cooperativo."""
+        if task_id in self.tasks:
+            self.running_tasks[task_id] = task
+            if self.tasks[task_id].get("status") == "cancelled" and not task.done():
+                task.cancel()
+
+    async def cancel_task(self, task_id: str, reason: str = "Extração cancelada pelo usuário") -> bool:
+        """Cancela uma tarefa em execução e notifica inscritos."""
+        if task_id not in self.tasks:
+            return False
+
+        status = self.tasks[task_id].get("status")
+        if status == "cancelled":
+            return True
+        if status in ("completed", "failed"):
+            return False
+
+        self.tasks[task_id]["status"] = "cancelled"
+        self.tasks[task_id]["error"] = reason
+        self.tasks[task_id]["message"] = reason
+
+        running = self.running_tasks.pop(task_id, None)
+        if running and not running.done():
+            running.cancel()
+
+        await self._broadcast_to_task(task_id, {
+            "type": "extraction_cancelled",
+            "task_id": task_id,
+            "message": reason,
+        })
+
+        asyncio.create_task(self._cleanup_task(task_id, delay=60))
+        logger.info(f"[Extraction] Task {task_id} cancelled")
+        return True
 
     async def update_progress(
         self,
@@ -240,6 +277,7 @@ class ExtractionManager:
         self.tasks[task_id]["progress"] = 100
         self.tasks[task_id]["result"] = result
         self.tasks[task_id]["message"] = f"Extração concluída! {result.get('word_count', 0)} palavras."
+        self.running_tasks.pop(task_id, None)
 
         logger.info(f"[Extraction] Task {task_id} completed: {result.get('word_count', 0)} words")
 
@@ -261,6 +299,7 @@ class ExtractionManager:
         self.tasks[task_id]["status"] = "failed"
         self.tasks[task_id]["error"] = error
         self.tasks[task_id]["message"] = f"Erro: {error}"
+        self.running_tasks.pop(task_id, None)
 
         logger.error(f"[Extraction] Task {task_id} failed: {error}")
 
@@ -342,6 +381,7 @@ class ExtractionManager:
         await asyncio.sleep(delay)
         self.tasks.pop(task_id, None)
         self.subscribers.pop(task_id, None)
+        self.running_tasks.pop(task_id, None)
         logger.debug(f"[Extraction] Task {task_id} cleaned up")
 
     def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -418,6 +458,14 @@ async def websocket_extraction(websocket: WebSocket):
                         "type": "error",
                         "error": f"Task {task_id} not found"
                     })
+
+            elif action == "cancel" and task_id:
+                cancelled = await extraction_manager.cancel_task(task_id)
+                await websocket.send_json({
+                    "type": "cancel_ack",
+                    "task_id": task_id,
+                    "cancelled": cancelled,
+                })
 
     except WebSocketDisconnect:
         logger.info("[Extraction] WebSocket disconnected")
