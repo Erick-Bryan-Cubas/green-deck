@@ -233,7 +233,7 @@ function refresh() {
           </template>
         </Select>
         <small class="text-color-secondary mt-1 block">
-          Verifica se os cards gerados estão ancorados no texto selecionado usando LLM
+          Verifica se os cartões gerados estão ancorados no texto selecionado usando LLM
         </small>
       </div>
     </div>

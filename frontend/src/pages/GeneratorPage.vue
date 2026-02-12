@@ -137,12 +137,12 @@ function buildSessionInfo(session) {
   const created = formatSessionStamp(session?.createdAt)
   const updated = formatSessionStamp(session?.updatedAt)
   const cardsCount = sessionCardCount(session)
-  const cardsLabel = cardsCount === 1 ? '1 card' : `${cardsCount} cards`
+  const cardsLabel = cardsCount === 1 ? '1 cartão' : `${cardsCount} cartões`
 
   return [
     created ? `Criada em: ${created}` : null,
     updated ? `Atualizada em: ${updated}` : null,
-    `Total de cards: ${cardsLabel}`
+    `Total de cartões: ${cardsLabel}`
   ]
     .filter(Boolean)
     .join('\n')
@@ -839,7 +839,7 @@ function deleteSessionWithConfirmation(id) {
   }
 
   const cardsCount = sessionCardCount(target)
-  const cardLabel = cardsCount === 1 ? '1 card' : `${cardsCount} cards`
+  const cardLabel = cardsCount === 1 ? '1 cartão' : `${cardsCount} cartões`
   const confirmed = window.confirm(
     `Apagar a sessão "${target.title}"?\n\nSerão removidos ${cardLabel} dessa sessão.`
   )
@@ -896,7 +896,7 @@ function clearAllSessionsWithConfirmation() {
 
   const totalCards = sessions.value.reduce((acc, session) => acc + sessionCardCount(session), 0)
   const sessionLabel = totalSessions === 1 ? '1 sessão' : `${totalSessions} sessões`
-  const cardLabel = totalCards === 1 ? '1 card' : `${totalCards} cards`
+  const cardLabel = totalCards === 1 ? '1 cartão' : `${totalCards} cartões`
 
   const confirmed = window.confirm(
     `Apagar todas as sessões (${sessionLabel})?\n\nSerão removidos ${cardLabel} no total.`
@@ -1836,7 +1836,7 @@ function bulkDeleteSelected() {
   pushToUndoHistory({ type: 'bulk-delete', cards: deletedCards })
   // Delete
   indices.forEach(i => cards.value.splice(i, 1))
-  notify(`${indices.length} cards removidos`, 'success', 2500)
+  notify(`${indices.length} cartões removidos`, 'success', 2500)
   clearSelection()
   schedulePersistActiveSession()
 }
@@ -1881,18 +1881,18 @@ function undo() {
     // Restore single card
     cards.value.splice(action.index, 0, action.card)
     redoHistory.value.push(action)
-    notify('Card restaurado', 'success', 2000)
+    notify('Cartão restaurado', 'success', 2000)
   } else if (action.type === 'bulk-delete') {
     // Restore multiple cards (in order)
     action.cards.sort((a, b) => a.index - b.index).forEach(item => {
       cards.value.splice(item.index, 0, item.card)
     })
     redoHistory.value.push(action)
-    notify(`${action.cards.length} cards restaurados`, 'success', 2000)
+    notify(`${action.cards.length} cartões restaurados`, 'success', 2000)
   } else if (action.type === 'clear-all') {
     cards.value = action.cards
     redoHistory.value.push(action)
-    notify('Todos os cards restaurados', 'success', 2000)
+    notify('Todos os cartões restaurados', 'success', 2000)
   }
   
   schedulePersistActiveSession()
@@ -1905,16 +1905,16 @@ function redo() {
   if (action.type === 'delete') {
     cards.value.splice(action.index, 1)
     undoHistory.value.push(action)
-    notify('Redo: card removido', 'info', 2000)
+    notify('Redo: cartão removido', 'info', 2000)
   } else if (action.type === 'bulk-delete') {
     const indices = action.cards.map(c => c.index).sort((a, b) => b - a)
     indices.forEach(i => cards.value.splice(i, 1))
     undoHistory.value.push(action)
-    notify(`Redo: ${action.cards.length} cards removidos`, 'info', 2000)
+    notify(`Redo: ${action.cards.length} cartões removidos`, 'info', 2000)
   } else if (action.type === 'clear-all') {
     cards.value = []
     undoHistory.value.push(action)
-    notify('Redo: todos os cards removidos', 'info', 2000)
+    notify('Redo: todos os cartões removidos', 'info', 2000)
   }
   
   schedulePersistActiveSession()
@@ -2222,7 +2222,7 @@ async function analyzeDocumentContext(text) {
 
     stopTimer()
     completeProgress()
-    notify('Análise concluída. A qualidade dos cards tende a melhorar.', 'success', 3800)
+    notify('Análise concluída. A qualidade dos cartões tende a melhorar.', 'success', 3800)
 
     schedulePersistActiveSession()
   } catch (error) {
@@ -2474,7 +2474,7 @@ function resolveGenerationContent() {
       source: 'empty',
       content: '',
       shouldWarn: true,
-      message: 'Nenhum texto disponível para gerar cards'
+      message: 'Nenhum texto disponível para gerar cartões'
     }
   }
 
@@ -2534,9 +2534,9 @@ async function generateCardsFromSelection() {
     startTimer('Gerando...')
     startOllamaInfoPolling() // Inicia polling de info do Ollama
     const sourceLabel = getSourceLabel()
-    addLog(`Starting card generation (${cardType.value}) from: ${sourceLabel}`, 'info')
+    addLog(`Iniciando geração de cartões (${cardType.value}) a partir de: ${sourceLabel}`, 'info')
     console.log('Card type being sent:', cardType.value, '| Source:', resolved.source)
-    showProgress('Gerando cards...')
+    showProgress('Gerando cartões...')
     setProgress(10, 'Preparando prompt...', null, 'pi pi-spinner pi-spin')
 
     const deckNames = Object.keys(decks.value || {}).join(', ')
@@ -2550,7 +2550,7 @@ async function generateCardsFromSelection() {
         try {
           // Tratamento de erro de escassez de conteudo
           if (stage === 'error' && data?.type === 'content_scarcity') {
-            const msg = `${data.error} (Recomendado: ${data.recommended_max} cards)`
+            const msg = `${data.error} (Recomendado: ${data.recommended_max} cartões)`
             notify(msg, 'warn', 8000)
             addLog(msg, 'error')
             generating.value = false
@@ -2567,7 +2567,7 @@ async function generateCardsFromSelection() {
 
           if (stage === 'cancelled') {
             generationWasCancelled.value = true
-            addLog(`Geração cancelada pelo usuário (parcial: ${data?.partial_cards ?? 0} cards)`, 'warn')
+            addLog(`Geração cancelada pelo usuário (parcial: ${data?.partial_cards ?? 0} cartões)`, 'warn')
             return
           }
 
@@ -2579,7 +2579,7 @@ async function generateCardsFromSelection() {
               'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: 'pi pi-send' },
               'parsed': { 
                 progress: 45, 
-                label: `Parseados ${data.count || 0} cards`, 
+                label: `Parseados ${data.count || 0} cartões`, 
                 icon: 'pi pi-file-edit',
                 details: { parsed: data.count, mode: data.mode, beforeFilter: data.before_type_filter }
               },
@@ -2597,17 +2597,17 @@ async function generateCardsFromSelection() {
               },
               'src_bypassed': { 
                 progress: 58, 
-                label: `SRC bypass: ${data.count || 0} cards mantidos`, 
+                label: `SRC bypass: ${data.count || 0} cartões mantidos`, 
                 icon: 'pi pi-bolt' 
               },
               'src_relaxed': { 
                 progress: 65, 
-                label: `SRC relaxado: ${data.total_after_relax || 0} cards (min: ${data.target_min || 0})`, 
+                label: `SRC relaxado: ${data.total_after_relax || 0} cartões (min: ${data.target_min || 0})`, 
                 icon: 'pi pi-sync' 
               },
               'lang_check': { 
                 progress: 70, 
-                label: `Idioma: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
+                label: `Idioma: ${data.lang || 'unknown'} (${data.cards || 0} cartões)`, 
                 icon: 'pi pi-globe' 
               },
               'repair_pass': { 
@@ -2617,7 +2617,7 @@ async function generateCardsFromSelection() {
               },
               'repair_parsed': { 
                 progress: 80, 
-                label: `Reparo: ${data.count || 0} cards adicionais`, 
+                label: `Reparo: ${data.count || 0} cartões adicionais`, 
                 icon: 'pi pi-wrench' 
               },
               'repair_src_filtered': { 
@@ -2633,17 +2633,17 @@ async function generateCardsFromSelection() {
               },
               'repair_src_bypassed': { 
                 progress: 86, 
-                label: `Reparo SRC bypass: ${data.count || 0} cards`, 
+                label: `Reparo SRC bypass: ${data.count || 0} cartões`, 
                 icon: 'pi pi-bolt' 
               },
               'lang_check_after_repair': { 
                 progress: 92, 
-                label: `Idioma pós-reparo: ${data.lang || 'unknown'} (${data.cards || 0} cards)`, 
+                label: `Idioma pós-reparo: ${data.lang || 'unknown'} (${data.cards || 0} cartões)`, 
                 icon: 'pi pi-globe' 
               },
               'done': { 
                 progress: 98, 
-                label: `Concluído: ${data.total_cards || 0} cards finais`, 
+                label: `Concluído: ${data.total_cards || 0} cartões finais`, 
                 icon: 'pi pi-check-circle',
                 details: { totalCards: data.total_cards }
               }
@@ -2674,11 +2674,11 @@ async function generateCardsFromSelection() {
     if (newCards.length > 0) {
       cards.value = [...cards.value, ...newCards]
       if (generationWasCancelled.value) {
-        addLog(`Cancelado: preservados ${newCards.length} cards`, 'warn')
-        notify(`Cancelado — ${newCards.length} card(s) preservado(s)`, 'info', 4500)
+        addLog(`Cancelado: preservados ${newCards.length} cartões`, 'warn')
+        notify(`Cancelado — ${newCards.length} cartão(ões) preservado(s)`, 'info', 4500)
       } else {
-        addLog(`Generated ${newCards.length} cards successfully`, 'success')
-        notify(`${newCards.length} cards criados`, 'success')
+        addLog(`Gerados ${newCards.length} cartões com sucesso`, 'success')
+        notify(`${newCards.length} cartões criados`, 'success')
       }
       schedulePersistActiveSession()
     } else if (generationWasCancelled.value) {
@@ -2907,7 +2907,7 @@ function deleteCard(index, skipUndo = false) {
     pushToUndoHistory({ type: 'delete', index, card: { ...cards.value[index] } })
   }
   cards.value.splice(index, 1)
-  notify('Card removido (Ctrl+Z para desfazer)', 'info', 3000)
+  notify('Cartão removido (Ctrl+Z para desfazer)', 'info', 3000)
   schedulePersistActiveSession()
 }
 
@@ -2921,7 +2921,7 @@ function clearAllCards() {
   }
   cards.value = []
   clearCardsVisible.value = false
-  notify('Todos os cards removidos (Ctrl+Z para desfazer)', 'success', 3000)
+  notify('Todos os cartões removidos (Ctrl+Z para desfazer)', 'success', 3000)
   schedulePersistActiveSession()
 }
 
@@ -3016,14 +3016,14 @@ function onEditCardSave({ index, front, back, deck }) {
     back,
     deck: deck || 'General'
   }
-  notify('Card atualizado', 'success', 2000)
+  notify('Cartão atualizado', 'success', 2000)
   schedulePersistActiveSession()
 }
 
 function onEditCardDelete(index) {
   if (index < 0) return
   cards.value.splice(index, 1)
-  notify('Card removido', 'info', 2000)
+  notify('Cartão removido', 'info', 2000)
   schedulePersistActiveSession()
 }
 
@@ -3031,7 +3031,7 @@ function onEditCardDuplicate(index) {
   if (index < 0) return
   const c = cards.value[index]
   cards.value.splice(index + 1, 0, { ...c })
-  notify('Card duplicado', 'success', 2000)
+  notify('Cartão duplicado', 'success', 2000)
   schedulePersistActiveSession()
 }
 
@@ -3050,7 +3050,7 @@ async function editGenerateCardConfirm() {
     generating.value = true
     const { signal, requestId } = setupGenerationCancellation()
     startTimer('Gerando...')
-    showProgress('Gerando card...')
+    showProgress('Gerando cartão...')
     setProgress(10)
     
     const context = instruction || documentContext.value
@@ -3083,9 +3083,9 @@ async function editGenerateCardConfirm() {
       
       cards.value = [...cards.value, ...newCards]
       if (generationWasCancelled.value) {
-        notify(`Cancelado — ${newCards.length} card(s) preservado(s)`, 'info', 4500)
+        notify(`Cancelado — ${newCards.length} cartão(ões) preservado(s)`, 'info', 4500)
       } else {
-        notify(`${newCards.length} card(s) criado(s)`, 'success')
+        notify(`${newCards.length} cartão(ões) criado(s)`, 'success')
       }
       schedulePersistActiveSession()
       completeProgress()
@@ -3319,7 +3319,7 @@ async function exportToAnkiOpenConfig(selectedIndices = null) {
     const cardsCount = cardsToExport.value ? cardsToExport.value.length : cards.value.length
 
     if (cardsCount === 0) {
-      notify('Nenhum card para exportar', 'info')
+      notify('Nenhum cartão para exportar', 'info')
       return
     }
     showProgress('Carregando modelos do Anki...')
@@ -3394,7 +3394,7 @@ async function exportToAnkiConfirm() {
     // Traduz erros comuns do AnkiConnect
     function translateAnkiError(error) {
       if (!error) return 'Erro desconhecido'
-      if (error.includes('duplicate')) return 'Card já existe no Anki (duplicata)'
+      if (error.includes('duplicate')) return 'Cartão já existe no Anki (duplicata)'
       if (error.includes('model was not found')) return 'Tipo de nota não encontrado'
       if (error.includes('deck was not found')) return 'Deck não encontrado'
       if (error.includes('field') && error.includes('not in model')) return 'Campo não existe no tipo de nota'
@@ -3415,7 +3415,7 @@ async function exportToAnkiConfirm() {
     if (result.totalSuccess === 0 && result.results?.length > 0) {
       const firstError = result.results.find(r => r.error)?.error
       const translatedError = translateAnkiError(firstError)
-      notify(`Nenhum card exportado: ${translatedError}`, 'error', 8000)
+      notify(`Nenhum cartão exportado: ${translatedError}`, 'error', 8000)
       console.error('[Anki Export] All cards failed:', result.results)
       return
     } else if (result.totalSuccess < result.totalCards) {
@@ -3430,7 +3430,12 @@ async function exportToAnkiConfirm() {
       }
       console.warn('[Anki Export] Some cards failed:', result.results)
     } else {
-      notify(`${result.totalSuccess} card${result.totalSuccess > 1 ? 's' : ''} enviado${result.totalSuccess > 1 ? 's' : ''} ao Anki!`, 'success')
+      notify(
+        result.totalSuccess === 1
+          ? '1 cartão enviado ao Anki!'
+          : `${result.totalSuccess} cartões enviados ao Anki!`,
+        'success'
+      )
     }
 
     // Save preferences on successful export (only if at least one succeeded)
@@ -3539,7 +3544,7 @@ const sidebarMenuItems = computed(() => [
           label: `${s.title}`,
           sessionInfo: buildSessionInfo(s),
           metricCount: sessionCardCount(s),
-          sublabelMetric: `${sessionCardCount(s)} card${sessionCardCount(s) === 1 ? '' : 's'}`,
+          sublabelMetric: `${sessionCardCount(s)} ${sessionCardCount(s) === 1 ? 'cartão' : 'cartões'}`,
           icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
           iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
           active: s.id === activeSessionId.value,
@@ -3550,13 +3555,13 @@ const sidebarMenuItems = computed(() => [
         })),
       ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: colorTokens.neutral, disabled: true }] : []),
       { separator: true },
-      { label: 'Total de cards', icon: 'pi pi-chart-pie', iconColor: colorTokens.success, badge: totalCardsAcrossSessions.value, disabled: true },
+      { label: 'Total de cartões', icon: 'pi pi-chart-pie', iconColor: colorTokens.success, badge: totalCardsAcrossSessions.value, disabled: true },
       { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: clearAllSessionsWithConfirmation }
     ]
   },
   {
     key: 'cards',
-    label: 'Cards',
+    label: 'Cartões',
     icon: 'pi pi-clone',
     iconColor: colorTokens.success,
     badge: cards.value.length,
@@ -3565,7 +3570,7 @@ const sidebarMenuItems = computed(() => [
       { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: colorTokens.info, disabled: !cards.value.length, command: exportToAnkiOpenConfig },
       { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: colorTokens.primary, disabled: !cards.value.length, command: exportAsMarkdown },
       { separator: true },
-      { label: 'Limpar Cards', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, disabled: !cards.value.length, command: clearAllCards }
+      { label: 'Limpar Cartões', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, disabled: !cards.value.length, command: clearAllCards }
     ]
   },
   {
@@ -3588,7 +3593,7 @@ const sidebarMenuItems = computed(() => [
     ]
   },
   { separator: true },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: colorTokens.info, tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: colorTokens.info, tooltip: 'Navegar pelos cartões salvos', command: () => router.push('/browser') },
   { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: colorTokens.warning, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
   {
     key: 'logs',
@@ -4273,13 +4278,13 @@ onBeforeUnmount(() => {
                 class="btn-shine"
                 :disabled="!canGenerate || generating || isAnalyzing"
                 :loading="isAnalyzing"
-                title="Analisar texto para melhorar a qualidade dos cards gerados"
+                title="Analisar texto para melhorar a qualidade dos cartões gerados"
                 @click="contextAnalyze"
               />
 
               <Button
                 icon="pi pi-bolt"
-                label="Create Cards"
+                label="Criar Cartões"
                 class="cta"
                 :disabled="!canGenerate || generating || isAnalyzing"
                 :loading="generating"
@@ -4602,7 +4607,7 @@ onBeforeUnmount(() => {
             <div class="panel-head">
               <div class="panel-title">
                 <i class="pi pi-clone mr-2" />
-                Cards
+                Cartões
                 <Tag :severity="hasCards ? 'success' : 'secondary'" class="pill ml-2 cards-total-pill">
                   <i class="pi pi-inbox mr-1" />
                   <span class="total-label">Total</span>
@@ -4690,7 +4695,7 @@ onBeforeUnmount(() => {
                     text
                     rounded
                     @click="openClearAllCards"
-                    title="Limpar todos os cards"
+                    title="Limpar todos os cartões"
                   >
                     <template #icon>
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -4759,9 +4764,9 @@ onBeforeUnmount(() => {
             <div class="panel-body output-body">
               <div v-if="!hasAnyOutput" class="empty-state">
                 <div class="empty-icon">✨</div>
-                <div class="empty-title">Nenhum card ainda</div>
+                <div class="empty-title">Nenhum cartão ainda</div>
                 <div class="empty-subtitle">
-                  Cole um texto, selecione um trecho e gere cards. Você pode marcar trechos com clique direito.
+                  Cole um texto, selecione um trecho e gere cartões. Você pode marcar trechos com clique direito.
                 </div>
 
                 <div class="empty-actions">
@@ -4817,7 +4822,7 @@ onBeforeUnmount(() => {
                 <div v-if="hasQuestions" class="section-header">
                   <div class="section-title">
                     <i class="pi pi-clone mr-2" />
-                    Flashcards ({{ cards.length }})
+                    Cartões ({{ cards.length }})
                   </div>
                 </div>
               </div>
@@ -4852,7 +4857,7 @@ onBeforeUnmount(() => {
                                 class="expand-btn"
                                 @click.stop="toggleCardExpand(i)"
                               />
-                              <span class="card-index">Card {{ item.actualIdx + 1 }}</span>
+                              <span class="card-index">Cartão {{ item.actualIdx + 1 }}</span>
                               <Tag 
                                 :severity="getCardType(item.card.front) === 'cloze' ? 'warning' : 'info'" 
                                 class="pill card-type-tag"
@@ -4892,13 +4897,13 @@ onBeforeUnmount(() => {
                             </div>
                           </div>
 
-                          <div v-if="item.card.src" class="text-xs opacity-70 mt-2">
+                          <div v-if="item.card.src" class="text-xs opacity-70 mt-2 card-source">
                             <strong>Fonte:</strong> <span v-html="highlightSearchTerm(previewText(item.card.src, 160))"></span>
                           </div>
 
                           <div class="preview-hint">
                             <i class="pi pi-pen-to-square mr-2" />
-                            {{ isSelectionMode ? 'Clique para selecionar' : 'Clique no card para editar' }}
+                            {{ isSelectionMode ? 'Clique para selecionar' : 'Clique no cartão para editar' }}
                           </div>
                         </template>
                       </Card>
@@ -4925,7 +4930,7 @@ onBeforeUnmount(() => {
                                     binary
                                     class="card-checkbox"
                                   />
-                                  <span class="card-index">Card {{ child.actualIdx + 1 }}</span>
+                                  <span class="card-index">Cartão {{ child.actualIdx + 1 }}</span>
                                   <Tag 
                                     :severity="getCardType(child.card.front) === 'cloze' ? 'warning' : 'info'" 
                                     class="pill card-type-tag"
@@ -4962,13 +4967,13 @@ onBeforeUnmount(() => {
                                 </div>
                               </div>
 
-                              <div v-if="child.card.src" class="text-xs opacity-70 mt-2">
+                              <div v-if="child.card.src" class="text-xs opacity-70 mt-2 card-source">
                                 <strong>Fonte:</strong> <span v-html="highlightSearchTerm(previewText(child.card.src, 160))"></span>
                               </div>
 
                               <div class="preview-hint">
                                 <i class="pi pi-pen-to-square mr-2" />
-                                {{ isSelectionMode ? 'Clique para selecionar' : 'Clique no card para editar' }}
+                                {{ isSelectionMode ? 'Clique para selecionar' : 'Clique no cartão para editar' }}
                               </div>
                             </template>
                           </Card>
@@ -5119,7 +5124,7 @@ onBeforeUnmount(() => {
       <div class="confirmation-content">
         <i class="pi pi-exclamation-triangle confirmation-icon"></i>
         <p class="confirmation-text">
-          Tem certeza que deseja apagar todos os <strong>{{ cards.length }} cards</strong>?
+          Tem certeza que deseja apagar todos os <strong>{{ cards.length }} cartões</strong>?
         </p>
         <p class="confirmation-warning">
           Esta ação não pode ser desfeita.
@@ -5823,10 +5828,25 @@ onBeforeUnmount(() => {
   margin-right: 8px;
 }
 
-.card-item.card-selected :deep(.p-card) {
+/* Flashcards (PrimeVue Card) */
+.card-item {
+  border-radius: 16px;
+  border: 1px solid var(--app-border);
+  background: var(--app-card);
+  box-shadow: var(--app-shadow);
+  backdrop-filter: blur(10px);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.card-item:hover {
+  border-color: var(--panel-border-hover);
+  box-shadow: var(--panel-shadow-hover);
+}
+
+.card-item.card-selected {
   border: 2px solid var(--selection-card-border);
   background: var(--selection-card-bg);
-  box-shadow: var(--selection-card-ring);
+  box-shadow: var(--selection-card-ring), var(--app-shadow);
 }
 
 /* Slide up animation para selection bar */
@@ -5853,14 +5873,22 @@ onBeforeUnmount(() => {
 }
 
 /* Cards preview */
+.cards-view {
+  /* PrimeVue DataView (Aura) pinta o fundo do conteúdo via token --p-dataview-content-background */
+  --p-dataview-content-background: transparent;
+  --p-dataview-content-border-color: transparent;
+  --p-dataview-content-border-width: 0px;
+}
+
+.cards-view :deep(.p-dataview-content) {
+  background: transparent;
+  border: 0;
+}
+
 .cards-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-.card-item :deep(.p-card) {
-  border-radius: 16px;
-  transition: all 0.2s ease;
 }
 .card-item :deep(.p-card-body) {
   padding: 14px;
@@ -5879,9 +5907,10 @@ onBeforeUnmount(() => {
   padding-left: 16px;
   border-left: 3px solid var(--selection-border);
 }
-.card-item.card-child :deep(.p-card) {
+.card-item.card-child {
   background: var(--card-child-bg);
   border: 1px solid var(--card-child-border);
+  box-shadow: none;
 }
 .children-enter-active,
 .children-leave-active {
@@ -5940,6 +5969,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--preview-border);
+  background: var(--preview-bg);
+  overflow: hidden;
 }
 @media (max-width: 920px) {
   .preview-grid {
@@ -5948,22 +5981,42 @@ onBeforeUnmount(() => {
   .search-wrap { width: 100%; }
 }
 .preview-block {
-  border-radius: 14px;
   padding: 10px 12px;
-  border: 1px solid var(--preview-border);
-  background: var(--preview-bg);
+  min-width: 0;
 }
+
+/* Divisão sutil entre Front/Back */
+.preview-block + .preview-block {
+  border-left: 1px solid var(--preview-border);
+}
+
+@media (max-width: 920px) {
+  .preview-block + .preview-block {
+    border-left: none;
+    border-top: 1px solid var(--preview-border);
+  }
+}
+
 .preview-label {
-  font-weight: 900;
-  font-size: 12px;
-  opacity: 0.75;
+  font-weight: 800;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  opacity: 1;
   margin-bottom: 8px;
 }
 .preview-text {
-  font-size: 13.5px;
-  line-height: 1.35;
-  opacity: 0.92;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--app-text);
+  opacity: 0.9;
 }
+
+.card-source {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--app-text-muted);
+}
+
 .preview-hint {
   margin-top: 10px;
   font-size: 12px;

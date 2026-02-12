@@ -6,7 +6,7 @@ import { defineAsyncComponent, ref, shallowRef } from 'vue'
 const props = defineProps({
   placeholder: {
     type: String,
-    default: 'Cole ou digite o texto aqui, selecione trechos e gere cards...'
+    default: 'Cole ou digite o texto aqui, selecione trechos e gere cartões...'
   },
   showLineNumbers: {
     type: Boolean,
