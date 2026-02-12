@@ -849,8 +849,22 @@ defineExpose({
   border-radius: 14px 14px 0 0;
   padding: 8px 12px;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+:deep(.ql-toolbar.ql-snow::-webkit-scrollbar) {
+  height: 3px;
+}
+:deep(.ql-toolbar.ql-snow::-webkit-scrollbar-thumb) {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+:deep(.ql-toolbar.ql-snow::-webkit-scrollbar-track) {
+  background: transparent;
 }
 
 /* Grupos de botões com separador visual */
@@ -860,6 +874,7 @@ defineExpose({
   margin-right: 8px;
   padding-right: 8px;
   border-right: 1px solid rgba(148, 163, 184, 0.2);
+  flex-shrink: 0;
 }
 
 :deep(.ql-toolbar.ql-snow .ql-formats:last-child) {
