@@ -4690,25 +4690,14 @@ onBeforeUnmount(() => {
                 <div class="export-group">
                   <Button
                     class="clear-all-btn"
+                    icon="pi pi-delete-left"
                     :disabled="!hasCards"
                     severity="danger"
                     text
                     rounded
                     @click="openClearAllCards"
                     title="Limpar todos os cartões"
-                  >
-                    <template #icon>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <!-- Cards empilhados -->
-                        <rect x="4" y="8" width="12" height="14" rx="2" stroke="currentColor" stroke-width="2" fill="none" opacity="0.3"/>
-                        <rect x="6" y="6" width="12" height="14" rx="2" stroke="currentColor" stroke-width="2" fill="none" opacity="0.5"/>
-                        <rect x="8" y="4" width="12" height="14" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
-                        <!-- X grande sobre os cards -->
-                        <line x1="10" y1="8" x2="18" y2="16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                        <line x1="18" y1="8" x2="10" y2="16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                      </svg>
-                    </template>
-                  </Button>
+                  />
                   <Button
                     class="export-btn"
                     :disabled="!hasCards"
@@ -5835,12 +5824,13 @@ onBeforeUnmount(() => {
   background: var(--app-card);
   box-shadow: var(--app-shadow);
   backdrop-filter: blur(10px);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease, transform 0.2s ease;
 }
 
 .card-item:hover {
   border-color: var(--panel-border-hover);
   box-shadow: var(--panel-shadow-hover);
+  transform: translateY(-2px);
 }
 
 .card-item.card-selected {
@@ -5888,7 +5878,7 @@ onBeforeUnmount(() => {
 .cards-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 .card-item :deep(.p-card-body) {
   padding: 14px;
@@ -5981,7 +5971,7 @@ onBeforeUnmount(() => {
   .search-wrap { width: 100%; }
 }
 .preview-block {
-  padding: 10px 12px;
+  padding: 12px 16px;
   min-width: 0;
 }
 
@@ -5999,30 +5989,43 @@ onBeforeUnmount(() => {
 
 .preview-label {
   font-weight: 800;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--app-text-muted);
-  opacity: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   margin-bottom: 8px;
 }
 .preview-text {
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--app-text);
-  opacity: 0.9;
 }
 
 .card-source {
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.45;
   color: var(--app-text-muted);
 }
 
 .preview-hint {
   margin-top: 10px;
   font-size: 12px;
-  opacity: 0.7;
+  opacity: 0.4;
   display: flex;
   align-items: center;
+  transition: opacity 0.2s ease;
+}
+.card-item:hover .preview-hint {
+  opacity: 0.9;
+}
+
+/* Delete button: visible only on hover */
+.card-head .icon-only {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.card-item:hover .card-head .icon-only {
+  opacity: 1;
 }
 
 /* markdown-ish */
@@ -6045,11 +6048,16 @@ onBeforeUnmount(() => {
 }
 .preview-text :deep(.cloze),
 .md-preview :deep(.cloze) {
-  padding: 2px 6px;
-  border-radius: 999px;
+  padding: 2px 8px;
+  border-radius: 6px;
   background: var(--cloze-bg);
   border: 1px solid var(--cloze-border);
-  font-weight: 900;
+  border-bottom: 2px solid var(--cloze-border);
+  font-weight: 700;
+  display: inline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  line-height: 1.7;
 }
 
 /* Edit dialog */
