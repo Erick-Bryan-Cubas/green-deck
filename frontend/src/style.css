@@ -82,8 +82,8 @@
   --preview-border: rgba(148, 163, 184, 0.14);
   --code-bg: rgba(0, 0, 0, 0.35);
   --code-border: rgba(148, 163, 184, 0.18);
-  --cloze-bg: rgba(251, 191, 36, 0.18);
-  --cloze-border: rgba(251, 191, 36, 0.35);
+  --cloze-bg: rgba(251, 191, 36, 0.15);
+  --cloze-border: rgba(251, 191, 36, 0.30);
 
   --edit-accent: rgba(99, 102, 241, 0.9);
   --edit-field-label: rgba(255, 255, 255, 0.85);
