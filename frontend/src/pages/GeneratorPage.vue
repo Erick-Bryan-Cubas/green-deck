@@ -6714,7 +6714,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
   flex-shrink: 1;
 }
@@ -6815,15 +6815,15 @@ onBeforeUnmount(() => {
    Container Queries — Editor Header (colapso por prioridade)
 ========================= */
 
-/* < 580px — esconde stats de texto (palavras, tempo de leitura) */
-@container editor-panel (max-width: 580px) {
+/* < 800px — esconde stats de texto (palavras, tempo de leitura) */
+@container editor-panel (max-width: 800px) {
   .text-stats {
     display: none;
   }
 }
 
-/* < 480px — colapsa labels dos switches (fica só ícone + toggle) */
-@container editor-panel (max-width: 480px) {
+/* < 650px — colapsa labels dos switches (fica só ícone + toggle) */
+@container editor-panel (max-width: 650px) {
   .editor-switch-label {
     font-size: 0;
     gap: 0;
@@ -6843,8 +6843,8 @@ onBeforeUnmount(() => {
   }
 }
 
-/* < 380px — esconde grupo zen inteiro */
-@container editor-panel (max-width: 380px) {
+/* < 500px — esconde grupo zen inteiro */
+@container editor-panel (max-width: 500px) {
   .editor-zen-group {
     display: none;
   }
@@ -6854,15 +6854,15 @@ onBeforeUnmount(() => {
    Container Queries — Cards Header (colapso por prioridade)
 ========================= */
 
-/* < 500px — esconde tag de fonte da geração */
-@container cards-panel (max-width: 500px) {
+/* < 600px — esconde tag de fonte da geração */
+@container cards-panel (max-width: 600px) {
   .generation-source-tag {
     display: none !important;
   }
 }
 
-/* < 400px — esconde undo/redo e tags secundárias do título */
-@container cards-panel (max-width: 400px) {
+/* < 480px — esconde undo/redo e tags secundárias do título */
+@container cards-panel (max-width: 480px) {
   .undo-redo-group {
     display: none;
   }
@@ -6871,8 +6871,8 @@ onBeforeUnmount(() => {
   }
 }
 
-/* < 340px — esconde botão de modo seleção */
-@container cards-panel (max-width: 340px) {
+/* < 380px — esconde botão de modo seleção e busca */
+@container cards-panel (max-width: 380px) {
   .panel-output .panel-actions > :deep(.p-button):not(:last-child) {
     display: none;
   }
