@@ -61,7 +61,7 @@ const ankiModelOptions = computed(() => {
 
 const ankiDeckOptions = computed(() => {
   const d = props.ankiModelsData
-  const base = [{ label: "Use card's deck", value: '' }]
+  const base = [{ label: 'Usar deck do cartão', value: '' }]
   if (!d?.decks) return base
   return base.concat(d.decks.map((x) => ({ label: x, value: x })))
 })
