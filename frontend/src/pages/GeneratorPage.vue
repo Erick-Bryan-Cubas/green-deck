@@ -6045,11 +6045,16 @@ onBeforeUnmount(() => {
 }
 .preview-text :deep(.cloze),
 .md-preview :deep(.cloze) {
-  padding: 2px 6px;
-  border-radius: 999px;
+  padding: 2px 8px;
+  border-radius: 6px;
   background: var(--cloze-bg);
   border: 1px solid var(--cloze-border);
-  font-weight: 900;
+  border-bottom: 2px solid var(--cloze-border);
+  font-weight: 700;
+  display: inline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  line-height: 1.7;
 }
 
 /* Edit dialog */
