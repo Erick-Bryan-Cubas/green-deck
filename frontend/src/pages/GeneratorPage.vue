@@ -132,6 +132,21 @@ function formatSessionStamp(iso) {
   }
 }
 
+function buildSessionInfo(session) {
+  const created = formatSessionStamp(session?.createdAt)
+  const updated = formatSessionStamp(session?.updatedAt)
+  const cardsCount = sessionCardCount(session)
+  const cardsLabel = cardsCount === 1 ? '1 card' : `${cardsCount} cards`
+
+  return [
+    created ? `Criada em: ${created}` : null,
+    updated ? `Atualizada em: ${updated}` : null,
+    `Total de cards: ${cardsLabel}`
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n))
 }
@@ -784,18 +799,130 @@ function ensureActiveSession() {
   const id = safeId()
   activeSessionId.value = id
   persistActiveSessionId(id)
-
-  upsertSession({
-    id,
-    title: 'Nova sessão',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    plainText: '',
-    quillDelta: null,
-    cards: [],
-    documentContext: ''
-  })
   return id
+}
+
+function sessionCardCount(session) {
+  return Array.isArray(session?.cards) ? session.cards.length : 0
+}
+
+function resetWorkspaceState() {
+  cards.value = []
+  documentContext.value = ''
+  lastFullText.value = ''
+  lastEditorDelta.value = null
+  lastEditorHtml.value = ''
+  lastTextForAnalysis.value = ''
+
+  pdfPagesContent.value = []
+  usePdfPagination.value = false
+
+  topicSegments.value = []
+  topicDefinitions.value = []
+  showTopicLegend.value = false
+
+  questionCards.value = []
+
+  editorRef.value?.setDelta?.(null)
+
+  if (immersiveReader.value) {
+    requestReaderLayout({ preserveProgress: false })
+  }
+}
+
+function deleteSessionWithConfirmation(id) {
+  const target = getSessionById(id)
+  if (!target) {
+    notify('Sessão não encontrada.', 'warn', 3000)
+    return
+  }
+
+  const cardsCount = sessionCardCount(target)
+  const cardLabel = cardsCount === 1 ? '1 card' : `${cardsCount} cards`
+  const confirmed = window.confirm(
+    `Apagar a sessão "${target.title}"?\n\nSerão removidos ${cardLabel} dessa sessão.`
+  )
+  if (!confirmed) return
+
+  const wasActive = activeSessionId.value === id
+  const remaining = sessions.value.filter((s) => s.id !== id)
+
+  if (persistSessionTimer) {
+    clearTimeout(persistSessionTimer)
+    persistSessionTimer = null
+  }
+  if (saveStatusTimer) {
+    clearTimeout(saveStatusTimer)
+    saveStatusTimer = null
+  }
+  saveStatus.value = 'idle'
+
+  sessions.value = remaining
+  persistSessions(sessions.value)
+
+  if (!wasActive) {
+    notify('Sessão apagada.', 'success', 2600)
+    return
+  }
+
+  const nextId = remaining[0]?.id || null
+  if (!nextId) {
+    activeSessionId.value = null
+    persistActiveSessionId(null)
+
+    isRestoringSession.value = true
+    try {
+      resetWorkspaceState()
+    } finally {
+      setTimeout(() => {
+        isRestoringSession.value = false
+      }, 0)
+    }
+    notify('Sessão apagada. Nenhuma sessão restante.', 'success', 3200)
+    return
+  }
+
+  restoreSessionById(nextId)
+  notify('Sessão apagada.', 'success', 2600)
+}
+
+function clearAllSessionsWithConfirmation() {
+  const totalSessions = sessions.value.length
+  if (!totalSessions) {
+    notify('Não há sessões para apagar.', 'info', 2600)
+    return
+  }
+
+  const totalCards = sessions.value.reduce((acc, session) => acc + sessionCardCount(session), 0)
+  const sessionLabel = totalSessions === 1 ? '1 sessão' : `${totalSessions} sessões`
+  const cardLabel = totalCards === 1 ? '1 card' : `${totalCards} cards`
+
+  const confirmed = window.confirm(
+    `Apagar todas as sessões (${sessionLabel})?\n\nSerão removidos ${cardLabel} no total.`
+  )
+  if (!confirmed) return
+
+  if (persistSessionTimer) {
+    clearTimeout(persistSessionTimer)
+    persistSessionTimer = null
+  }
+  if (saveStatusTimer) {
+    clearTimeout(saveStatusTimer)
+    saveStatusTimer = null
+  }
+  saveStatus.value = 'idle'
+
+  isRestoringSession.value = true
+  try {
+    clearAllSessions()
+    resetWorkspaceState()
+  } finally {
+    setTimeout(() => {
+      isRestoringSession.value = false
+    }, 0)
+  }
+
+  notify('Todas as sessões foram apagadas.', 'success', 3200)
 }
 
 function buildActiveSessionSnapshot() {
@@ -912,104 +1039,24 @@ async function restoreSessionById(id) {
 }
 
 function clearCurrentSession() {
-  const id = activeSessionId.value
-
-  // Cancela qualquer persistência pendente para evitar re-salvar a sessão
-  if (persistSessionTimer) {
-    clearTimeout(persistSessionTimer)
-    persistSessionTimer = null
+  if (!activeSessionId.value) {
+    notify('Nenhuma sessão ativa para apagar.', 'info', 2600)
+    return
   }
-  if (saveStatusTimer) {
-    clearTimeout(saveStatusTimer)
-    saveStatusTimer = null
-  }
-  saveStatus.value = 'idle'
-
-  // Bloqueia watchers de disparar persistência durante a limpeza
-  isRestoringSession.value = true
-
-  try {
-    cards.value = []
-    documentContext.value = ''
-    lastFullText.value = ''
-    lastEditorDelta.value = null
-    lastEditorHtml.value = ''
-    lastTextForAnalysis.value = ''
-
-    // Limpa paginação do PDF
-    pdfPagesContent.value = []
-    usePdfPagination.value = false
-
-    // Limpa topic segmentation
-    topicSegments.value = []
-    topicDefinitions.value = []
-    showTopicLegend.value = false
-
-    // Limpa AllInOne questions
-    questionCards.value = []
-
-    editorRef.value?.setDelta?.(null)
-
-    // Primeiro limpa o activeSessionId para evitar que deleteSessionById tente definir outro
-    activeSessionId.value = null
-    persistActiveSessionId(null)
-
-    // Agora deleta a sessão da lista
-    if (id) {
-      deleteSessionById(id)
-    }
-
-    ensureActiveSession()
-  } finally {
-    // Reativa watchers após um tick para garantir que todas as mudanças foram processadas
-    setTimeout(() => {
-      isRestoringSession.value = false
-    }, 0)
-  }
-
-  notify('Sessão atual limpa.', 'info', 3000)
-
-  if (immersiveReader.value) requestReaderLayout({ preserveProgress: false })
+  deleteSessionWithConfirmation(activeSessionId.value)
 }
 
 function newSession() {
   schedulePersistActiveSession()
 
-  cards.value = []
-  documentContext.value = ''
-  lastFullText.value = ''
-  lastEditorDelta.value = null
-  lastEditorHtml.value = ''
-  lastTextForAnalysis.value = ''
-
-  // Limpa paginação do PDF
-  pdfPagesContent.value = []
-  usePdfPagination.value = false
-
-  // Limpa topic segmentation
-  topicSegments.value = []
-  topicDefinitions.value = []
-  showTopicLegend.value = false
-
-  editorRef.value?.setDelta?.(null)
+  isRestoringSession.value = true
+  resetWorkspaceState()
+  isRestoringSession.value = false
 
   activeSessionId.value = safeId()
   persistActiveSessionId(activeSessionId.value)
 
-  upsertSession({
-    id: activeSessionId.value,
-    title: 'Nova sessão',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    plainText: '',
-    quillDelta: null,
-    cards: [],
-    documentContext: '',
-    topicSegments: [],
-    topicDefinitions: []
-  })
-
-  notify('Nova sessão criada.', 'success', 2200)
+  notify('Nova sessão pronta. Ela será salva quando houver conteúdo.', 'success', 2400)
 
   if (immersiveReader.value) {
     nextTick(() => {
@@ -3362,6 +3409,10 @@ function onCustomInstructionConfirm(instruction) {
 // ============================================================
 const sidebarRef = ref(null)
 
+const totalCardsAcrossSessions = computed(() =>
+  sessions.value.reduce((acc, session) => acc + sessionCardCount(session), 0)
+)
+
 const sidebarMenuItems = computed(() => [
   {
     key: 'sessions',
@@ -3378,16 +3429,21 @@ const sidebarMenuItems = computed(() => [
         .slice(0, 8)
         .map((s) => ({
           label: `${s.title}`,
-          sublabel: formatSessionStamp(s.updatedAt),
+          sessionInfo: buildSessionInfo(s),
+          metricCount: sessionCardCount(s),
+          sublabelMetric: `${sessionCardCount(s)} card${sessionCardCount(s) === 1 ? '' : 's'}`,
           icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
           iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
           active: s.id === activeSessionId.value,
+          actionIcon: 'pi pi-trash',
+          actionTooltip: 'Apagar sessão',
+          actionCommand: () => deleteSessionWithConfirmation(s.id),
           command: () => restoreSessionById(s.id)
         })),
       ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: colorTokens.neutral, disabled: true }] : []),
       { separator: true },
-      { label: 'Limpar sessão atual', icon: 'pi pi-refresh', iconColor: colorTokens.warning, command: clearCurrentSession },
-      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: () => { clearAllSessions(); clearCurrentSession() } }
+      { label: 'Total de cards', icon: 'pi pi-chart-pie', iconColor: colorTokens.success, badge: totalCardsAcrossSessions.value, disabled: true },
+      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: clearAllSessionsWithConfirmation }
     ]
   },
   {
@@ -3610,14 +3666,22 @@ function onDocumentExtracted({ text, filename, pages, wordCount, pagesContent, m
       id: safeId(),
       title: `${formatEmoji} ${filename}`,
       createdAt: new Date().toISOString(),
-      lastModifiedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      plainText: text || '',
+      quillDelta: null,
+      cards: [],
+      documentContext: '',
+      topicSegments: [],
+      topicDefinitions: [],
+      questionCards: [],
       source: 'document',
       documentFilename: filename,
       documentPages: pages,
       documentPagesContent: pagesContent || []
     }
     activeSessionId.value = newSession.id
-    sessions.value.unshift(newSession)
+    persistActiveSessionId(activeSessionId.value)
+    upsertSession(newSession)
 
     // Atualiza estatísticas do modo leitura se estiver ativo
     if (immersiveReader.value && usePdfPagination.value) {
@@ -4594,7 +4658,6 @@ onBeforeUnmount(() => {
                     :disabled="!savedSessionExists"
                     @click="toggleSessionsMenu"
                   />
-                  <Button icon="pi pi-eraser" label="Limpar sessão" severity="danger" outlined @click="clearCurrentSession" />
                 </div>
               </div>
 
