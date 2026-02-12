@@ -552,6 +552,109 @@ defineExpose({
   animation: sidebar-cog-spin 0.6s ease;
 }
 
+@keyframes sidebar-sessions-tick {
+  0% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-10deg);
+  }
+  50% {
+    transform: rotate(10deg);
+  }
+  75% {
+    transform: rotate(-6deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes sidebar-cards-shuffle {
+  0% {
+    transform: translateX(0) rotate(0deg) scale(1);
+  }
+  30% {
+    transform: translateX(-1px) rotate(-7deg) scale(1.03);
+  }
+  60% {
+    transform: translateX(1px) rotate(6deg) scale(1.06);
+  }
+  100% {
+    transform: translateX(0) rotate(0deg) scale(1);
+  }
+}
+
+@keyframes sidebar-browser-browse {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  35% {
+    transform: translateY(-2px) scale(1.04);
+  }
+  65% {
+    transform: translateY(1px) scale(1.02);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sidebar-dashboard-rise {
+  0% {
+    transform: scaleY(1) translateY(0);
+  }
+  35% {
+    transform: scaleY(1.12) translateY(-1px);
+  }
+  65% {
+    transform: scaleY(0.96) translateY(0);
+  }
+  100% {
+    transform: scaleY(1) translateY(0);
+  }
+}
+
+.sidebar-link:hover .sidebar-icon.pi-history {
+  animation: sidebar-sessions-tick 0.75s ease;
+  transform-origin: 50% 50%;
+}
+
+.sidebar-link:hover .sidebar-icon.pi-clone {
+  animation: sidebar-cards-shuffle 0.75s ease;
+  transform-origin: 50% 50%;
+}
+
+.sidebar-link:hover .sidebar-icon.pi-database {
+  animation: sidebar-browser-browse 0.8s ease;
+  transform-origin: 50% 50%;
+}
+
+.sidebar-link:hover .sidebar-icon.pi-chart-bar {
+  animation: sidebar-dashboard-rise 0.8s ease;
+  transform-origin: 50% 100%;
+}
+
+.submenu-link:hover .submenu-icon.pi-history {
+  animation: sidebar-sessions-tick 0.75s ease;
+  transform-origin: 50% 50%;
+}
+
+.submenu-link:hover .submenu-icon.pi-clone {
+  animation: sidebar-cards-shuffle 0.75s ease;
+  transform-origin: 50% 50%;
+}
+
+.submenu-link:hover .submenu-icon.pi-database {
+  animation: sidebar-browser-browse 0.8s ease;
+  transform-origin: 50% 50%;
+}
+
+.submenu-link:hover .submenu-icon.pi-chart-bar {
+  animation: sidebar-dashboard-rise 0.8s ease;
+  transform-origin: 50% 100%;
+}
+
 @keyframes sidebar-logs-ecg-scan {
   from {
     background-position: 140% 0;
