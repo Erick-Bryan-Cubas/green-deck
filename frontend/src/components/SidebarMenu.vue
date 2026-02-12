@@ -39,6 +39,30 @@ const hoveredItem = ref(null)
 const hoverPosition = ref({ top: 0, left: 0 })
 let hoverTimeout = null
 
+function isLogsItem(item) {
+  return item?.key === 'logs'
+}
+
+function itemStatus(item) {
+  return item?.status === 'error' ? 'error' : 'ok'
+}
+
+function resolvedItemIcon(item) {
+  if (isLogsItem(item)) {
+    return itemStatus(item) === 'error' ? 'pi pi-minus' : 'pi pi-wave-pulse'
+  }
+  return item?.icon
+}
+
+function iconExtraClasses(item) {
+  if (!isLogsItem(item)) return null
+  return {
+    'is-logs-icon': true,
+    'is-logs-ok': itemStatus(item) === 'ok',
+    'is-logs-error': itemStatus(item) === 'error'
+  }
+}
+
 function handleMouseEnter(event, item) {
   if (sidebarExpanded.value) return
   if (hoverTimeout) {
@@ -57,7 +81,7 @@ function handleMouseLeave() {
   // Delay closing to allow mouse to move to popup
   hoverTimeout = setTimeout(() => {
     hoveredItem.value = null
-  }, 100)
+  }, 220)
 }
 
 function handlePopupMouseEnter() {
@@ -68,6 +92,19 @@ function handlePopupMouseEnter() {
 }
 
 function handlePopupMouseLeave() {
+  hoveredItem.value = null
+}
+
+function handlePopupRootClick() {
+  const item = hoveredItem.value
+  if (!item || item.submenu || item.disabled) return
+  handleItemClick(item)
+  hoveredItem.value = null
+}
+
+function handlePopupSubClick(sub) {
+  if (!sub || sub.disabled) return
+  handleItemClick(sub)
   hoveredItem.value = null
 }
 
@@ -159,7 +196,7 @@ defineExpose({
             @mouseleave="handleMouseLeave"
           >
             <span class="sidebar-icon-wrap" :style="{ '--icon-color': item.iconColor }">
-              <i :class="item.icon" class="sidebar-icon"></i>
+              <i :class="[resolvedItemIcon(item), iconExtraClasses(item)]" class="sidebar-icon"></i>
             </span>
             <Transition name="fade">
               <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
@@ -206,7 +243,7 @@ defineExpose({
           @mouseleave="handleMouseLeave"
         >
           <span class="sidebar-icon-wrap" :style="{ '--icon-color': item.iconColor }">
-            <i :class="item.icon" class="sidebar-icon"></i>
+            <i :class="[resolvedItemIcon(item), iconExtraClasses(item)]" class="sidebar-icon"></i>
           </span>
           <Transition name="fade">
             <span v-if="sidebarExpanded" class="sidebar-label">{{ item.label }}</span>
@@ -241,7 +278,7 @@ defineExpose({
 
   <!-- Mini popup rendered outside sidebar to avoid overflow clipping -->
   <Teleport to="body">
-    <Transition name="popup">
+    <Transition name="sidebar-popup">
       <div
         v-if="hoveredItem && !sidebarExpanded"
         class="sidebar-popup-portal"
@@ -249,6 +286,7 @@ defineExpose({
         :style="{ top: hoverPosition.top + 'px', left: hoverPosition.left + 'px' }"
         @mouseenter="handlePopupMouseEnter"
         @mouseleave="handlePopupMouseLeave"
+        @click="handlePopupRootClick"
       >
         <!-- Header with label and badge -->
         <div class="popup-header">
@@ -263,7 +301,7 @@ defineExpose({
             :key="subIdx"
             class="popup-submenu-item"
             :class="{ 'active': sub.active, 'disabled': sub.disabled }"
-            @click="!sub.disabled && handleItemClick(sub)"
+            @click.stop="handlePopupSubClick(sub)"
           >
             <span class="popup-submenu-label">{{ sub.label }}</span>
           </button>
@@ -496,7 +534,56 @@ defineExpose({
   transition: color 0.2s ease;
 }
 
-.sidebar-link:hover .sidebar-icon {
+/* Icon microinteractions (specific icons only) */
+@keyframes sidebar-cog-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(180deg);
+  }
+}
+
+.sidebar-link:hover .sidebar-icon.pi-cog {
+  animation: sidebar-cog-spin 0.6s ease;
+}
+
+.submenu-link:hover .submenu-icon.pi-cog {
+  animation: sidebar-cog-spin 0.6s ease;
+}
+
+@keyframes sidebar-logs-ecg-scan {
+  from {
+    background-position: 140% 0;
+  }
+  to {
+    background-position: -40% 0;
+  }
+}
+
+/* ECG-like scan over the wave icon (ok state) */
+.sidebar-icon.is-logs-ok.pi-wave-pulse {
+  display: inline-block;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-danger) 20%, transparent) 42%,
+    var(--color-danger) 50%,
+    color-mix(in srgb, var(--color-danger) 20%, transparent) 58%,
+    transparent 100%
+  );
+  background-size: 240% 100%;
+  background-repeat: no-repeat;
+  background-position: 140% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--color-danger) 28%, transparent));
+  animation: sidebar-logs-ecg-scan 1.05s linear infinite;
+}
+
+.sidebar-link:hover .sidebar-icon:not(.is-logs-ok) {
   color: var(--icon-color, var(--app-text));
 }
 
@@ -779,7 +866,15 @@ defineExpose({
   white-space: nowrap;
   box-shadow: var(--sidebar-popup-shadow);
   z-index: 9999;
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.sidebar-popup-portal:not(.has-submenu) {
+  cursor: pointer;
+}
+
+.sidebar-popup-portal:not(.has-submenu):hover {
+  filter: brightness(1.05);
 }
 
 /* With submenu: vertical layout */
@@ -788,7 +883,6 @@ defineExpose({
   align-items: stretch;
   padding: 0;
   min-width: 160px;
-  pointer-events: auto;
   transform: none;
 }
 
@@ -883,19 +977,19 @@ defineExpose({
 }
 
 /* Popup transition */
-.popup-enter-active,
-.popup-leave-active {
+.sidebar-popup-enter-active,
+.sidebar-popup-leave-active {
   transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.popup-enter-from,
-.popup-leave-to {
+.sidebar-popup-enter-from,
+.sidebar-popup-leave-to {
   opacity: 0;
   transform: translateY(-50%) translateX(-8px);
 }
 
-.popup-enter-to,
-.popup-leave-from {
+.sidebar-popup-enter-to,
+.sidebar-popup-leave-from {
   opacity: 1;
   transform: translateY(-50%) translateX(0);
 }

@@ -1916,6 +1916,8 @@ function stopTimer() {
 const logsVisible = ref(false)
 const logs = ref([])
 
+const logsHasError = computed(() => logs.value.some((l) => l?.type === 'error' || l?.type === 'danger'))
+
 function addLog(message, type = 'info') {
   const timestamp = new Date().toLocaleTimeString()
   logs.value.push({ timestamp, message, type })
@@ -3424,7 +3426,17 @@ const sidebarMenuItems = computed(() => [
   { separator: true },
   { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: colorTokens.info, tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
   { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: colorTokens.warning, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
-  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: colorTokens.danger, tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
+  {
+    key: 'logs',
+    label: 'Logs',
+    icon: 'pi pi-wave-pulse',
+    status: logsHasError.value ? 'error' : 'ok',
+    iconColor: logsHasError.value ? colorTokens.danger : colorTokens.neutral,
+    tooltip: 'Ver registros do sistema',
+    command: () => {
+      logsVisible.value = true
+    }
+  }
 ])
 
 // Footer actions para o sidebar
