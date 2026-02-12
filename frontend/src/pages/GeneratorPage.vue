@@ -58,6 +58,7 @@ import { useTheme } from '@/composables/useTheme'
 // Services
 import {
   generateCardsWithStream,
+  cancelCardsGeneration,
   analyzeText,
   segmentTopics,
   getStoredApiKeys,
@@ -1984,6 +1985,67 @@ const progressValue = ref(0)
 const progressStage = ref('')
 const progressIcon = ref('')
 const progressDetails = ref({})
+const generationAbortController = ref(null)
+const generationRequestId = ref(null)
+const generationCanceling = ref(false)
+const generationWasCancelled = ref(false)
+let generationForceAbortTimer = null
+const generationProgressCancellable = computed(() =>
+  progressVisible.value && generating.value && !!generationAbortController.value
+)
+
+function setupGenerationCancellation() {
+  const controller = new AbortController()
+  generationAbortController.value = controller
+  generationRequestId.value = safeId()
+  generationCanceling.value = false
+  generationWasCancelled.value = false
+  if (generationForceAbortTimer) {
+    clearTimeout(generationForceAbortTimer)
+    generationForceAbortTimer = null
+  }
+  return {
+    signal: controller.signal,
+    requestId: generationRequestId.value
+  }
+}
+
+function clearGenerationCancellation() {
+  generationAbortController.value = null
+  generationRequestId.value = null
+  generationCanceling.value = false
+  generationWasCancelled.value = false
+  if (generationForceAbortTimer) {
+    clearTimeout(generationForceAbortTimer)
+    generationForceAbortTimer = null
+  }
+}
+
+async function cancelCurrentGeneration() {
+  const controller = generationAbortController.value
+  if (!controller || generationCanceling.value) return
+
+  generationCanceling.value = true
+  const requestId = generationRequestId.value
+
+  try {
+    if (requestId) {
+      await cancelCardsGeneration(requestId)
+    }
+  } catch {
+    addLog('Erro ao sinalizar cancelamento no backend (seguindo com abort local)', 'warn')
+  } finally {
+    generationWasCancelled.value = true
+    setProgress(progressValue.value, 'Cancelando... aguardando retorno parcial', null, 'pi pi-times')
+
+    // Fallback: se o backend não responder, aborta localmente (evita travar UI)
+    generationForceAbortTimer = setTimeout(() => {
+      try {
+        controller.abort()
+      } catch {}
+    }, 20000)
+  }
+}
 
 function showProgress(title = 'Processing...') {
   progressTitle.value = title
@@ -2468,6 +2530,7 @@ async function generateCardsFromSelection() {
 
   try {
     generating.value = true
+    const { signal, requestId } = setupGenerationCancellation()
     startTimer('Gerando...')
     startOllamaInfoPolling() // Inicia polling de info do Ollama
     const sourceLabel = getSourceLabel()
@@ -2500,6 +2563,12 @@ async function generateCardsFromSelection() {
           if (stage === 'warning' && data?.message) {
             notify(data.message, 'warn', 5000)
             addLog(data.message, 'warn')
+          }
+
+          if (stage === 'cancelled') {
+            generationWasCancelled.value = true
+            addLog(`Geração cancelada pelo usuário (parcial: ${data?.partial_cards ?? 0} cards)`, 'warn')
+            return
           }
 
           if (stage === 'stage' && data?.stage) {
@@ -2597,18 +2666,35 @@ async function generateCardsFromSelection() {
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      numCardsEnabled.value ? numCardsSlider.value : null
+      numCardsEnabled.value ? numCardsSlider.value : null,
+      signal,
+      requestId
     )
 
-    addLog(`Generated ${newCards.length} cards successfully`, 'success')
-    cards.value = [...cards.value, ...newCards]
-    notify(`${newCards.length} cards criados`, 'success')
+    if (newCards.length > 0) {
+      cards.value = [...cards.value, ...newCards]
+      if (generationWasCancelled.value) {
+        addLog(`Cancelado: preservados ${newCards.length} cards`, 'warn')
+        notify(`Cancelado — ${newCards.length} card(s) preservado(s)`, 'info', 4500)
+      } else {
+        addLog(`Generated ${newCards.length} cards successfully`, 'success')
+        notify(`${newCards.length} cards criados`, 'success')
+      }
+      schedulePersistActiveSession()
+    } else if (generationWasCancelled.value) {
+      notify('Geração cancelada', 'info', 3000)
+    }
 
     setProgress(100, 'Concluído!', null, 'pi pi-check-circle')
     completeProgress()
-    schedulePersistActiveSession()
   } catch (error) {
     console.error('Error generating cards:', error)
+    if (error?.name === 'AbortError') {
+      addLog('Geração cancelada pelo usuário', 'warn')
+      notify('Geração cancelada', 'info', 3000)
+      return
+    }
+
     addLog('Generation error: ' + (error?.message || String(error)), 'error')
 
     const msg = error?.message || String(error)
@@ -2622,6 +2708,7 @@ async function generateCardsFromSelection() {
     stopOllamaInfoPolling() // Para polling de info do Ollama
     generating.value = false
     progressVisible.value = false
+    clearGenerationCancellation()
   }
 }
 
@@ -2961,6 +3048,7 @@ async function editGenerateCardConfirm() {
   
   try {
     generating.value = true
+    const { signal, requestId } = setupGenerationCancellation()
     startTimer('Gerando...')
     showProgress('Gerando card...')
     setProgress(10)
@@ -2973,28 +3061,48 @@ async function editGenerateCardConfirm() {
       type,
       selectedModel.value,
       ({ stage }) => {
+        if (stage === 'cancelled') {
+          generationWasCancelled.value = true
+          return
+        }
         if (progressValue.value < 92) setProgress(progressValue.value + 4)
       },
       currentAnalysisId.value,
       selectedValidationModel.value,
       selectedAnalysisModel.value,
       getEffectivePrompts(), // Prioridade: temporários > salvos > padrões
-      null // numCards
+      null, // numCards
+      signal,
+      requestId
     )
 
-    newCards.forEach(card => {
-      card.src = `Card #${sourceCardId + 1}`
-    })
-    
-    cards.value = [...cards.value, ...newCards]
-    notify(`${newCards.length} card(s) criado(s)`, 'success')
-    completeProgress()
+    if (newCards.length > 0) {
+      newCards.forEach(card => {
+        card.src = `Card #${sourceCardId + 1}`
+      })
+      
+      cards.value = [...cards.value, ...newCards]
+      if (generationWasCancelled.value) {
+        notify(`Cancelado — ${newCards.length} card(s) preservado(s)`, 'info', 4500)
+      } else {
+        notify(`${newCards.length} card(s) criado(s)`, 'success')
+      }
+      schedulePersistActiveSession()
+      completeProgress()
+    } else if (generationWasCancelled.value) {
+      notify('Geração cancelada', 'info', 3000)
+    }
   } catch (error) {
+    if (error?.name === 'AbortError') {
+      notify('Geração cancelada', 'info', 3000)
+      return
+    }
     notify('Erro ao gerar: ' + (error?.message || String(error)), 'error', 8000)
   } finally {
     stopTimer()
     generating.value = false
     progressVisible.value = false
+    clearGenerationCancellation()
   }
 }
 
@@ -3938,6 +4046,12 @@ onBeforeUnmount(() => {
   }
   if (winResizeHandler) {
     window.removeEventListener('resize', winResizeHandler)
+  }
+
+  if (generationAbortController.value) {
+    try {
+      generationAbortController.value.abort()
+    } catch {}
   }
 })
 </script>
@@ -4934,6 +5048,9 @@ onBeforeUnmount(() => {
       :stage="progressStage"
       :icon="progressIcon"
       :details="progressDetails"
+      :cancellable="generationProgressCancellable"
+      :canceling="generationCanceling"
+      @cancel="cancelCurrentGeneration"
     />
 
     <!-- TOPIC SEGMENTATION CONFIRM -->

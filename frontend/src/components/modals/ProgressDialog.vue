@@ -2,6 +2,7 @@
 <script setup>
 import Dialog from 'primevue/dialog'
 import ProgressBar from 'primevue/progressbar'
+import Button from 'primevue/button'
 
 defineProps({
   visible: Boolean,
@@ -24,10 +25,18 @@ defineProps({
   details: {
     type: Object,
     default: () => ({})
+  },
+  cancellable: {
+    type: Boolean,
+    default: false
+  },
+  canceling: {
+    type: Boolean,
+    default: false
   }
 })
 
-const emit = defineEmits(['update:visible'])
+const emit = defineEmits(['update:visible', 'cancel'])
 </script>
 
 <template>
@@ -41,14 +50,28 @@ const emit = defineEmits(['update:visible'])
     style="width: min(560px, 95vw);"
   >
     <div class="progress-content">
-      <ProgressBar :value="value" :showValue="false" style="height: 8px;" />
+      <div class="extraction-progress-main">
+        <ProgressBar
+          :value="value"
+          :showValue="false"
+          class="extraction-bar"
+        />
+
+        <div class="extraction-stats">
+          <span class="extraction-pages">{{ stage || title }}</span>
+          <span class="extraction-percent">{{ value }}%</span>
+        </div>
+      </div>
 
       <div class="progress-info mt-3">
-        <div class="progress-stage" v-if="stage">
-          <i v-if="icon" :class="icon" class="progress-stage-icon"></i>
-          {{ stage }}
-        </div>
-        <div class="progress-percent">{{ value }}%</div>
+        <Button
+          v-if="cancellable"
+          :label="canceling ? 'Cancelando...' : 'Cancelar'"
+          icon="pi pi-times"
+          class="cancel-extraction-btn"
+          :disabled="canceling"
+          @click="emit('cancel')"
+        />
       </div>
 
       <!-- Pipeline summary -->
@@ -83,27 +106,77 @@ const emit = defineEmits(['update:visible'])
   padding: 0.5rem 0;
 }
 
-.progress-info {
+.extraction-progress-main {
+  width: 100%;
+}
+
+.extraction-bar {
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.extraction-bar :deep(.p-progressbar) {
+  background: var(--surface-200);
+  height: 14px;
+  border-radius: 7px;
+}
+
+.extraction-bar :deep(.p-progressbar-value) {
+  background: linear-gradient(
+    90deg,
+    #16a34a 0%,
+    #22c55e 50%,
+    #16a34a 100%
+  );
+  background-size: 200% 100%;
+  animation: extraction-shimmer 1.5s ease-in-out infinite;
+  border-radius: 7px;
+}
+
+@keyframes extraction-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.extraction-stats {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
 }
 
-.progress-stage {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 0.9rem;
+.extraction-pages {
+  color: var(--text-color-secondary);
 }
 
-.progress-stage-icon {
-  color: var(--p-primary-color);
-}
-
-.progress-percent {
+.extraction-percent {
   font-weight: 600;
-  color: var(--p-primary-color);
+  color: var(--green-600);
+}
+
+.progress-info {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.cancel-extraction-btn {
+  background: linear-gradient(135deg, #8b5cf6 0%, #a855f7 50%, #c084fc 100%) !important;
+  border: none !important;
+  color: white !important;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.cancel-extraction-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7c3aed 0%, #9333ea 50%, #a855f7 100%) !important;
+  transform: translateY(-1px);
+}
+
+.cancel-extraction-btn:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .progress-pipeline {
