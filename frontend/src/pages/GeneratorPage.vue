@@ -4246,9 +4246,6 @@ onBeforeUnmount(() => {
                   title="Exportar texto"
                 />
 
-                <Tag v-if="!immersiveReader" severity="secondary" class="pill subtle">
-                  <i class="pi pi-mouse mr-2" /> Clique direito para opções
-                </Tag>
               </div>
             </div>
 
@@ -4520,9 +4517,10 @@ onBeforeUnmount(() => {
                   <Button
                     class="export-btn"
                     :disabled="!hasCards"
-                    label="Export to Anki"
                     icon="pi pi-send"
                     outlined
+                    rounded
+                    v-tooltip.top="'Exportar para o Anki'"
                     @click="exportToAnkiOpenConfig"
                   />
                 </div>
@@ -5278,6 +5276,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   border-bottom: 1px solid var(--panel-head-border);
   background: var(--panel-head-bg);
+  min-width: 0;
 }
 
 .panel-title {
@@ -5285,6 +5284,9 @@ onBeforeUnmount(() => {
   letter-spacing: -0.2px;
   display: flex;
   align-items: center;
+  min-width: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .panel-body {
@@ -5295,6 +5297,17 @@ onBeforeUnmount(() => {
 
 .output-body {
   overflow: auto;
+}
+
+/* Container Queries — responsividade baseada na largura do painel */
+.panel-editor {
+  container-type: inline-size;
+  container-name: editor-panel;
+}
+
+.panel-output {
+  container-type: inline-size;
+  container-name: cards-panel;
 }
 
 /* Splitter */
@@ -6702,6 +6715,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .editor-zen-group{
@@ -6771,11 +6786,99 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .export-btn{
+  flex-shrink: 0;
+}
+
+/* Cards panel-title — overflow handling para pills */
+.panel-output .panel-title {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.cards-total-pill {
+  flex-shrink: 0;
+}
+
+.generation-source-tag {
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* =========================
+   Container Queries — Editor Header (colapso por prioridade)
+========================= */
+
+/* < 580px — esconde stats de texto (palavras, tempo de leitura) */
+@container editor-panel (max-width: 580px) {
+  .text-stats {
+    display: none;
+  }
+}
+
+/* < 480px — colapsa labels dos switches (fica só ícone + toggle) */
+@container editor-panel (max-width: 480px) {
+  .editor-switch-label {
+    font-size: 0;
+    gap: 0;
+  }
+  .editor-switch-label i {
+    font-size: 0.9rem;
+  }
+  .editor-switch {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  .editor-zen-group {
+    gap: 4px;
+  }
+  .panel-actions {
+    gap: 8px;
+  }
+}
+
+/* < 380px — esconde grupo zen inteiro */
+@container editor-panel (max-width: 380px) {
+  .editor-zen-group {
+    display: none;
+  }
+}
+
+/* =========================
+   Container Queries — Cards Header (colapso por prioridade)
+========================= */
+
+/* < 500px — esconde tag de fonte da geração */
+@container cards-panel (max-width: 500px) {
+  .generation-source-tag {
+    display: none !important;
+  }
+}
+
+/* < 400px — esconde undo/redo e tags secundárias do título */
+@container cards-panel (max-width: 400px) {
+  .undo-redo-group {
+    display: none;
+  }
+  .panel-title .pill:not(.cards-total-pill) {
+    display: none;
+  }
+}
+
+/* < 340px — esconde botão de modo seleção */
+@container cards-panel (max-width: 340px) {
+  .panel-output .panel-actions > :deep(.p-button):not(:last-child) {
+    display: none;
+  }
+  .search-wrap {
+    display: none;
+  }
 }
 
 /* =========================
