@@ -225,8 +225,44 @@ defineExpose({
                   </span>
                   <div class="submenu-text">
                     <span class="submenu-label">{{ sub.label }}</span>
-                    <span v-if="sub.sublabel" class="submenu-sublabel">{{ sub.sublabel }}</span>
+                    <div v-if="sub.sessionInfo || sub.sublabelMetric" class="submenu-meta">
+                      <span
+                        v-if="sub.sessionInfo"
+                        class="submenu-info"
+                        v-tooltip.top="sub.sessionInfo"
+                        :title="sub.sessionInfo"
+                        aria-label="Informações da sessão"
+                      >
+                        <i class="pi pi-info-circle"></i>
+                      </span>
+                      <span
+                        v-if="sub.sublabelMetric"
+                        class="submenu-metric"
+                        :class="{ 'is-zero': Number(sub.metricCount) === 0 }"
+                      >
+                        {{ sub.sublabelMetric }}
+                      </span>
+                    </div>
                   </div>
+                  <Tag
+                    v-if="sub.badge !== undefined && sub.badge !== null"
+                    :severity="sub.badge > 0 ? 'success' : 'secondary'"
+                    :class="['submenu-badge', { 'is-zero': Number(sub.badge) === 0 }]"
+                  >
+                    {{ sub.badge }}
+                  </Tag>
+                  <span
+                    v-if="sub.actionIcon"
+                    class="submenu-action-btn"
+                    role="button"
+                    tabindex="0"
+                    :title="sub.actionTooltip || 'Ação'"
+                    @click.stop="sub.actionCommand?.()"
+                    @keydown.enter.stop.prevent="sub.actionCommand?.()"
+                    @keydown.space.stop.prevent="sub.actionCommand?.()"
+                  >
+                    <i :class="sub.actionIcon"></i>
+                  </span>
                   <i v-if="sub.active" class="pi pi-check submenu-check"></i>
                 </button>
               </template>
@@ -808,6 +844,13 @@ defineExpose({
   min-width: 0;
 }
 
+.submenu-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .submenu-label {
   font-weight: 600;
   overflow: hidden;
@@ -815,19 +858,106 @@ defineExpose({
   white-space: nowrap;
 }
 
-.submenu-sublabel {
-  font-size: 11px;
-  opacity: 0.55;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.submenu-info {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--sidebar-text-muted) 80%, transparent);
+  background: color-mix(in srgb, var(--sidebar-icon-bg) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sidebar-separator) 65%, transparent);
+  transition: all 0.2s ease;
+}
+
+.submenu-link:hover:not(.disabled) .submenu-info {
+  color: color-mix(in srgb, var(--color-primary) 80%, var(--app-text));
+  border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
+}
+
+.submenu-info i {
+  font-size: 10px;
+}
+
+.submenu-metric {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 999px;
   white-space: nowrap;
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-success) 84%, var(--app-text));
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-success) 34%, transparent);
+}
+
+.submenu-metric.is-zero {
+  color: color-mix(in srgb, var(--sidebar-text-muted) 80%, transparent);
+  background: transparent;
+  border-color: transparent;
 }
 
 .submenu-check {
   font-size: 12px;
   color: var(--color-success);
   flex-shrink: 0;
+}
+
+.submenu-badge {
+  font-size: 10px;
+  line-height: 1;
+  min-width: 28px;
+  text-align: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--color-success) 35%, transparent);
+  background: color-mix(in srgb, var(--color-success) 16%, var(--sidebar-icon-bg));
+  color: color-mix(in srgb, var(--color-success) 86%, var(--app-text));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-success) 12%, transparent);
+  transition: all 0.2s ease;
+}
+
+.submenu-badge.is-zero {
+  border-color: color-mix(in srgb, var(--sidebar-separator) 70%, transparent);
+  background: color-mix(in srgb, var(--sidebar-icon-bg) 88%, transparent);
+  color: color-mix(in srgb, var(--sidebar-text-muted) 85%, transparent);
+  box-shadow: none;
+}
+
+.submenu-link:hover:not(.disabled) .submenu-badge {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-success) 50%, transparent);
+}
+
+.submenu-link.active .submenu-badge {
+  background: color-mix(in srgb, var(--color-success) 22%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 60%, transparent);
+}
+
+.submenu-action-btn {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--sidebar-text) 65%, transparent);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.submenu-action-btn:hover {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
 }
 
 .submenu-enter-active {
