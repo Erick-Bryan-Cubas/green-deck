@@ -137,7 +137,7 @@ function finishIntro(skipped = false) {
           </div>
           <div>
             <span class="font-medium" style="color: #f1f5f9">Gere flashcards com IA</span>
-            <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">A IA analisa e cria cards de alta qualidade</p>
+            <p class="text-sm m-0 mt-1" style="color: rgba(148, 163, 184, 0.8)">A IA analisa e cria cartões de alta qualidade</p>
           </div>
         </div>
         <div
@@ -168,7 +168,7 @@ function finishIntro(skipped = false) {
       </div>
       <h2 class="text-xl font-bold mb-3 mt-0" style="color: #f1f5f9">Tudo pronto!</h2>
       <p class="mb-5 px-3" style="color: rgba(148, 163, 184, 0.9)">
-        A seguir, voce podera configurar os modelos de IA para geracao dos cards.
+        A seguir, voce podera configurar os modelos de IA para geracao dos cartões.
       </p>
       <div
         class="flex align-items-center justify-content-center gap-2 p-3 border-round-lg mx-auto"

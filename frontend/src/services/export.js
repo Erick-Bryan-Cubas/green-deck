@@ -30,7 +30,7 @@ export function downloadTextFile(content, filename, mimeType = 'text/plain') {
  * @returns {{ markdown: string, filename: string }}
  */
 export function buildCardsMarkdown(cards, date = new Date()) {
-  let markdown = `# Flashcards - ${date.toLocaleDateString()}\n\n`
+  let markdown = `# Cartões - ${date.toLocaleDateString()}\n\n`
   const deckGroups = {}
 
   cards.forEach((card) => {
@@ -42,7 +42,7 @@ export function buildCardsMarkdown(cards, date = new Date()) {
   for (const [deckName, arr] of Object.entries(deckGroups)) {
     markdown += `## ${deckName}\n\n`
     arr.forEach((card, idx) => {
-      markdown += `### Card ${idx + 1}\n\n`
+      markdown += `### Cartão ${idx + 1}\n\n`
       markdown += `**Question:** ${card.front}\n\n`
       markdown += `---\n\n`
       markdown += `**Answer:** ${card.back}\n\n`
@@ -61,12 +61,12 @@ export function buildCardsMarkdown(cards, date = new Date()) {
  */
 export function exportCardsAsMarkdown(cards, notify) {
   if (!Array.isArray(cards) || cards.length === 0) {
-    if (notify) notify('No cards to export', 'info')
+    if (notify) notify('Nenhum cartão para exportar', 'info')
     return false
   }
 
   const { markdown, filename } = buildCardsMarkdown(cards)
   downloadTextFile(markdown, filename, 'text/markdown')
-  if (notify) notify(`${cards.length} cards exportados em markdown`, 'success')
+  if (notify) notify(`${cards.length} cartões exportados em markdown`, 'success')
   return true
 }

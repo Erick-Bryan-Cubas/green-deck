@@ -79,7 +79,7 @@ const emit = defineEmits(['update:visible', 'cancel'])
         <div class="pipeline-stats">
           <div v-if="details.parsed" class="stat-item">
             <span class="stat-label">Parseados:</span>
-            <span class="stat-value">{{ details.parsed }} cards</span>
+            <span class="stat-value">{{ details.parsed }} cartões</span>
           </div>
           <div v-if="details.srcKept !== undefined" class="stat-item">
             <span class="stat-label">Validação SRC:</span>
@@ -93,7 +93,7 @@ const emit = defineEmits(['update:visible', 'cancel'])
           </div>
           <div v-if="details.totalCards" class="stat-item total">
             <span class="stat-label">Total Final:</span>
-            <span class="stat-value">{{ details.totalCards }} cards</span>
+            <span class="stat-value">{{ details.totalCards }} cartões</span>
           </div>
         </div>
       </div>

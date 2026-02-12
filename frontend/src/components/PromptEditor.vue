@@ -55,7 +55,7 @@
         </template>
         <div class="prompt-section">
           <small class="text-color-secondary block mb-2">
-            Define o comportamento base do modelo. Varia conforme o tipo de card selecionado.
+            Define o comportamento base do modelo. Varia conforme o tipo de cartão selecionado.
           </small>
           <Textarea 
             v-model="customSystemPrompt" 

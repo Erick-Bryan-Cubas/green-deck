@@ -150,13 +150,13 @@ async function handleRewriteCard(action) {
 // Context menu
 const editContextMenuModel = computed(() => [
   {
-    label: 'Gerar card Basic',
+    label: 'Gerar cartão Basic',
     icon: 'pi pi-plus',
     disabled: !editSelectedText.value,
     command: () => emit('generateFromSelection', { text: editSelectedText.value, type: 'basic' })
   },
   {
-    label: 'Gerar card Cloze',
+    label: 'Gerar cartão Cloze',
     icon: 'pi pi-plus',
     disabled: !editSelectedText.value,
     command: () => emit('generateFromSelection', { text: editSelectedText.value, type: 'cloze' })
@@ -222,7 +222,7 @@ const editContextMenuModel = computed(() => [
         <div class="edit-card-quill">
           <LazyQuillEditor
             ref="editFrontRef"
-            placeholder="Frente do card..."
+            placeholder="Frente do cartão..."
             @content-changed="editDraft.front = $event.html"
             @editor-ready="onEditFrontReady"
           />
@@ -237,7 +237,7 @@ const editContextMenuModel = computed(() => [
         <div class="edit-card-quill">
           <LazyQuillEditor
             ref="editBackRef"
-            placeholder="Verso do card..."
+            placeholder="Verso do cartão..."
             @content-changed="editDraft.back = $event.html"
             @editor-ready="onEditBackReady"
           />
@@ -261,7 +261,7 @@ const editContextMenuModel = computed(() => [
           :loading="isRewriting"
           :disabled="isRewriting"
           @click="handleRewriteCard('densify')"
-          title="Adiciona mais lacunas cloze ao card"
+          title="Adiciona mais lacunas cloze ao cartão"
         />
         <Button
           label="Dividir cloze"
@@ -283,7 +283,7 @@ const editContextMenuModel = computed(() => [
           :loading="isRewriting"
           :disabled="isRewriting"
           @click="handleRewriteCard('simplify')"
-          title="Reduz complexidade do card"
+          title="Reduz complexidade do cartão"
         />
       </div>
     </div>

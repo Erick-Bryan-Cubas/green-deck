@@ -71,7 +71,7 @@ function clearLogs() {
 // ============================================================
 const sidebarMenuItems = computed(() => [
   { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cards salvos', active: true },
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cartões salvos', active: true },
   { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
   { separator: true },
   {
@@ -273,24 +273,24 @@ const queryHelpRef = ref(null)
 
 const queryHelpers = [
   { category: 'Status', items: [
-    { query: 'is:due', desc: 'Cards para revisar hoje' },
-    { query: 'is:new', desc: 'Cards novos (nunca estudados)' },
-    { query: 'is:review', desc: 'Cards em revisão (aprendidos)' },
-    { query: 'is:learn', desc: 'Cards em aprendizagem' },
-    { query: 'is:suspended', desc: 'Cards suspensos' },
-    { query: 'is:buried', desc: 'Cards enterrados' }
+    { query: 'is:due', desc: 'Cartões para revisar hoje' },
+    { query: 'is:new', desc: 'Cartões novos (nunca estudados)' },
+    { query: 'is:review', desc: 'Cartões em revisão (aprendidos)' },
+    { query: 'is:learn', desc: 'Cartões em aprendizagem' },
+    { query: 'is:suspended', desc: 'Cartões suspensos' },
+    { query: 'is:buried', desc: 'Cartões enterrados' }
   ]},
   { category: 'Deck e Modelo', items: [
     { query: 'deck:"Nome do Deck"', desc: 'Filtrar por deck específico' },
     { query: 'deck:current', desc: 'Deck atual selecionado' },
     { query: '"deck:Pai::Filho"', desc: 'Deck com subdecks (hierarquia)' },
     { query: 'note:"Basic"', desc: 'Filtrar por tipo de nota' },
-    { query: 'card:1', desc: 'Apenas o primeiro card de cada nota' }
+    { query: 'card:1', desc: 'Apenas o primeiro cartão de cada nota' }
   ]},
   { category: 'Tags', items: [
-    { query: 'tag:minhatag', desc: 'Cards com tag específica' },
-    { query: '-tag:minhatag', desc: 'Cards SEM essa tag' },
-    { query: 'tag:none', desc: 'Cards sem nenhuma tag' }
+    { query: 'tag:minhatag', desc: 'Cartões com tag específica' },
+    { query: '-tag:minhatag', desc: 'Cartões SEM essa tag' },
+    { query: 'tag:none', desc: 'Cartões sem nenhuma tag' }
   ]},
   { category: 'Datas', items: [
     { query: 'added:1', desc: 'Adicionados hoje' },
@@ -528,7 +528,7 @@ async function fetchCards() {
   const limit = rows.value
   const built = queryBuilt.value
 
-  addLog(`Fetching cards: q="${built}" offset=${offset} limit=${limit}`, 'info')
+  addLog(`Buscando cartões: q="${built}" offset=${offset} limit=${limit}`, 'info')
 
   try {
     const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=${offset}&limit=${limit}`
@@ -536,22 +536,22 @@ async function fetchCards() {
     const data = await readJsonSafe(r)
 
     if (data?.__nonJson) {
-      addLog(`Cards: non-JSON response (ct=${data.__contentType}) head="${data.__head}"`, 'error')
+      addLog(`Cartões: resposta não-JSON (ct=${data.__contentType}) head="${data.__head}"`, 'error')
       notify('API /anki-cards não retornou JSON.', 'error', 8500)
       items.value = []
       total.value = 0
       return
     }
     if (data?.__jsonParseError) {
-      addLog(`Cards: JSON parse error: ${data.__message}`, 'error')
+      addLog(`Cartões: erro ao parsear JSON: ${data.__message}`, 'error')
       notify('Falha ao ler JSON do backend.', 'error', 7000)
       items.value = []
       total.value = 0
       return
     }
     if (data?.success === false) {
-      addLog(`Cards error: ${data?.error || 'unknown'}`, 'error')
-      notify(data?.error || 'Falha ao buscar cards', 'error', 7000)
+      addLog(`Cartões: erro: ${data?.error || 'unknown'}`, 'error')
+      notify(data?.error || 'Falha ao buscar cartões', 'error', 7000)
       items.value = []
       total.value = 0
       return
@@ -562,9 +562,9 @@ async function fetchCards() {
 
     items.value = list
     total.value = tot
-    addLog(`Cards loaded: ${list.length} / total=${tot}`, 'success')
+    addLog(`Cartões carregados: ${list.length} / total=${tot}`, 'success')
   } catch (e) {
-    addLog(`Cards fetch exception: ${e?.message || String(e)}`, 'error')
+    addLog(`Exceção ao buscar cartões: ${e?.message || String(e)}`, 'error')
     notify(e?.message || String(e), 'error', 7000)
     items.value = []
     total.value = 0
@@ -659,8 +659,8 @@ async function confirmNoteAction() {
     }
 
     const totalCards = Number(data?.totalCards || 0)
-    addLog(`Note action OK: noteId=${nid} cards=${totalCards} elapsed=${elapsed}ms`, 'success')
-    notify(`${suspend ? 'Suspensa' : 'Desuspensa'}: noteId ${nid} (${totalCards} cards)`, 'success', 6000)
+    addLog(`Ação OK: noteId=${nid} cartões=${totalCards} elapsed=${elapsed}ms`, 'success')
+    notify(`${suspend ? 'Suspensa' : 'Desuspensa'}: noteId ${nid} (${totalCards} cartões)`, 'success', 6000)
 
     noteActionDialogVisible.value = false
     await fetchCards()
@@ -761,7 +761,7 @@ async function executeMigration() {
   try {
     const cardIds = selected.value.map((c) => c.cardId)
 
-    addLog(`Migração em lote: ${cardIds.length} cards | "${migrateSourceField.value}" → "${migrateTargetField.value}"`, 'info')
+    addLog(`Migração em lote: ${cardIds.length} cartões | "${migrateSourceField.value}" → "${migrateTargetField.value}"`, 'info')
 
     const r = await fetch('/api/anki-migrate-fields', {
       method: 'POST',
@@ -1199,7 +1199,7 @@ async function confirmTranslate() {
       anthropicApiKey: keys.anthropicApiKey || null
     }
 
-    const sourceName = translateUseEntireDeck.value ? `deck "${deck.value}"` : `${cardIds.length} cards`
+    const sourceName = translateUseEntireDeck.value ? `deck "${deck.value}"` : `${cardIds.length} cartões`
     addLog(`Tradução iniciada: ${sourceName} | modelo=${model || 'default'} idioma=pt-br`, 'info')
 
     const response = await fetch('/api/anki-translate', {
@@ -1478,7 +1478,7 @@ const estimatedCreates = computed(() => {
 
 function openRecreateDialog() {
   if (!selected.value?.length) {
-    notify('Selecione 1+ cards para recriar.', 'warn', 4200)
+    notify('Selecione 1+ cartões para recriar.', 'warn', 4200)
     return
   }
   recreateDialogVisible.value = true
@@ -1510,7 +1510,7 @@ const canConfirmRecreate = computed(() => {
 
 async function confirmRecreate() {
   if (!canConfirmRecreate.value) {
-    notify('Selecione cards e 1+ Note Types suportados.', 'warn', 6000)
+    notify('Selecione cartões e 1+ Note Types suportados.', 'warn', 6000)
     return
   }
 
@@ -1554,7 +1554,7 @@ async function confirmRecreate() {
     }
 
     addLog(
-      `Recreate start: cards=${cardIds.length} model=${payload.model} provider=${provider} difficulty=${payload.useDifficulty ? payload.difficulty : 'disabled'} countPerNote=${payload.countPerNote}`,
+      `Recreate start: cartões=${cardIds.length} model=${payload.model} provider=${provider} difficulty=${payload.useDifficulty ? payload.difficulty : 'disabled'} countPerNote=${payload.countPerNote}`,
       'info'
     )
 
@@ -1730,7 +1730,7 @@ onUnmounted(() => {
             <i class="pi pi-spin pi-spinner loading-spinner"></i>
             <div class="loading-text">
               <div class="loading-title">Carregando Browser...</div>
-              <div class="loading-sub muted">Aplicando filtros e buscando cards</div>
+              <div class="loading-sub muted">Aplicando filtros e buscando cartões</div>
             </div>
           </div>
           <ProgressBar mode="indeterminate" class="loading-bar" />
@@ -1869,7 +1869,7 @@ onUnmounted(() => {
                 <span class="subtitle">Duplo clique para preview • Geração com LLM</span>
               </div>
               <div class="dt-actions">
-                <Button icon="pi pi-refresh" rounded raised @click="refreshAll" title="Atualizar tudo (decks + cards)" />
+                <Button icon="pi pi-refresh" rounded raised @click="refreshAll" title="Atualizar tudo (decks + cartões)" />
               </div>
             </div>
           </template>
@@ -1912,7 +1912,7 @@ onUnmounted(() => {
                   text
                   rounded
                   severity="success"
-                  title="Desuspender a NOTA (todos os cards)"
+                  title="Desuspender a NOTA (todos os cartões)"
                   @click="openNoteAction(data, 'unsuspend')"
                 />
                 <Button
@@ -1921,7 +1921,7 @@ onUnmounted(() => {
                   text
                   rounded
                   severity="warning"
-                  title="Suspender a NOTA (todos os cards)"
+                  title="Suspender a NOTA (todos os cartões)"
                   @click="openNoteAction(data, 'suspend')"
                 />
                 <Button
@@ -1957,7 +1957,7 @@ onUnmounted(() => {
             <div class="dlg-hdr-left">
               <div class="dlg-icon"><i class="pi pi-eye"></i></div>
               <div class="dlg-hdr-txt">
-                <div class="dlg-title">Card Preview</div>
+                <div class="dlg-title">Prévia do Cartão</div>
                 <div class="dlg-sub">Render do HTML do Anki (Q/A). Duplo clique na tabela também abre.</div>
               </div>
             </div>
@@ -2012,7 +2012,7 @@ onUnmounted(() => {
               <div class="dlg-hdr-txt">
                 <div class="dlg-title">{{ noteActionTitle }}</div>
                 <div class="dlg-sub">
-                  Esta ação afeta <b>todos os cards</b> do <b>noteId</b> (não só o card da linha).
+                  Esta ação afeta <b>todos os cartões</b> do <b>noteId</b> (não só o cartão da linha).
                 </div>
               </div>
             </div>
@@ -2034,7 +2034,7 @@ onUnmounted(() => {
               <b>{{ noteActionRow?.modelName || '—' }}</b>
             </div>
             <div class="noteaction-line">
-              <span class="muted">CardId (referência):</span>
+              <span class="muted">ID do cartão (referência):</span>
               <b>{{ noteActionRow?.cardId || '—' }}</b>
             </div>
           </div>
@@ -2150,7 +2150,7 @@ onUnmounted(() => {
             <div class="dlg-hdr-right">
               <Tag severity="info" class="pill">
                 <i class="pi pi-id-card mr-2" />
-                {{ selected.length }} cards
+                {{ selected.length }} cartões
               </Tag>
               <Tag severity="secondary" class="pill">
                 <i class="pi pi-file mr-2" />
@@ -2270,8 +2270,8 @@ onUnmounted(() => {
             <div class="dlg-hdr-left">
               <div class="dlg-icon"><i class="pi pi-language"></i></div>
               <div class="dlg-hdr-txt">
-                <div class="dlg-title">Traduzir Cards</div>
-                <div class="dlg-sub">Traduz o conteúdo dos cards in-place, preservando tags, mídia e clozes.</div>
+                <div class="dlg-title">Traduzir Cartões</div>
+                <div class="dlg-sub">Traduz o conteúdo dos cartões in-place, preservando tags, mídia e clozes.</div>
               </div>
             </div>
 
@@ -2295,7 +2295,7 @@ onUnmounted(() => {
 
               <div class="hero-kpis hero-kpis-2">
                 <div class="kpi" v-if="!translateUseEntireDeck">
-                  <div class="kpi-lbl">Cards selecionados</div>
+                  <div class="kpi-lbl">Cartões selecionados</div>
                   <div class="kpi-val">{{ selected.length }}</div>
                 </div>
                 <div class="kpi" v-if="!translateUseEntireDeck">
@@ -2451,7 +2451,7 @@ onUnmounted(() => {
                 <i class="pi" :class="translateStatus === 'translating' ? 'pi-spin pi-spinner' : translateStatus === 'done' ? 'pi-check' : 'pi-exclamation-triangle'"></i>
               </div>
               <div class="dlg-hdr-txt">
-                <div class="dlg-title">{{ translateStatus === 'done' ? '✓ Tradução Concluída' : 'Traduzindo Cards...' }}</div>
+                <div class="dlg-title">{{ translateStatus === 'done' ? '✓ Tradução Concluída' : 'Traduzindo Cartões...' }}</div>
                 <div class="dlg-sub" v-if="translateStatus === 'translating'">{{ translateCurrent }}/{{ translateTotal }} notas processadas</div>
               </div>
             </div>
@@ -2568,7 +2568,7 @@ onUnmounted(() => {
 
               <div class="hero-kpis">
                 <div class="kpi">
-                  <div class="kpi-lbl">Cards</div>
+                  <div class="kpi-lbl">Cartões</div>
                   <div class="kpi-val">{{ selected.length }}</div>
                 </div>
                 <div class="kpi">
@@ -2684,8 +2684,8 @@ onUnmounted(() => {
                       <div class="muted tiny">
                         {{
                           recreateSuspendOriginal
-                            ? 'Suspende todos os cards das notas originais.'
-                            : 'Mantém cards originais ativos.'
+                            ? 'Suspende todos os cartões das notas originais.'
+                            : 'Mantém cartões originais ativos.'
                         }}
                       </div>
                     </div>

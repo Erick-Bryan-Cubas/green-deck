@@ -219,7 +219,7 @@ function confirm() {
             <div class="text-center">
               <h4 class="m-0 mb-2">Tipo de Cartão</h4>
               <p class="text-color-secondary m-0 text-sm">
-                Selecione o formato dos cards
+                Selecione o formato dos cartões
               </p>
             </div>
 
@@ -249,7 +249,7 @@ function confirm() {
 
             <!-- Seleção de Quantidade -->
             <div class="text-center">
-              <h4 class="m-0 mb-2">Quantos cards criar?</h4>
+              <h4 class="m-0 mb-2">Quantos cartões criar?</h4>
               <p class="text-color-secondary m-0 text-sm">
                 Escolha o modo de definição
               </p>
@@ -281,7 +281,7 @@ function confirm() {
                       <i class="pi pi-plus" />
                     </template>
                   </InputNumber>
-                  <span class="text-color-secondary font-medium">cards</span>
+                  <span class="text-color-secondary font-medium">cartões</span>
                 </div>
 
                 <Slider v-model="localNumCards" :min="1" :max="50" class="w-full" />
@@ -356,7 +356,7 @@ function confirm() {
         />
         <Button
           v-else
-          label="Gerar Cards"
+          label="Gerar Cartões"
           icon="pi pi-bolt"
           severity="success"
           :loading="generating"

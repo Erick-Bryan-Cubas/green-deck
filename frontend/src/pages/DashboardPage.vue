@@ -66,7 +66,7 @@ function notify(message, severity = 'info', life = 3200) {
 // ============================================================
 const sidebarMenuItems = computed(() => [
   { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cards salvos', command: () => router.push('/browser') },
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cartões salvos', command: () => router.push('/browser') },
   { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', active: true },
   { separator: true },
   {
@@ -377,7 +377,7 @@ const deckBarData = computed(() => {
   const items = topDecks.value || []
   const labels = items.map((x) => x.deckName || '—')
   const data = items.map((x) => Number(x.count || 0))
-  return { labels, datasets: [{ label: 'Cards por deck (Top 12)', data, borderRadius: 10 }] }
+  return { labels, datasets: [{ label: 'Cartões por deck (Top 12)', data, borderRadius: 10 }] }
 })
 
 const deckBarOptions = computed(() => ({
@@ -398,7 +398,7 @@ const deckBarOptions = computed(() => ({
     legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
     tooltip: {
       callbacks: {
-        label: (ctx) => `${formatInt(ctx.parsed.x)} cards — Clique para detalhes`
+        label: (ctx) => `${formatInt(ctx.parsed.x)} cartões — Clique para detalhes`
       }
     }
   },
@@ -716,7 +716,7 @@ onUnmounted(() => {
         <div class="card-surface chart-card">
           <div class="card-head">
             <div>
-              <div class="card-title">Tipos de cards (Anki)</div>
+              <div class="card-title">Tipos de cartões (Anki)</div>
               <div class="card-sub muted">Novos · Aprendendo · Revisão · Due · Suspensos</div>
             </div>
             <Tag class="pill" severity="secondary">{{ formatInt(statusTotal) }}</Tag>
@@ -831,7 +831,7 @@ onUnmounted(() => {
             responsiveLayout="scroll"
           >
             <Column field="deckName" header="Deck" sortable />
-            <Column field="count" header="Cards" sortable style="width: 9rem">
+            <Column field="count" header="Cartões" sortable style="width: 9rem">
               <template #body="{ data }">{{ formatInt(data.count) }}</template>
             </Column>
           </DataTable>
@@ -914,7 +914,7 @@ onUnmounted(() => {
     <div class="dlg-body">
       <div class="deck-stats">
         <div class="deck-stat">
-          <div class="deck-stat-label muted">Total de cards</div>
+          <div class="deck-stat-label muted">Total de cartões</div>
           <div class="deck-stat-value">{{ formatInt(selectedDeck?.count) }}</div>
         </div>
         <div class="deck-stat">
