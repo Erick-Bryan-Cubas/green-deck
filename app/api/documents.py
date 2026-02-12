@@ -15,13 +15,15 @@ Formatos suportados (via Docling):
 - Imagens (PNG, JPG, TIFF, BMP) via OCR
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import logging
 import asyncio
 import json
 import uuid
+import multiprocessing as mp
+import queue as std_queue
 from sse_starlette.sse import EventSourceResponse
 
 from app.services.document_extractor import (
@@ -1045,7 +1047,6 @@ async def extract_pages_stream(
 
 @router.post("/extract-pages-async", response_model=ExtractPagesAsyncResponse)
 async def extract_pages_async(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     page_numbers: str = Form(...),
     quality: str = Form(default="cleaned"),
@@ -1112,16 +1113,18 @@ async def extract_pages_async(
 
     logger.info(f"[Async Extraction] Task {task_id} created for {filename} ({len(pages_list)} pages)")
 
-    # Agendar execução em background
-    background_tasks.add_task(
-        run_extraction_task,
-        task_id,
-        content,
-        pages_list,
-        filename,
-        quality_enum,
-        pdf_extractor_enum
+    # Disparar execução em background e manter referência para cancelamento
+    task = asyncio.create_task(
+        run_extraction_task(
+            task_id,
+            content,
+            pages_list,
+            filename,
+            quality_enum,
+            pdf_extractor_enum
+        )
     )
+    extraction_manager.attach_running_task(task_id, task)
 
     return ExtractPagesAsyncResponse(
         task_id=task_id,
@@ -1148,6 +1151,8 @@ async def run_extraction_task(
     all_texts = []
     pages_content = []
     total_words = 0
+    worker_process: Optional[mp.Process] = None
+    worker_queue = None
 
     try:
         logger.info(f"[Async Extraction] Starting task {task_id}: {total_pages} pages")
@@ -1156,66 +1161,128 @@ async def run_extraction_task(
         # Isso evita race condition onde a extração inicia antes do subscribe
         await asyncio.sleep(0.5)
 
-        for i, page_num in enumerate(pages_list):
-            # Calcular progresso
-            progress = ((i + 1) / total_pages) * 100
-            message = f"Extraindo página {page_num}... ({i + 1}/{total_pages})"
+        if pdf_extractor_enum == PdfExtractor.DOCLING:
+            ctx = mp.get_context("spawn")
+            worker_queue = ctx.Queue()
+            worker_process = ctx.Process(
+                target=_docling_extract_worker,
+                args=(content, pages_list, filename, quality_enum.value, worker_queue),
+                daemon=True,
+            )
+            worker_process.start()
 
-            # Atualizar progresso via WebSocket
-            await extraction_manager.update_progress(task_id, page_num, progress, message)
+            finished = False
+            while not finished:
+                task_status = extraction_manager.get_task_status(task_id)
+                if task_status and task_status.get("status") == "cancelled":
+                    logger.info("[Async Extraction] Task %s interrupted (cancelled by user)", task_id)
+                    return
 
-            logger.debug(f"[Async Extraction] Task {task_id}: Processing page {page_num} ({progress:.1f}%)")
+                try:
+                    msg = await asyncio.to_thread(worker_queue.get, True, 0.2)
+                except std_queue.Empty:
+                    if worker_process is not None and not worker_process.is_alive():
+                        finished = True
+                    continue
 
-            # Extrair página (usando versão async diretamente)
-            try:
-                result = await asyncio.wait_for(
-                    document_extractor.extract_pages(
-                        file_bytes=content,
-                        page_numbers=[page_num],
-                        filename=filename,
-                        quality=quality_enum,
-                        pdf_extractor=pdf_extractor_enum
-                    ),
-                    timeout=DOCUMENT_EXTRACTION_TIMEOUT
-                )
+                msg_type = msg.get("type")
+                if msg_type == "page_start":
+                    index = int(msg.get("index", 1))
+                    page_num = int(msg.get("page_num", 0))
+                    progress = ((index - 1) / max(1, total_pages)) * 100
+                    message = f"Extraindo página {page_num}... ({index}/{total_pages})"
+                    await extraction_manager.update_progress(task_id, page_num, progress, message)
+                    continue
 
-                if result.error is None:
-                    page_text = result.text
-                    page_words = len(page_text.split())
+                if msg_type == "page_done":
+                    page_num = int(msg.get("page_num", 0))
+                    if msg.get("success"):
+                        page_text = msg.get("text") or ""
+                        page_words = int(msg.get("word_count", 0))
+                        all_texts.append(page_text)
+                        total_words += page_words
+                        pages_content.append({
+                            "page_number": page_num,
+                            "text": page_text,
+                            "word_count": page_words,
+                        })
+                    else:
+                        pages_content.append({
+                            "page_number": page_num,
+                            "text": "",
+                            "word_count": 0,
+                            "error": msg.get("error") or "Erro na extração",
+                        })
+                    continue
 
-                    all_texts.append(page_text)
-                    total_words += page_words
+                if msg_type == "worker_error":
+                    raise RuntimeError(msg.get("error") or "Erro no worker Docling")
 
-                    pages_content.append({
-                        "page_number": page_num,
-                        "text": page_text,
-                        "word_count": page_words
-                    })
-                else:
-                    logger.warning(f"[Async Extraction] Page {page_num} failed: {result.error}")
+                if msg_type == "done":
+                    finished = True
+
+        else:
+            for i, page_num in enumerate(pages_list):
+                task_status = extraction_manager.get_task_status(task_id)
+                if task_status and task_status.get("status") == "cancelled":
+                    logger.info(f"[Async Extraction] Task {task_id} interrupted before page loop")
+                    return
+
+                progress = ((i + 1) / total_pages) * 100
+                message = f"Extraindo página {page_num}... ({i + 1}/{total_pages})"
+                await extraction_manager.update_progress(task_id, page_num, progress, message)
+
+                logger.debug(f"[Async Extraction] Task {task_id}: Processing page {page_num} ({progress:.1f}%)")
+
+                try:
+                    result = await asyncio.wait_for(
+                        document_extractor.extract_pages(
+                            file_bytes=content,
+                            page_numbers=[page_num],
+                            filename=filename,
+                            quality=quality_enum,
+                            pdf_extractor=pdf_extractor_enum
+                        ),
+                        timeout=DOCUMENT_EXTRACTION_TIMEOUT
+                    )
+
+                    if result.error is None:
+                        page_text = result.text
+                        page_words = len(page_text.split())
+
+                        all_texts.append(page_text)
+                        total_words += page_words
+
+                        pages_content.append({
+                            "page_number": page_num,
+                            "text": page_text,
+                            "word_count": page_words
+                        })
+                    else:
+                        logger.warning(f"[Async Extraction] Page {page_num} failed: {result.error}")
+                        pages_content.append({
+                            "page_number": page_num,
+                            "text": "",
+                            "word_count": 0,
+                            "error": result.error
+                        })
+
+                except asyncio.TimeoutError:
+                    logger.error(f"[Async Extraction] Timeout on page {page_num}")
                     pages_content.append({
                         "page_number": page_num,
                         "text": "",
                         "word_count": 0,
-                        "error": result.error
+                        "error": "Timeout na extração"
                     })
-
-            except asyncio.TimeoutError:
-                logger.error(f"[Async Extraction] Timeout on page {page_num}")
-                pages_content.append({
-                    "page_number": page_num,
-                    "text": "",
-                    "word_count": 0,
-                    "error": "Timeout na extração"
-                })
-            except Exception as e:
-                logger.error(f"[Async Extraction] Error on page {page_num}: {e}")
-                pages_content.append({
-                    "page_number": page_num,
-                    "text": "",
-                    "word_count": 0,
-                    "error": str(e)
-                })
+                except Exception as e:
+                    logger.error(f"[Async Extraction] Error on page {page_num}: {e}")
+                    pages_content.append({
+                        "page_number": page_num,
+                        "text": "",
+                        "word_count": 0,
+                        "error": str(e)
+                    })
 
         # Combinar texto final
         final_text = "\n\n".join(all_texts)
@@ -1234,6 +1301,102 @@ async def run_extraction_task(
 
         logger.info(f"[Async Extraction] Task {task_id} completed: {total_words} words from {total_pages} pages")
 
+    except asyncio.CancelledError:
+        logger.info(f"[Async Extraction] Task {task_id} cancelled")
+        return
     except Exception as e:
         logger.exception(f"[Async Extraction] Task {task_id} failed: {e}")
         await extraction_manager.fail_task(task_id, str(e))
+    finally:
+        if worker_process is not None and worker_process.is_alive():
+            worker_process.terminate()
+            worker_process.join(timeout=1.5)
+            if worker_process.is_alive():
+                worker_process.kill()
+                worker_process.join(timeout=1.0)
+
+
+def _docling_extract_worker(
+    content: bytes,
+    pages_list: List[int],
+    filename: str,
+    quality_value: str,
+    output_queue,
+) -> None:
+    """Worker isolado para permitir kill forçado do Docling (GPU/torch)."""
+
+    async def _run() -> None:
+        quality = ExtractionQuality(quality_value)
+
+        for index, page_num in enumerate(pages_list, start=1):
+            output_queue.put({
+                "type": "page_start",
+                "index": index,
+                "page_num": page_num,
+            })
+
+            try:
+                result = await asyncio.wait_for(
+                    document_extractor.extract_pages(
+                        file_bytes=content,
+                        page_numbers=[page_num],
+                        filename=filename,
+                        quality=quality,
+                        pdf_extractor=PdfExtractor.DOCLING,
+                    ),
+                    timeout=DOCUMENT_EXTRACTION_TIMEOUT,
+                )
+
+                if result.error is None:
+                    page_text = result.text or ""
+                    output_queue.put({
+                        "type": "page_done",
+                        "page_num": page_num,
+                        "success": True,
+                        "text": page_text,
+                        "word_count": len(page_text.split()),
+                    })
+                else:
+                    output_queue.put({
+                        "type": "page_done",
+                        "page_num": page_num,
+                        "success": False,
+                        "error": result.error,
+                    })
+
+            except asyncio.TimeoutError:
+                output_queue.put({
+                    "type": "page_done",
+                    "page_num": page_num,
+                    "success": False,
+                    "error": "Timeout na extração",
+                })
+            except Exception as exc:
+                output_queue.put({
+                    "type": "page_done",
+                    "page_num": page_num,
+                    "success": False,
+                    "error": str(exc),
+                })
+
+    try:
+        asyncio.run(_run())
+        output_queue.put({"type": "done"})
+    except Exception as exc:
+        output_queue.put({"type": "worker_error", "error": str(exc)})
+
+
+@router.post("/extract-cancel/{task_id}")
+async def extract_cancel(task_id: str):
+    """Cancela uma extração assíncrona em andamento."""
+    status = extraction_manager.get_task_status(task_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    cancelled = await extraction_manager.cancel_task(task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "cancelled": cancelled,
+        "status": extraction_manager.get_task_status(task_id).get("status") if extraction_manager.get_task_status(task_id) else None,
+    }

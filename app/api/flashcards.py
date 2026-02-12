@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Tuple, List
+import asyncio
 import json
 import re
 import logging
@@ -148,6 +149,28 @@ class CardsRequest(BaseModel):
     userProfile: Optional[str] = None
     # Quantidade de cards desejada (opcional - se vazio, calcula automaticamente)
     numCards: Optional[int] = None
+    # ID opcional para cancelamento cooperativo da geração
+    requestId: Optional[str] = None
+
+
+_GENERATION_CANCELLED_IDS: set[str] = set()
+
+
+def _mark_generation_cancelled(request_id: Optional[str]) -> None:
+    rid = (request_id or "").strip()
+    if rid:
+        _GENERATION_CANCELLED_IDS.add(rid)
+
+
+def _clear_generation_cancelled(request_id: Optional[str]) -> None:
+    rid = (request_id or "").strip()
+    if rid:
+        _GENERATION_CANCELLED_IDS.discard(rid)
+
+
+def _is_generation_cancelled(request_id: Optional[str]) -> bool:
+    rid = (request_id or "").strip()
+    return bool(rid and rid in _GENERATION_CANCELLED_IDS)
 
 
 def _norm_ws(s: str) -> str:
@@ -1647,7 +1670,21 @@ async def generate_cards_stream(
     api_keys = merge_api_keys(header_keys, payload)
 
     async def generate():
+        request_cancel_id = (payload.requestId or "").strip()
+
+        best_cards_so_far = []
+        deck = pick_default_deck(payload.deckOptions or "General")
+
+        current_chunk_raw = ""
+        current_chunk_index = 0
+        chunk_cards_generated: dict[int, int] = {}
+
+        async def ensure_not_cancelled():
+            if _is_generation_cancelled(request_cancel_id) or await request.is_disconnected():
+                raise asyncio.CancelledError("generation_cancelled")
+
         try:
+            await ensure_not_cancelled()
             model = payload.model or OLLAMA_MODEL
 
             # Fallback: buscar primeiro modelo Ollama disponível se nenhum especificado
@@ -1666,6 +1703,7 @@ async def generate_cards_stream(
 
             provider = "ollama" if use_ollama else ("openai" if use_openai else "perplexity")
             logger.info("Using provider: %s", provider)
+            await ensure_not_cancelled()
 
             # Validate custom prompts for injection attempts
             custom_prompts_to_validate = [
@@ -1699,6 +1737,7 @@ async def generate_cards_stream(
                 logger.info("Using custom prompts from request")
 
             yield f"event: stage\ndata: {json.dumps({'stage': 'generation_started'})}\n\n"
+            await ensure_not_cancelled()
 
             src = truncate_source(payload.text or "")
             ctx = (payload.textContext or "").strip()
@@ -1729,6 +1768,7 @@ async def generate_cards_stream(
             if chunked:
                 logger.info("Generation chunking: %d chars -> %d chunks", len(src), len(chunks))
                 yield f"event: stage\ndata: {json.dumps({'stage': 'chunking', 'chunks': len(chunks)})}\n\n"
+            await ensure_not_cancelled()
 
             # Se o usuario especificou numCards, usa com range de +-20%
             if payload.numCards and payload.numCards > 0:
@@ -1781,6 +1821,9 @@ async def generate_cards_stream(
             response_lengths = []
 
             for idx, chunk in enumerate(chunks):
+                await ensure_not_cancelled()
+                current_chunk_index = idx + 1
+                current_chunk_raw = ""
                 if chunked:
                     yield f"event: stage\ndata: {json.dumps({'stage': 'chunk_generation', 'chunk': idx + 1, 'total': len(chunks)})}\n\n"
 
@@ -1801,13 +1844,19 @@ async def generate_cards_stream(
                 raw = ""
                 if use_openai:
                     async for piece in openai_generate_stream(api_keys.openai, model, prompt, system=system_prompt, options=options):
+                        await ensure_not_cancelled()
                         raw += piece
+                        current_chunk_raw = raw
                 elif use_perplexity:
                     async for piece in perplexity_generate_stream(api_keys.perplexity, model, prompt, system=system_prompt, options=options):
+                        await ensure_not_cancelled()
                         raw += piece
+                        current_chunk_raw = raw
                 else:
                     async for piece in ollama_generate_stream(model, prompt, system=system_prompt, options=options):
+                        await ensure_not_cancelled()
                         raw += piece
+                        current_chunk_raw = raw
 
                 response_lengths.append(len(raw))
 
@@ -1844,6 +1893,8 @@ async def generate_cards_stream(
                     cards_raw = normalize_cards(parse_flashcards_json(raw))
                     parse_mode = "json"
 
+                chunk_cards_generated[current_chunk_index] = len(cards_raw)
+
                 save_pipeline_stage(
                     request_id=request_id,
                     stage="parsing_chunk",
@@ -1858,8 +1909,15 @@ async def generate_cards_stream(
                 )
 
                 all_cards_raw.extend(cards_raw)
+                # Melhor esforço: snapshot dos cards parseados até agora
+                try:
+                    best_cards_so_far = _merge_cards_dedup(all_cards_raw)
+                except Exception:
+                    best_cards_so_far = list(all_cards_raw)
 
             cards_raw = _merge_cards_dedup(all_cards_raw)
+            best_cards_so_far = list(cards_raw)
+            await ensure_not_cancelled()
 
             save_pipeline_stage(
                 request_id=request_id,
@@ -1880,6 +1938,7 @@ async def generate_cards_stream(
             logger.info("Parsed %d cards (%d with cloze syntax), card_type=%s", cards_before_type_filter, cloze_count, card_type)
 
             cards_raw = _filter_by_card_type(cards_raw, card_type, analysis_id=payload.analysisId)
+            best_cards_so_far = list(cards_raw)
 
             save_pipeline_stage(
                 request_id=request_id,
@@ -1912,6 +1971,8 @@ async def generate_cards_stream(
                 perplexity_key=api_keys.perplexity,
                 analysis_id=payload.analysisId,
             )
+            best_cards_so_far = list(cards)
+            await ensure_not_cancelled()
 
             save_pipeline_stage(
                 request_id=request_id,
@@ -1935,6 +1996,8 @@ async def generate_cards_stream(
                 perplexity_key=api_keys.perplexity,
                 analysis_id=payload.analysisId,
             )
+            best_cards_so_far = list(cards)
+            await ensure_not_cancelled()
             if len(cards) < cards_before_relevance:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'llm_relevance_filtered', 'kept': len(cards), 'dropped': cards_before_relevance - len(cards)})}\n\n"
 
@@ -1942,6 +2005,7 @@ async def generate_cards_stream(
                 for c in cards_raw:
                     c.pop("src", None)
                 cards = cards_raw
+                best_cards_so_far = list(cards)
                 yield f"event: stage\ndata: {json.dumps({'stage': 'src_bypassed', 'count': len(cards)})}\n\n"
 
             cards_relaxed = _relax_src_if_needed(cards, cards_raw, target_min=target_min, target_max=target_max)
@@ -1959,6 +2023,7 @@ async def generate_cards_stream(
                     + "\n\n"
                 )
                 cards = cards_relaxed
+                best_cards_so_far = list(cards)
 
             out_lang = _cards_lang_from_cards(cards)
             yield f"event: stage\ndata: {json.dumps({'stage': 'lang_check', 'lang': out_lang, 'cards': len(cards), 'min': target_min})}\n\n"
@@ -1992,6 +2057,7 @@ async def generate_cards_stream(
                         system=repair_system,
                         options={"num_predict": 4096, "temperature": 0.0},
                     ):
+                        await ensure_not_cancelled()
                         raw2 += piece
                 elif use_perplexity:
                     async for piece in perplexity_generate_stream(
@@ -2001,6 +2067,7 @@ async def generate_cards_stream(
                         system=repair_system,
                         options={"num_predict": 4096, "temperature": 0.0},
                     ):
+                        await ensure_not_cancelled()
                         raw2 += piece
                 else:
                     async for piece in ollama_generate_stream(
@@ -2009,6 +2076,7 @@ async def generate_cards_stream(
                         system=repair_system,
                         options={"num_predict": 4096, "temperature": 0.0},
                     ):
+                        await ensure_not_cancelled()
                         raw2 += piece
 
                 cards2_raw = normalize_cards(parse_flashcards_qa(raw2))
@@ -2031,6 +2099,7 @@ async def generate_cards_stream(
                     perplexity_key=api_keys.perplexity,
                     analysis_id=payload.analysisId,
                 )
+                await ensure_not_cancelled()
                 yield f"event: stage\ndata: {json.dumps({'stage': 'repair_src_filtered', 'kept': len(cards2), 'dropped': max(0, len(cards2_raw) - len(cards2)), 'method': 'llm'})}\n\n"
 
                 cards2_before_relevance = len(cards2)
@@ -2044,6 +2113,7 @@ async def generate_cards_stream(
                     perplexity_key=api_keys.perplexity,
                     analysis_id=payload.analysisId,
                 )
+                await ensure_not_cancelled()
                 if len(cards2) < cards2_before_relevance:
                     yield f"event: stage\ndata: {json.dumps({'stage': 'repair_llm_relevance_filtered', 'kept': len(cards2), 'dropped': cards2_before_relevance - len(cards2)})}\n\n"
 
@@ -2071,11 +2141,10 @@ async def generate_cards_stream(
 
                 if cards2:
                     cards = cards2
+                    best_cards_so_far = list(cards)
 
                 out_lang2 = _cards_lang_from_cards(cards)
                 yield f"event: stage\ndata: {json.dumps({'stage': 'lang_check_after_repair', 'lang': out_lang2, 'cards': len(cards)})}\n\n"
-
-            deck = pick_default_deck(payload.deckOptions or "General")
 
             result_cards = []
             for c in cards:
@@ -2096,10 +2165,79 @@ async def generate_cards_stream(
             yield f"event: stage\ndata: {json.dumps({'stage': 'done', 'total_cards': len(result_cards), 'cards_id': cards_id})}\n\n"
             yield f"event: result\ndata: {json.dumps({'success': True, 'cards': result_cards})}\n\n"
 
+        except asyncio.CancelledError:
+            logger.info("Cards generation cancelled (requestId=%s)", request_cancel_id or "-")
+            partial_cards = []
+
+            # Se cancelou no meio de um chunk, tenta parsear o raw parcial para recuperar algo.
+            recovered = []
+            recovered_count = 0
+            try:
+                if current_chunk_raw and len(current_chunk_raw.strip()) >= 80:
+                    recovered = normalize_cards(parse_flashcards_qa(current_chunk_raw))
+                    if not recovered:
+                        recovered = normalize_cards(parse_flashcards_json(current_chunk_raw))
+            except Exception:
+                recovered = []
+
+            if recovered:
+                try:
+                    # card_type pode ainda não estar definido se cancelou muito cedo
+                    ct = (payload.cardType or "both").strip().lower()
+                    if ct not in ("basic", "cloze", "both"):
+                        ct = "both"
+                    recovered = _filter_by_card_type(recovered, ct, analysis_id=payload.analysisId)
+                except Exception:
+                    pass
+
+            recovered_count = len(recovered or [])
+
+            # Mescla recovered com best_cards_so_far
+            merged_best = []
+            try:
+                merged_best = _merge_cards_dedup([*(best_cards_so_far or []), *(recovered or [])])
+            except Exception:
+                merged_best = list(best_cards_so_far or []) + list(recovered or [])
+
+            chunk_cards = chunk_cards_generated.get(current_chunk_index)
+            if chunk_cards is None:
+                chunk_cards = recovered_count
+
+            for c in (merged_best or []):
+                try:
+                    item = {"front": c.get("front") or "", "back": c.get("back") or "", "deck": deck}
+                    if c.get("src"):
+                        item["src"] = c.get("src")
+                    # Só mantém cards que tenham conteúdo mínimo
+                    if item["front"].strip() or item["back"].strip():
+                        partial_cards.append(item)
+                except Exception:
+                    continue
+
+            cancel_meta = {
+                "cancelled": True,
+                "requestId": request_cancel_id,
+                "partial_cards": len(partial_cards),
+                "chunk": current_chunk_index,
+                "chunk_cards": chunk_cards,
+                "total_cards_so_far": len(merged_best or []),
+            }
+            yield f"event: cancelled\ndata: {json.dumps(cancel_meta)}\n\n"
+            yield f"event: result\ndata: {json.dumps({'success': True, 'cards': partial_cards, 'cancelled': True, **cancel_meta})}\n\n"
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            _clear_generation_cancelled(request_cancel_id)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/generate-cards-cancel/{request_id}")
+@limiter.limit(RATE_LIMIT_GENERATE)
+async def cancel_generate_cards(request: Request, request_id: str):
+    _ = request
+    _mark_generation_cancelled(request_id)
+    return {"success": True, "requestId": request_id, "cancelled": True}
 
 
 # =============================================================================

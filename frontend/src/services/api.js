@@ -533,7 +533,9 @@ async function generateCardsWithStream(
   validationModel = null,
   analysisModel = null,
   customPrompts = null,
-  numCards = null
+  numCards = null,
+  signal = null,
+  requestId = null
 ) {
   // Monta o body com campos opcionais de prompts customizados
   // Note: API keys are now sent via headers for security
@@ -551,6 +553,10 @@ async function generateCardsWithStream(
   // Adiciona quantidade de cards se especificada
   if (numCards && numCards > 0) {
     requestBody.numCards = numCards;
+  }
+
+  if (requestId) {
+    requestBody.requestId = requestId;
   }
 
   // Adiciona prompts customizados se fornecidos
@@ -575,8 +581,12 @@ async function generateCardsWithStream(
       method: "POST",
       headers: createApiHeaders(),
       body: JSON.stringify(requestBody),
+      signal,
     });
   } catch (err) {
+    if (err?.name === "AbortError") {
+      throw err;
+    }
     throw new Error("Network error: " + err.message);
   }
 
@@ -590,37 +600,52 @@ async function generateCardsWithStream(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let finalResult = null;
+  let wasCancelled = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    // Process complete event blocks separated by double newline
-    let parts = buffer.split("\n\n");
-    buffer = parts.pop(); // keep incomplete tail
+      // Process complete event blocks separated by double newline
+      let parts = buffer.split("\n\n");
+      buffer = parts.pop(); // keep incomplete tail
 
-    for (const part of parts) {
-      const lines = part.split("\n");
-      let event = "message";
-      let data = "";
-      for (const line of lines) {
-        if (line.startsWith("event:")) event = line.replace("event:", "").trim();
-        else if (line.startsWith("data:")) data += line.replace("data:", "").trim();
-      }
-
-      try {
-        const parsed = data ? JSON.parse(data) : null;
-        if (onProgress) onProgress({ stage: event, data: parsed });
-
-        if (event === "result" && parsed) {
-          finalResult = parsed;
+      for (const part of parts) {
+        const lines = part.split("\n");
+        let event = "message";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.replace("event:", "").trim();
+          else if (line.startsWith("data:")) data += line.replace("data:", "").trim();
         }
-      } catch (e) {
-        // ignore JSON parse errors for intermediate events
-        if (onProgress) onProgress({ stage: event, data: { raw: data } });
+
+        try {
+          const parsed = data ? JSON.parse(data) : null;
+          if (onProgress) onProgress({ stage: event, data: parsed });
+
+          if (event === "result" && parsed) {
+            finalResult = parsed;
+          } else if (event === "cancelled") {
+            wasCancelled = true;
+          }
+        } catch (e) {
+          // ignore JSON parse errors for intermediate events
+          if (onProgress) onProgress({ stage: event, data: { raw: data } });
+        }
       }
     }
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      try {
+        await reader.cancel();
+      } catch {
+        // noop
+      }
+      throw err;
+    }
+    throw err;
   }
 
   // If finalResult contains cards, preserve src too
@@ -634,6 +659,18 @@ async function generateCardsWithStream(
     }));
   }
 
+  // Cancelled and no result => treat as AbortError
+  if (wasCancelled) {
+    let abortError;
+    try {
+      abortError = new DOMException("Generation aborted", "AbortError");
+    } catch {
+      abortError = new Error("Generation aborted");
+      abortError.name = "AbortError";
+    }
+    throw abortError;
+  }
+
   // Fallback: try to parse any textual payload
   if (finalResult && finalResult.cards && typeof finalResult.cards === "string") {
     try {
@@ -643,6 +680,13 @@ async function generateCardsWithStream(
   }
 
   throw new Error("No cards returned from API");
+}
+
+async function cancelCardsGeneration(requestId) {
+  if (!requestId) return;
+  await fetch(`/api/generate-cards-cancel/${encodeURIComponent(requestId)}`, {
+    method: "POST",
+  });
 }
 
 // =============================================================================
@@ -1319,10 +1363,29 @@ async function extractPagesWithWebSocket(file, pageNumbers, options = {}, onProg
 
     // Handle abort signal
     if (signal) {
-      signal.addEventListener('abort', () => {
+      signal.addEventListener('abort', async () => {
         if (!resolved) {
           aborted = true;
           resolved = true;
+
+          if (taskId && ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ action: "cancel", task_id: taskId }));
+            } catch {
+              // noop
+            }
+          }
+
+          if (taskId) {
+            try {
+              await fetch(`/api/documents/extract-cancel/${encodeURIComponent(taskId)}`, {
+                method: "POST",
+              });
+            } catch {
+              // noop
+            }
+          }
+
           if (pingInterval) clearInterval(pingInterval);
           ws.close();
           reject(new Error('AbortError'));
@@ -1457,6 +1520,19 @@ async function extractPagesWithWebSocket(file, pageNumbers, options = {}, onProg
             reject(new Error(data.error || "Extraction failed"));
             break;
 
+          case "extraction_cancelled":
+            console.info("[WS] Extraction cancelled by backend");
+            resolved = true;
+            clearTimeout(timeout);
+            if (pingInterval) clearInterval(pingInterval);
+            ws.close();
+            reject(new Error("AbortError"));
+            break;
+
+          case "cancel_ack":
+            // confirmação opcional do backend
+            break;
+
           case "error":
             console.error("[WS] Error:", data.error);
             resolved = true;
@@ -1540,6 +1616,7 @@ export {
   hasApiKeys,
   hasAnyApiKey,
   fetchOllamaInfo,
+  cancelCardsGeneration,
   getDocumentExtractionStatus,
   extractDocumentText,
   extractDocumentTextStream,
