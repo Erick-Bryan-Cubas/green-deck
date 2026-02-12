@@ -45,22 +45,6 @@ const { isDark, toggleTheme } = useTheme()
 // Sidebar ref
 const sidebarRef = ref(null)
 
-// ============================================================
-// Sidebar Menu Items
-// ============================================================
-const sidebarMenuItems = computed(() => [
-  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cards salvos', active: true },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
-  { separator: true },
-  { key: 'logs', label: 'Logs', icon: 'pi pi-wave-pulse', iconColor: sidebarIconColors.logs, tooltip: 'Ver registros do sistema', command: () => { logsVisible.value = true } }
-])
-
-const sidebarFooterActions = computed(() => [
-  { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
-])
-
 // ----------------------
 // Toast + Logs
 // ----------------------
@@ -71,6 +55,8 @@ function notify(message, severity = 'info', life = 3200) {
 const logsVisible = ref(false)
 const logs = ref([])
 
+const logsHasError = computed(() => logs.value.some((l) => l?.type === 'error' || l?.type === 'danger'))
+
 function addLog(message, type = 'info') {
   const timestamp = new Date().toLocaleTimeString()
   logs.value.push({ timestamp, message, type })
@@ -79,6 +65,32 @@ function clearLogs() {
   logs.value = []
   addLog('Logs cleared', 'info')
 }
+
+// ============================================================
+// Sidebar Menu Items
+// ============================================================
+const sidebarMenuItems = computed(() => [
+  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
+  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cards salvos', active: true },
+  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
+  { separator: true },
+  {
+    key: 'logs',
+    label: 'Logs',
+    icon: 'pi pi-wave-pulse',
+    status: logsHasError.value ? 'error' : 'ok',
+    iconColor: logsHasError.value ? sidebarIconColors.logs : sidebarIconColors.browser,
+    tooltip: 'Ver registros do sistema',
+    command: () => {
+      logsVisible.value = true
+    }
+  }
+])
+
+const sidebarFooterActions = computed(() => [
+  { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
+  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
+])
 
 // ----------------------
 // helpers
