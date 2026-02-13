@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Literal, Optional, Dict
 
-from app.api.prompts import PROMPTS
+from app.core.prompts import PROMPTS
 
 CardType = Literal["basic", "cloze", "both"]
 

@@ -112,7 +112,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 async def spa_fallback(request: Request, exc: StarletteHTTPException):
     """Handle HTTP exceptions and SPA routing fallback."""
     if exc.status_code == 404 and not request.url.path.startswith("/api"):
-        return FileResponse("static/dist/index.html", headers={"Cache-Control": "no-cache"})
+        return FileResponse("frontend/dist/index.html", headers={"Cache-Control": "no-cache"})
 
     # Sanitize error details in production
     detail = exc.detail
@@ -125,4 +125,4 @@ async def spa_fallback(request: Request, exc: StarletteHTTPException):
     return JSONResponse(status_code=exc.status_code, content={"detail": detail})
 
 # Static files
-app.mount("/", StaticFiles(directory="static/dist"), name="static")
+app.mount("/", StaticFiles(directory="frontend/dist"), name="static")

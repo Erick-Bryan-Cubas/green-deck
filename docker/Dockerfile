@@ -21,7 +21,7 @@ RUN npm ci
 # Copy frontend source
 COPY frontend/ ./
 
-# Build frontend (output: ../static/dist)
+# Build frontend (output: frontend/dist)
 RUN npm run build
 
 # -----------------------------------------------------------------------------
@@ -96,7 +96,7 @@ COPY --from=python-builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy built frontend from frontend-builder
-COPY --from=frontend-builder /app/static/dist ./static/dist/
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist/
 
 # Copy application code
 COPY app/ ./app/

@@ -85,9 +85,9 @@ from app.services.storage import (  # noqa: E402
 )
 
 from app.services.prompt_provider import PromptProvider, get_prompt_provider  # noqa: E402
-from app.api.prompts import get_default_prompts_for_ui  # noqa: E402
+from app.core.prompts import get_default_prompts_for_ui  # noqa: E402
 from app.api.models import get_provider_for_model, get_first_available_ollama_llm  # noqa: E402
-from app.api.topic_segmentation import (  # noqa: E402
+from app.core.topic_segmentation import (  # noqa: E402
     segment_with_langextract,
     is_langextract_available,
 )
@@ -1518,7 +1518,7 @@ async def segment_topics(
             if not segments:
                 yield f"event: progress\ndata: {json.dumps({'percent': 20, 'stage': 'building_prompt'})}\n\n"
 
-                from app.api.prompts import PROMPTS
+                from app.core.prompts import PROMPTS
                 prompt = PROMPTS["TOPIC_SEGMENTATION_PROMPT"].replace("${text}", src)
 
                 yield f"event: progress\ndata: {json.dumps({'percent': 30, 'stage': 'calling_llm', 'model': analysis_model})}\n\n"
