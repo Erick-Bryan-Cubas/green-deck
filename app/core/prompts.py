@@ -1,4 +1,4 @@
-# app/api/prompts.py
+# app/core/prompts.py
 
 PROMPTS = {
     # =========================

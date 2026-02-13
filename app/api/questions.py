@@ -19,7 +19,7 @@ from app.services.question_parser import (
     normalize_questions,
 )
 from app.utils.text import truncate_source
-from app.api.prompts import PROMPTS
+from app.core.prompts import PROMPTS
 from app.api.models import get_provider_for_model, get_first_available_ollama_llm
 
 router = APIRouter(prefix="/api", tags=["questions"])

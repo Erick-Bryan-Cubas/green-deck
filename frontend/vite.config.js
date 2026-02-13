@@ -14,7 +14,7 @@ export default defineConfig({
     include: ['pdfjs-dist']
   },
   build: {
-    outDir: '../static/dist',
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {

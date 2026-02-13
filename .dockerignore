@@ -23,7 +23,6 @@ frontend/node_modules/
 
 # Build artifacts (will be built in container)
 frontend/dist/
-static/dist/
 
 # IDE and editor files
 .vscode/
