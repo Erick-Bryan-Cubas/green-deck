@@ -1,2 +1,2 @@
 """Flash Card Generator - FastAPI Application"""
-__version__ = "1.3.2-beta"
+__version__ = "0.0.0"

@@ -3,8 +3,6 @@
 import { ref } from 'vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
-import { APP_VERSION, IS_BETA } from '@/config/version'
-
 defineProps({
   menuItems: {
     type: Array,
@@ -13,14 +11,6 @@ defineProps({
   footerActions: {
     type: Array,
     default: () => []
-  },
-  version: {
-    type: String,
-    default: APP_VERSION
-  },
-  showBetaBadge: {
-    type: Boolean,
-    default: IS_BETA
   },
   logoSrc: {
     type: String,
@@ -304,9 +294,11 @@ defineExpose({
         </button>
       </div>
       <Transition name="fade">
-        <div v-if="sidebarExpanded" class="sidebar-version">
-          <span>{{ version }}</span>
-          <Tag v-if="showBetaBadge" severity="warn" class="beta-badge">BETA</Tag>
+        <div v-if="sidebarExpanded" class="sidebar-copyright">
+          <span>&copy; 2026 Green Deck</span>
+          <a href="https://www.linkedin.com/in/the-bryan/" target="_blank" rel="noopener noreferrer" class="sidebar-author">
+            Erick Bryan Cubas
+          </a>
         </div>
       </Transition>
     </div>
@@ -1046,21 +1038,26 @@ defineExpose({
   transform: scale(1.1);
 }
 
-.sidebar-version {
-  font-size: 11px;
+.sidebar-copyright {
+  font-size: 10px;
   color: color-mix(in srgb, var(--sidebar-text-muted) 80%, transparent);
-  font-weight: 500;
+  font-weight: 400;
   padding-right: 4px;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.4;
 }
 
-.beta-badge {
-  font-size: 9px;
-  padding: 2px 6px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+.sidebar-author {
+  color: color-mix(in srgb, var(--sidebar-text-muted) 60%, transparent);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.sidebar-author:hover {
+  color: var(--color-success);
+  text-decoration: underline;
 }
 
 /* Sidebar Brand Logo (expanded state) */
