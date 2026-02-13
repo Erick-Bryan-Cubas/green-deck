@@ -14,11 +14,21 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/Vue.js-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue.js">
-  <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
-  <img src="https://img.shields.io/badge/Ollama-Local_LLM-black" alt="Ollama">
-  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <strong>Deploy Docker:</strong>
+  <a href="#docker-deploy-en">EN</a> •
+  <a href="#docker-deploy-pt">PT</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Vue.js-3-42B883?logo=vuedotjs&logoColor=white" alt="Vue.js">
+  <img src="https://img.shields.io/badge/FastAPI-00C7B7?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Docker-0DB7ED?logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/DuckDB-FFD600?logo=duckdb&logoColor=black" alt="DuckDB">
+  <img src="https://img.shields.io/badge/AnkiConnect-FF6F00?logo=anki&logoColor=white" alt="AnkiConnect">
+  <img src="https://img.shields.io/badge/Docling%20(OCR)-FF4081?logo=tesseract&logoColor=white" alt="Docling OCR">
+  <img src="https://img.shields.io/badge/Ollama-LLM_Local-7C3AED?logo=ollama&logoColor=white" alt="Ollama">
+  <img src="https://img.shields.io/badge/License-MIT-22C55E" alt="License">
 </p>
 
 ---
@@ -97,14 +107,36 @@ Green Deck is an open-source AI-powered flashcard generator that automatically c
 - [Ollama](https://ollama.ai/) (for local LLM)
 - [Anki](https://apps.ankiweb.net/) with [AnkiConnect](https://ankiweb.net/shared/info/2055492159) addon
 
-### Quick Start
+<a id="docker-deploy-en"></a>
+
+### Quick Start (Recommended: Docker)
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
-# 2. Install frontend dependencies and build
+# 2. Copy and configure environment
+cp .env.example .env
+# Edit .env as needed (see Docker configuration below)
+
+# 3. Build and run
+docker compose -p green-deck -f docker/docker-compose.yml up -d --build
+
+# 4. View logs
+docker compose -p green-deck -f docker/docker-compose.yml logs -f green-deck
+```
+
+The application will be available at `http://localhost:3000`
+
+### Local Development (frontend first)
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
+cd green-deck
+
+# 2. Install frontend dependencies and build (required before backend in local mode)
 cd frontend
 npm install
 npm run build
@@ -145,27 +177,7 @@ python run.py
 
 The application will be available at `http://localhost:3000`
 
-## Docker Deployment
-
-### Quick Start with Docker
-
-```bash
-# Clone the repository
-git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
-cd green-deck
-
-# Copy and configure environment
-cp .env.example .env
-# Edit .env as needed (see Docker configuration below)
-
-# Build and run
-docker compose -p green-deck -f docker/docker-compose.yml up -d
-
-# View logs
-docker compose -p green-deck -f docker/docker-compose.yml logs -f green-deck
-```
-
-The application will be available at `http://localhost:3000`
+## Docker Deployment (recommended)
 
 ### Docker Configuration
 
@@ -307,24 +319,80 @@ Add your API keys in the settings panel:
 
 ## API Reference
 
-### Card Generation
-- `POST /api/generate-cards-stream` - Generate flashcards with streaming
-- `POST /api/analyze-text-stream` - Analyze text with embeddings
-- `POST /api/segment-topics` - Segment text into topics
-- `POST /api/rewrite-card` - Rewrite card (densify/simplify/split)
+Base URL: `http://localhost:3000`  
+OpenAPI docs: `http://localhost:3000/docs`
+
+### Health & Status
+- `GET /api/health`
+- `GET /api/cache-stats`
+- `GET /api/anki-status`
+- `GET /api/ollama-status`
+- `GET /api/ollama-info`
+- `GET /api/health/anki`
+- `GET /api/health/ollama`
+
+### Flashcards
+- `POST /api/generate-cards-stream`
+- `POST /api/analyze-text-stream`
+- `POST /api/segment-topics`
+- `GET /api/prompts/defaults`
+- `POST /api/generate-cards-cancel/{request_id}`
+- `POST /api/rewrite-card`
+
+### Questions
+- `POST /api/generate-questions-stream`
+- `POST /api/parse-questions-stream`
+- `GET /api/question-prompts`
 
 ### Documents
-- `POST /api/documents/extract` - Extract text from document
-- `POST /api/documents/preview-pages` - Preview document pages
+- `GET /api/documents/status`
+- `POST /api/documents/pdf-metadata`
+- `POST /api/documents/pdf-thumbnails`
+- `POST /api/documents/extract`
+- `POST /api/documents/extract-and-preview`
+- `POST /api/documents/preview-pages`
+- `POST /api/documents/extract-pages`
+- `POST /api/documents/extract-stream`
+- `POST /api/documents/extract-pages-stream`
+- `POST /api/documents/extract-pages-async`
+- `POST /api/documents/extract-cancel/{task_id}`
 
 ### Anki
-- `GET /api/anki-decks` - List all decks
-- `POST /api/upload-to-anki` - Upload cards to deck
-- `POST /api/anki-translate` - Translate cards
+- `POST /api/upload-to-anki`
+- `GET /api/anki-decks`
+- `GET /api/anki-models`
+- `GET /api/anki-tags`
+- `GET /api/anki-note-types`
+- `GET /api/anki-cards`
+- `POST /api/anki-recreate`
+- `POST /api/anki-note-suspend`
+- `GET /api/anki-note-info`
+- `POST /api/anki-note-update`
+- `POST /api/anki-migrate-fields`
+- `POST /api/anki-translate`
+- `POST /api/detect-card-languages`
+- `POST /api/upload-questions-to-anki`
+- `GET /api/check-allinone-model`
 
-### Health
-- `GET /api/health` - System health check
-- `WS /ws/status` - WebSocket for real-time status
+### Dashboard
+- `GET /api/dashboard/summary`
+- `GET /api/dashboard/reviews-by-day`
+- `GET /api/dashboard/study-time-by-day`
+- `GET /api/dashboard/success-rate-by-day`
+- `GET /api/dashboard/top-decks`
+- `GET /api/dashboard/segments`
+
+### History
+- `GET /api/history/analyses`
+- `GET /api/history/cards`
+- `GET /api/history/stats`
+
+### Models
+- `GET /api/all-models`
+
+### WebSocket
+- `WS /ws/status`
+- `WS /ws/extraction`
 
 ## Contributing
 
@@ -416,14 +484,36 @@ Green Deck é um gerador de flashcards open-source com inteligência artificial 
 - [Ollama](https://ollama.ai/) (para LLM local)
 - [Anki](https://apps.ankiweb.net/) com addon [AnkiConnect](https://ankiweb.net/shared/info/2055492159)
 
-### Início Rápido
+<a id="docker-deploy-pt"></a>
+
+### Início Rápido (Recomendado: Docker)
 
 ```bash
 # 1. Clone o repositório
 git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
 cd green-deck
 
-# 2. Instale as dependências do frontend e faça o build
+# 2. Copie e configure o ambiente
+cp .env.example .env
+# Edite o .env conforme necessário (veja configuração Docker abaixo)
+
+# 3. Build e execução
+docker compose -f docker/docker-compose.yml up -d --build
+
+# 4. Ver logs
+docker compose -f docker/docker-compose.yml logs -f green-deck
+```
+
+A aplicação estará disponível em `http://localhost:3000`
+
+### Desenvolvimento Local (frontend primeiro)
+
+```bash
+# 1. Clone o repositório
+git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
+cd green-deck
+
+# 2. Instale as dependências do frontend e faça o build (obrigatório antes do backend no modo local)
 cd frontend
 npm install
 npm run build
@@ -464,27 +554,7 @@ python run.py
 
 A aplicação estará disponível em `http://localhost:3000`
 
-## Deploy com Docker
-
-### Início Rápido com Docker
-
-```bash
-# Clone o repositório
-git clone https://github.com/Erick-Bryan-Cubas/green-deck.git
-cd green-deck
-
-# Copie e configure o ambiente
-cp .env.example .env
-# Edite o .env conforme necessário (veja configuração Docker abaixo)
-
-# Build e execução
-docker compose -f docker/docker-compose.yml up -d --build
-
-# Ver logs
-docker compose -f docker/docker-compose.yml logs -f green-deck
-```
-
-A aplicação estará disponível em `http://localhost:3000`
+## Deploy com Docker (recomendado)
 
 ### Configuração Docker
 
@@ -602,24 +672,80 @@ Adicione suas chaves de API no painel de configurações:
 
 ## Referência da API
 
-### Geração de Cartões
-- `POST /api/generate-cards-stream` - Gerar flashcards com streaming
-- `POST /api/analyze-text-stream` - Analisar texto com embeddings
-- `POST /api/segment-topics` - Segmentar texto em tópicos
-- `POST /api/rewrite-card` - Reescrever cartão (densificar/simplificar/dividir)
+Base URL: `http://localhost:3000`  
+Documentação OpenAPI: `http://localhost:3000/docs`
+
+### Saúde e Status
+- `GET /api/health`
+- `GET /api/cache-stats`
+- `GET /api/anki-status`
+- `GET /api/ollama-status`
+- `GET /api/ollama-info`
+- `GET /api/health/anki`
+- `GET /api/health/ollama`
+
+### Flashcards
+- `POST /api/generate-cards-stream`
+- `POST /api/analyze-text-stream`
+- `POST /api/segment-topics`
+- `GET /api/prompts/defaults`
+- `POST /api/generate-cards-cancel/{request_id}`
+- `POST /api/rewrite-card`
+
+### Questões
+- `POST /api/generate-questions-stream`
+- `POST /api/parse-questions-stream`
+- `GET /api/question-prompts`
 
 ### Documentos
-- `POST /api/documents/extract` - Extrair texto de documento
-- `POST /api/documents/preview-pages` - Visualizar páginas do documento
+- `GET /api/documents/status`
+- `POST /api/documents/pdf-metadata`
+- `POST /api/documents/pdf-thumbnails`
+- `POST /api/documents/extract`
+- `POST /api/documents/extract-and-preview`
+- `POST /api/documents/preview-pages`
+- `POST /api/documents/extract-pages`
+- `POST /api/documents/extract-stream`
+- `POST /api/documents/extract-pages-stream`
+- `POST /api/documents/extract-pages-async`
+- `POST /api/documents/extract-cancel/{task_id}`
 
 ### Anki
-- `GET /api/anki-decks` - Listar todos os decks
-- `POST /api/upload-to-anki` - Enviar cartões para deck
-- `POST /api/anki-translate` - Traduzir cartões
+- `POST /api/upload-to-anki`
+- `GET /api/anki-decks`
+- `GET /api/anki-models`
+- `GET /api/anki-tags`
+- `GET /api/anki-note-types`
+- `GET /api/anki-cards`
+- `POST /api/anki-recreate`
+- `POST /api/anki-note-suspend`
+- `GET /api/anki-note-info`
+- `POST /api/anki-note-update`
+- `POST /api/anki-migrate-fields`
+- `POST /api/anki-translate`
+- `POST /api/detect-card-languages`
+- `POST /api/upload-questions-to-anki`
+- `GET /api/check-allinone-model`
 
-### Saúde
-- `GET /api/health` - Verificação de saúde do sistema
-- `WS /ws/status` - WebSocket para status em tempo real
+### Dashboard
+- `GET /api/dashboard/summary`
+- `GET /api/dashboard/reviews-by-day`
+- `GET /api/dashboard/study-time-by-day`
+- `GET /api/dashboard/success-rate-by-day`
+- `GET /api/dashboard/top-decks`
+- `GET /api/dashboard/segments`
+
+### Histórico
+- `GET /api/history/analyses`
+- `GET /api/history/cards`
+- `GET /api/history/stats`
+
+### Modelos
+- `GET /api/all-models`
+
+### WebSocket
+- `WS /ws/status`
+- `WS /ws/extraction`
 
 ## Contribuindo
 
