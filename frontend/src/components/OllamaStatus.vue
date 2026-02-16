@@ -19,7 +19,7 @@ const title = computed(() => {
 <template>
   <div class="ollama-status" :class="connected ? 'connected' : 'disconnected'" :title="title">
     <i v-if="loading" class="pi pi-spinner pi-spin" />
-    <i v-else class="pi pi-microchip-ai" />
+    <i v-else class="pi pi-microchip" />
   </div>
 </template>
 
@@ -28,25 +28,24 @@ const title = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(255, 255, 255, 0.06);
-  box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
 }
 
 .ollama-status.connected {
-  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.10);
-  border-color: rgba(16, 185, 129, 0.30);
+  border-color: rgba(16, 185, 129, 0.35);
 }
 
 .ollama-status.disconnected {
   opacity: 0.72;
-  border-color: rgba(239, 68, 68, 0.30);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 .ollama-status i {
-  font-size: 15px;
+  font-size: 14px;
 }
 </style>

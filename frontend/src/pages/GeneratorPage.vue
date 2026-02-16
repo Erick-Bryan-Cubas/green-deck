@@ -54,6 +54,7 @@ import QuizInteractive from '@/components/QuizInteractive.vue'
 import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 import { useTheme } from '@/composables/useTheme'
+import { useAppNotifications } from '@/composables/useAppNotifications'
 
 // Services
 import {
@@ -80,11 +81,55 @@ import { sanitizeHtml } from '@/utils/sanitize.js'
 const toast = useToast()
 const router = useRouter()
 const { isDark, toggleTheme } = useTheme()
+const {
+  notifications,
+  unreadCount,
+  addNotification,
+  markNotificationRead,
+  markAllAsRead,
+  clearNotifications
+} = useAppNotifications()
 // WebSocket status do Ollama (para detectar quando fica disponível)
 const { status: ollamaWsStatus } = useOllamaStatus()
 // ============================================================
 function notify(message, severity = 'info', life = 3000) {
-  toast.add({ severity, summary: message, life })
+  const summary = String(message || '').trim()
+  toast.add({ severity, summary, life })
+  addNotification({ message: summary, severity, source: 'Generator' })
+}
+
+const notificationsVisible = ref(false)
+
+watch(notificationsVisible, (visible) => {
+  if (visible) markAllAsRead()
+})
+
+function notificationIcon(severity) {
+  switch (severity) {
+    case 'success':
+      return 'pi pi-check-circle'
+    case 'warn':
+      return 'pi pi-exclamation-triangle'
+    case 'error':
+      return 'pi pi-times-circle'
+    default:
+      return 'pi pi-info-circle'
+  }
+}
+
+function formatNotificationTime(timestamp) {
+  try {
+    return new Date(timestamp).toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return ''
+  }
+}
+
+function openNotificationsPanel() {
+  notificationsVisible.value = true
 }
 
 function normalizePlainText(t) {
@@ -3241,6 +3286,41 @@ function showExportTextMenu(event) {
   exportTextMenuRef.value?.toggle(event)
 }
 
+const sessionQuickMenuRef = ref(null)
+const sessionQuickMenuItems = computed(() => {
+  const recentSessions = sessions.value
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+
+  if (!recentSessions.length) {
+    return [
+      { label: 'Nova sessão', icon: 'pi pi-plus', command: newSession },
+      { separator: true },
+      { label: 'Nenhuma sessão salva', icon: 'pi pi-info-circle', disabled: true }
+    ]
+  }
+
+  return [
+    { label: 'Nova sessão', icon: 'pi pi-plus', command: newSession },
+    { separator: true },
+    ...recentSessions.map((session) => ({
+      label: session.id === activeSessionId.value ? `✓ ${session.title}` : session.title,
+      icon: session.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
+      command: () => restoreSessionById(session.id)
+    })),
+    { separator: true },
+    { label: 'Limpar todas', icon: 'pi pi-trash', command: clearAllSessionsWithConfirmation }
+  ]
+})
+
+function toggleSessionQuickMenu(event) {
+  sessionQuickMenuRef.value?.toggle(event)
+}
+
+function toggleSessionsMenu(event) {
+  toggleSessionQuickMenu(event)
+}
+
 // ============================================================
 // Anki
 // ============================================================
@@ -4065,6 +4145,7 @@ onBeforeUnmount(() => {
   <Toast />
   <ContextMenu ref="contextMenuRef" :model="contextMenuModel" appendTo="body" />
   <Menu ref="exportTextMenuRef" :model="exportTextMenuItems" popup appendTo="body" />
+  <Menu ref="sessionQuickMenuRef" :model="sessionQuickMenuItems" popup appendTo="body" />
 
   <!-- Sidebar -->
   <SidebarMenu
@@ -4090,20 +4171,59 @@ onBeforeUnmount(() => {
     <!-- HEADER -->
     <Toolbar class="app-header">
       <template #start>
-        <div class="header-left">
-          <Button icon="pi pi-bars" text rounded @click="sidebarRef?.toggleSidebar()" class="menu-toggle" title="Menu" v-if="!sidebarRef?.sidebarOpen" />
-          
-          <div v-if="!immersiveReader" class="header-badges">
-            <Tag v-if="hasDocumentContext" severity="success" class="pill">
-              <i class="pi pi-sparkles mr-2" /> Contexto pronto
-            </Tag>
+        <template v-if="!immersiveReader">
+          <div class="header-left header-actions-left">
+            <Button
+              icon="pi pi-bars"
+              text
+              rounded
+              @click="sidebarRef?.toggleSidebar()"
+              class="menu-toggle"
+              title="Menu"
+              v-if="!sidebarRef?.sidebarOpen"
+            />
 
-            <Tag v-if="savedSessionExists" severity="info" class="pill">
-              <i class="pi pi-history mr-2" /> Sessões: {{ sessions.length }}
-            </Tag>
+            <DocumentUpload
+              @extracted="onDocumentExtracted"
+              @error="onDocumentError"
+            />
+
+            <Button
+              icon="pi pi-eye"
+              label="Analisar"
+              class="btn-shine"
+              :disabled="!canGenerate || generating || isAnalyzing"
+              :loading="isAnalyzing"
+              title="Analisar texto para melhorar a qualidade dos cartões gerados"
+              @click="contextAnalyze"
+            />
+
+            <Button
+              icon="pi pi-bolt"
+              label="Criar Cartões"
+              class="cta"
+              :disabled="!canGenerate || generating || isAnalyzing"
+              :loading="generating"
+              :title="generationSourceLabel + ' (Ctrl+Enter)'"
+              @click="openGenerateModal"
+            />
+
+            <Button
+              icon="pi pi-question-circle"
+              label="Questões"
+              class="btn-shine"
+              :disabled="!canGenerate || isGeneratingQuestions"
+              :loading="isGeneratingQuestions"
+              title="Gerar questões AllInOne (kprim, mc, sc)"
+              @click="openQuestionGenerateModal"
+            />
           </div>
+        </template>
 
-          <div v-else class="header-badges">
+        <div v-else class="header-left">
+          <Button icon="pi pi-bars" text rounded @click="sidebarRef?.toggleSidebar()" class="menu-toggle" title="Menu" v-if="!sidebarRef?.sidebarOpen" />
+
+          <div class="header-badges">
             <div class="editor-switch" title="Modo Zen">
               <span class="editor-switch-label">
                 <i class="pi pi-bullseye" />
@@ -4117,7 +4237,7 @@ onBeforeUnmount(() => {
               />
             </div>
             <Tag class="pill subtle" :title="usePdfPagination ? 'Páginas do PDF original' : 'Páginas virtuais'">
-              <i :class="usePdfPagination ? 'pi pi-file-pdf mr-2' : 'pi pi-file mr-2'" /> 
+              <i :class="usePdfPagination ? 'pi pi-file-pdf mr-2' : 'pi pi-file mr-2'" />
               Página {{ readerPage }} / {{ readerTotalPages }}
               <span v-if="usePdfPagination" class="pdf-badge">(PDF)</span>
             </Tag>
@@ -4126,8 +4246,8 @@ onBeforeUnmount(() => {
       </template>
 
       <template #end>
-        <div class="header-right">
-          <div v-if="!immersiveReader" class="status-wrap">
+        <div v-if="!immersiveReader" class="header-actions-right">
+          <div class="status-wrap">
             <div class="status-pills">
               <div class="status-item">
                 <AnkiStatus />
@@ -4143,11 +4263,33 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <Divider v-if="!immersiveReader" layout="vertical" class="hdr-divider" />
+          <Tag v-if="hasDocumentContext" severity="success" class="pill">
+            <i class="pi pi-sparkles mr-2" /> Contexto pronto
+          </Tag>
 
-          <div class="controls" :class="{ 'reader-controls': immersiveReader }">
-            <!-- Controles do modo leitura -->
-            <template v-if="immersiveReader">
+          <Button
+            icon="pi pi-history"
+            outlined
+            rounded
+            :badge="savedSessionExists ? String(sessions.length) : null"
+            badgeSeverity="info"
+            title="Sessões"
+            @click="toggleSessionQuickMenu"
+          />
+
+          <Button
+            icon="pi pi-bell"
+            outlined
+            rounded
+            :badge="unreadCount ? String(unreadCount) : null"
+            badgeSeverity="danger"
+            title="Notificações"
+            @click="openNotificationsPanel"
+          />
+        </div>
+
+        <div v-else class="header-right">
+          <div class="controls reader-controls">
               <!-- Navegação de páginas -->
               <div class="reader-nav-group">
                 <Button
@@ -4257,52 +4399,7 @@ onBeforeUnmount(() => {
                 @click="toggleReader" 
                 title="Sair (Esc)" 
               />
-            </template>
-
-            <!-- Controles normais -->
-            <template v-else>
-
-              <!-- Document Upload Button -->
-              <DocumentUpload
-                @extracted="onDocumentExtracted"
-                @error="onDocumentError"
-              />
-
-              <!-- Analyze Button -->
-              <Button
-                icon="pi pi-eye"
-                label="Analisar"
-                class="btn-shine"
-                :disabled="!canGenerate || generating || isAnalyzing"
-                :loading="isAnalyzing"
-                title="Analisar texto para melhorar a qualidade dos cartões gerados"
-                @click="contextAnalyze"
-              />
-
-              <Button
-                icon="pi pi-bolt"
-                label="Criar Cartões"
-                class="cta"
-                :disabled="!canGenerate || generating || isAnalyzing"
-                :loading="generating"
-                :title="generationSourceLabel + ' (Ctrl+Enter)'"
-                @click="openGenerateModal"
-              />
-
-              <Button
-                icon="pi pi-question-circle"
-                label="Questões"
-                class="btn-shine"
-                :disabled="!canGenerate || isGeneratingQuestions"
-                :loading="isGeneratingQuestions"
-                title="Gerar questões AllInOne (kprim, mc, sc)"
-                @click="openQuestionGenerateModal"
-              />
-
-            </template>
           </div>
-
-
         </div>
       </template>
     </Toolbar>
@@ -5031,6 +5128,58 @@ onBeforeUnmount(() => {
       </template>
     </Dialog>
 
+    <Dialog
+      v-model:visible="notificationsVisible"
+      header="🔔 Notificações"
+      modal
+      class="modern-dialog notifications-dialog"
+      :style="{ width: 'min(560px, 96vw)' }"
+    >
+      <div class="notifications-wrap">
+        <div v-if="!notifications.length" class="notifications-empty">
+          Nenhuma notificação recebida ainda.
+        </div>
+
+        <div v-else class="notifications-list">
+          <button
+            v-for="item in notifications"
+            :key="item.id"
+            class="notification-item"
+            :class="{ unread: !item.read }"
+            @click="markNotificationRead(item.id)"
+            type="button"
+          >
+            <div class="notification-main">
+              <i :class="[notificationIcon(item.severity), 'notification-icon', `sev-${item.severity}`]" />
+              <div class="notification-content">
+                <div class="notification-message">{{ item.message }}</div>
+                <div class="notification-meta">{{ item.source }} · {{ formatNotificationTime(item.timestamp) }}</div>
+              </div>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <template #footer>
+        <Button
+          label="Marcar todas como lidas"
+          icon="pi pi-check"
+          severity="secondary"
+          outlined
+          :disabled="!unreadCount"
+          @click="markAllAsRead"
+        />
+        <Button
+          label="Limpar"
+          icon="pi pi-trash"
+          severity="secondary"
+          outlined
+          :disabled="!notifications.length"
+          @click="clearNotifications"
+        />
+      </template>
+    </Dialog>
+
     <!-- PROGRESS -->
     <ProgressDialog
       v-model:visible="progressVisible"
@@ -5239,6 +5388,7 @@ onBeforeUnmount(() => {
 }
 
 .app-header :deep(.p-toolbar-group-left),
+.app-header :deep(.p-toolbar-group-center),
 .app-header :deep(.p-toolbar-group-right) {
   min-width: 0;
   display: flex;
@@ -5246,8 +5396,16 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.app-header :deep(.p-toolbar-group-left) {
+  flex: 1;
+}
+
 .app-header :deep(.p-toolbar-group-right) {
   justify-content: flex-end;
+}
+
+.app-header :deep(.p-toolbar-group-center) {
+  justify-content: center;
 }
 
 .header-left {
@@ -5296,6 +5454,48 @@ onBeforeUnmount(() => {
   flex-wrap: nowrap;
 }
 
+.header-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.header-actions-left::-webkit-scrollbar {
+  display: none;
+}
+
+.header-actions-left :deep(.p-button) {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.header-status-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.header-status-center .status-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.header-actions-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.header-actions-right :deep(.p-button) {
+  width: 40px;
+  height: 40px;
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -5325,6 +5525,9 @@ onBeforeUnmount(() => {
   .header-badges {
     display: none;
   }
+  .header-status-center {
+    display: none;
+  }
 }
 
 @media (max-width: 1024px) {
@@ -5340,6 +5543,10 @@ onBeforeUnmount(() => {
   }
   .app-header :deep(.p-button) {
     padding: 0.4rem 0.6rem;
+  }
+  .header-actions-right :deep(.p-button) {
+    width: 36px;
+    height: 36px;
   }
 }
 
@@ -5427,6 +5634,88 @@ onBeforeUnmount(() => {
   .hdr-divider {
     display: none;
   }
+  .header-actions-right {
+    justify-content: flex-end;
+  }
+}
+
+.notifications-wrap {
+  max-height: 60vh;
+  overflow: hidden;
+}
+
+.notifications-empty {
+  opacity: 0.8;
+  text-align: center;
+  padding: 18px;
+}
+
+.notifications-list {
+  max-height: 54vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notification-item {
+  width: 100%;
+  border: 1px solid var(--app-border);
+  background: var(--surface-card);
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.notification-item:hover {
+  border-color: var(--accent-2, var(--app-border));
+}
+
+.notification-item.unread {
+  border-color: var(--accent-1, var(--app-border));
+}
+
+.notification-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.notification-icon {
+  margin-top: 2px;
+}
+
+.notification-icon.sev-success {
+  color: var(--green-500);
+}
+
+.notification-icon.sev-warn {
+  color: var(--orange-500);
+}
+
+.notification-icon.sev-error {
+  color: var(--red-500);
+}
+
+.notification-icon.sev-info {
+  color: var(--blue-500);
+}
+
+.notification-content {
+  min-width: 0;
+}
+
+.notification-message {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.notification-meta {
+  margin-top: 4px;
+  opacity: 0.78;
+  font-size: 12px;
 }
 
 /* =========================
@@ -6329,36 +6618,58 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .status-pills {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: 12px;
-  background: var(--ghost-bg);
-  border: 1px solid var(--ghost-border);
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: var(--status-bg);
+  border: 1px solid var(--status-border);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-text) 6%, transparent);
 }
 
 .status-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--ghost-bg);
+  border: 1px solid transparent;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.status-item:hover {
+  border-color: var(--chip-hover-border);
+  background: var(--chip-hover-bg);
+  transform: translateY(-1px);
 }
 
 .status-label {
-  font-weight: 700;
-  font-size: 11px;
-  opacity: 0.8;
+  font-weight: 800;
+  font-size: 10px;
+  opacity: 0.92;
+  color: var(--app-text);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
 }
 
 .status-sep {
   width: 1px;
-  height: 16px;
-  background: var(--status-sep);
+  height: 24px;
+  background: linear-gradient(180deg, transparent 0%, var(--status-sep) 25%, var(--status-sep) 75%, transparent 100%);
+}
+
+.status-pills :deep(.anki-status),
+.status-pills :deep(.ollama-status) {
+  border-radius: 999px;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  padding: 2px 6px;
 }
 
 /* =========================

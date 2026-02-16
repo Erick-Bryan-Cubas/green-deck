@@ -9,6 +9,7 @@ import Checkbox from 'primevue/checkbox'
 import Skeleton from 'primevue/skeleton'
 import SelectButton from 'primevue/selectbutton'
 import { useToast } from 'primevue/usetoast'
+import { useAppNotifications } from '@/composables/useAppNotifications'
 import {
   getDocumentExtractionStatus,
   getDocumentPagesPreview,
@@ -20,6 +21,13 @@ import {
 
 const emit = defineEmits(['extracted', 'error'])
 const toast = useToast()
+const { addNotification } = useAppNotifications()
+
+function notify(message, severity = 'info', detail = '', life = 3000) {
+  const summary = String(message || '').trim()
+  toast.add({ severity, summary, detail, life })
+  addNotification({ message: summary, severity, source: 'Documento' })
+}
 
 // ============================================================
 // Supported Formats
@@ -200,12 +208,7 @@ async function checkServiceStatus() {
       supportedFormatsFromServer.value = status.format_descriptions
     }
     if (!status.available) {
-      toast.add({
-        severity: 'warn',
-        summary: 'Servico indisponivel',
-        detail: 'Instale docling para extrair documentos: pip install docling',
-        life: 5000
-      })
+      notify('Servico indisponivel', 'warn', 'Instale docling para extrair documentos: pip install docling', 5000)
     }
   } catch (error) {
     isServiceAvailable.value = false
@@ -262,23 +265,13 @@ function onFileSelected(event) {
 function handleFile(file) {
   if (!isFormatSupported(file.name)) {
     const ext = getFileExtension(file.name)
-    toast.add({
-      severity: 'error',
-      summary: 'Formato nao suportado',
-      detail: `O formato ${ext || 'desconhecido'} nao e suportado. Use: PDF, Word, PowerPoint, Excel, HTML, Markdown, ou imagens.`,
-      life: 5000
-    })
+    notify('Formato nao suportado', 'error', `O formato ${ext || 'desconhecido'} nao e suportado. Use: PDF, Word, PowerPoint, Excel, HTML, Markdown, ou imagens.`, 5000)
     return
   }
 
   const maxSizeMB = 50
   if (file.size > maxSizeMB * 1024 * 1024) {
-    toast.add({
-      severity: 'error',
-      summary: 'Arquivo muito grande',
-      detail: `O arquivo deve ter no maximo ${maxSizeMB}MB.`,
-      life: 3000
-    })
+    notify('Arquivo muito grande', 'error', `O arquivo deve ter no maximo ${maxSizeMB}MB.`, 3000)
     return
   }
 
@@ -333,12 +326,7 @@ async function loadPagesPreview() {
   } catch (error) {
     console.error('Preview error:', error)
     extractionError.value = error.message
-    toast.add({
-      severity: 'error',
-      summary: 'Erro ao carregar documento',
-      detail: error.message,
-      life: 5000
-    })
+    notify('Erro ao carregar documento', 'error', error.message, 5000)
     emit('error', error)
   } finally {
     isLoading.value = false
@@ -371,12 +359,7 @@ async function loadPdfPreview() {
     // 6. Carregar thumbnails das primeiras páginas visíveis
     loadThumbnailsBatch(1, Math.min(18, metadata.num_pages))
 
-    toast.add({
-      severity: 'info',
-      summary: 'PDF carregado',
-      detail: `${metadata.num_pages} páginas encontradas`,
-      life: 3000
-    })
+    notify('PDF carregado', 'info', `${metadata.num_pages} páginas encontradas`, 3000)
 
   } catch (error) {
     console.error('Erro ao carregar PDF:', error)
@@ -432,14 +415,12 @@ async function loadDocumentPreview() {
   currentStep.value = 'pages'
 
   const formatType = result.format_type || fileInfo.value?.formatName || 'Documento'
-  toast.add({
-    severity: 'info',
-    summary: `${formatType} carregado`,
-    detail: result.total_pages > 1
-      ? `${result.total_pages} secoes encontradas`
-      : 'Documento pronto para extracao',
-    life: 3000
-  })
+  notify(
+    `${formatType} carregado`,
+    'info',
+    result.total_pages > 1 ? `${result.total_pages} secoes encontradas` : 'Documento pronto para extracao',
+    3000
+  )
 }
 
 // ============================================================
@@ -589,21 +570,11 @@ async function extractSelectedText() {
     currentStep.value = 'result'
 
     const pagesInfo = isPdfFile.value ? ` de ${selectedPages.value.length} páginas` : ''
-    toast.add({
-      severity: 'success',
-      summary: 'Extração concluída',
-      detail: `${result.word_count} palavras extraídas${pagesInfo}`,
-      life: 3000
-    })
+    notify('Extração concluída', 'success', `${result.word_count} palavras extraídas${pagesInfo}`, 3000)
   } catch (error) {
     // Check if extraction was cancelled
     if (error.message === 'AbortError') {
-      toast.add({
-        severity: 'info',
-        summary: 'Extração cancelada',
-        detail: 'A extração foi cancelada pelo usuário.',
-        life: 3000
-      })
+      notify('Extração cancelada', 'info', 'A extração foi cancelada pelo usuário.', 3000)
       return
     }
 
@@ -625,12 +596,7 @@ async function extractSelectedText() {
     }
 
     extractionError.value = errorDetail
-    toast.add({
-      severity: 'error',
-      summary,
-      detail: errorDetail,
-      life: 8000 // Longer display for error messages
-    })
+    notify(summary, 'error', errorDetail, 8000)
     emit('error', error)
   } finally {
     isLoading.value = false
@@ -662,12 +628,7 @@ function useExtractedText() {
 
   closeDialog()
 
-  toast.add({
-    severity: 'info',
-    summary: 'Texto carregado',
-    detail: 'O texto do documento foi inserido no editor.',
-    life: 3000
-  })
+  notify('Texto carregado', 'info', 'O texto do documento foi inserido no editor.', 3000)
 }
 
 function goBackToPages() {

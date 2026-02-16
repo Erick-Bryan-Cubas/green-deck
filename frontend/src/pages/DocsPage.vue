@@ -15,10 +15,18 @@ import Message from 'primevue/message'
 import Divider from 'primevue/divider'
 import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
+import { useAppNotifications } from '@/composables/useAppNotifications'
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+const { addNotification } = useAppNotifications()
+
+function notify(message, severity = 'info', life = 3000) {
+  const summary = String(message || '').trim()
+  toast.add({ severity, summary, life })
+  addNotification({ message: summary, severity, source: 'Docs' })
+}
 
 // Code snippets for copy-to-clipboard
 const codeSnippets = {
@@ -812,17 +820,9 @@ function copyToClipboard(text) {
     textarea.select()
     try {
       document.execCommand('copy')
-      toast.add({
-        severity: 'success',
-        summary: t('copySuccess'),
-        life: 2000
-      })
+      notify(t('copySuccess'), 'success', 2000)
     } catch {
-      toast.add({
-        severity: 'error',
-        summary: t('copyError'),
-        life: 2000
-      })
+      notify(t('copyError'), 'error', 2000)
     }
     document.body.removeChild(textarea)
   }
@@ -830,11 +830,7 @@ function copyToClipboard(text) {
   // Try modern API first, fallback if not available
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text).then(() => {
-      toast.add({
-        severity: 'success',
-        summary: t('copySuccess'),
-        life: 2000
-      })
+      notify(t('copySuccess'), 'success', 2000)
     }).catch(() => {
       fallbackCopy()
     })

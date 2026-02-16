@@ -29,6 +29,7 @@ import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import { useTheme } from '@/composables/useTheme'
+import { useAppNotifications } from '@/composables/useAppNotifications'
 import { sidebarIconColors } from '@/config/theme'
 
 // API service
@@ -41,6 +42,7 @@ const router = useRouter()
 const route = useRoute()
 const toast = useToast()
 const { isDark, toggleTheme } = useTheme()
+const { addNotification } = useAppNotifications()
 
 // Sidebar ref
 const sidebarRef = ref(null)
@@ -49,7 +51,9 @@ const sidebarRef = ref(null)
 // Toast + Logs
 // ----------------------
 function notify(message, severity = 'info', life = 3200) {
-  toast.add({ severity, summary: message, life })
+  const summary = String(message || '').trim()
+  toast.add({ severity, summary, life })
+  addNotification({ message: summary, severity, source: 'Browser' })
 }
 
 const logsVisible = ref(false)

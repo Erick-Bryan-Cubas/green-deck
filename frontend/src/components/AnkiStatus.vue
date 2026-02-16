@@ -76,13 +76,19 @@ const tooltip = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: var(--anki-bg);
   border-radius: 10px;
 }
 
 .anki-svg {
+  width: 18px;
+  height: 18px;
   display: block;
-  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.22));
+  filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.2));
 }
 
 /* estados */
@@ -93,21 +99,12 @@ const tooltip = computed(() => {
 
 .connected {
   --anki-accent: #22c55e; /* verde */
+  border-color: rgba(16, 185, 129, 0.35);
 }
 
 .disconnected {
-  --anki-accent: #ef4444; /* vermelho */
-  opacity: 0.92;
-}
-
-/* opcional: “risco” no offline */
-.disconnected::after {
-  content: '';
-  position: absolute;
-  width: 26px;
-  height: 2px;
-  background: rgba(239, 68, 68, 0.95);
-  border-radius: 999px;
-  transform: rotate(45deg);
+  --anki-accent: rgba(148, 163, 184, 0.88);
+  opacity: 0.72;
+  border-color: rgba(239, 68, 68, 0.35);
 }
 </style>

@@ -27,10 +27,12 @@ import { sidebarIconColors } from '@/config/theme'
 import { useDashboardFilters } from '@/composables/useDashboardFilters'
 import { useAnimatedNumber } from '@/composables/useAnimatedNumber'
 import { useTheme } from '@/composables/useTheme'
+import { useAppNotifications } from '@/composables/useAppNotifications'
 
 const router = useRouter()
 const toast = useToast()
 const { isDark, toggleTheme } = useTheme()
+const { addNotification } = useAppNotifications()
 
 // Filters
 const { dateRange, selectedDecks, hasActiveFilters, queryString, clearFilters } = useDashboardFilters()
@@ -58,7 +60,9 @@ const dayDetailVisible = ref(false)
 const selectedDay = ref(null)
 
 function notify(message, severity = 'info', life = 3200) {
-  toast.add({ severity, summary: message, life })
+  const summary = String(message || '').trim()
+  toast.add({ severity, summary, life })
+  addNotification({ message: summary, severity, source: 'Dashboard' })
 }
 
 // ============================================================
