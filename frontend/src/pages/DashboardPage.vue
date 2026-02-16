@@ -11,8 +11,6 @@ import Card from 'primevue/card'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Skeleton from 'primevue/skeleton'
-import Toast from 'primevue/toast'
-import { useToast } from 'primevue/usetoast'
 import DatePicker from 'primevue/datepicker'
 import MultiSelect from 'primevue/multiselect'
 import Dialog from 'primevue/dialog'
@@ -27,10 +25,13 @@ import { sidebarIconColors } from '@/config/theme'
 import { useDashboardFilters } from '@/composables/useDashboardFilters'
 import { useAnimatedNumber } from '@/composables/useAnimatedNumber'
 import { useTheme } from '@/composables/useTheme'
+import { useAppNotifications } from '@/composables/useAppNotifications'
+import { useAppToast } from '@/composables/useAppToast'
 
 const router = useRouter()
-const toast = useToast()
 const { isDark, toggleTheme } = useTheme()
+const { addNotification } = useAppNotifications()
+const { notify: notifyToast } = useAppToast()
 
 // Filters
 const { dateRange, selectedDecks, hasActiveFilters, queryString, clearFilters } = useDashboardFilters()
@@ -58,7 +59,9 @@ const dayDetailVisible = ref(false)
 const selectedDay = ref(null)
 
 function notify(message, severity = 'info', life = 3200) {
-  toast.add({ severity, summary: message, life })
+  const summary = String(message || '').trim()
+  notifyToast({ message: summary, type: severity, duration: life })
+  addNotification({ message: summary, severity, source: 'Dashboard' })
 }
 
 // ============================================================
@@ -538,8 +541,6 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <Toast />
-
   <!-- Sidebar -->
   <SidebarMenu
     ref="sidebarRef"
