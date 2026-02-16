@@ -1284,8 +1284,9 @@ async def run_extraction_task(
                         "error": str(e)
                     })
 
-        # Combinar texto final
-        final_text = "\n\n".join(all_texts)
+        # Combinar texto final com marcadores de page break
+        PAGE_BREAK_MARKER = "\n\n<!-- PAGE_BREAK -->\n\n"
+        final_text = PAGE_BREAK_MARKER.join(all_texts)
 
         # Notificar conclusão via WebSocket
         await extraction_manager.complete_task(task_id, {

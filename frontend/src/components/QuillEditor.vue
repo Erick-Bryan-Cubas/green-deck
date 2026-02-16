@@ -3,6 +3,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Quill from 'quill'
 import 'quill/dist/quill.snow.css'
+import { looksLikeMarkdown, markdownToHtml } from '../utils/markdownToHtml'
 
 const props = defineProps({
   placeholder: {
@@ -580,19 +581,22 @@ defineExpose({
       quill.setText('')
       return
     }
-    
-    // Processa o texto para preservar formatação
+
     if (typeof text === 'string') {
-      // Remove marcadores de PAGE_BREAK do backend e substitui por quebras de parágrafo
-      let processedText = text.replace(/<!-- PAGE_BREAK -->/g, '\n\n---\n\n')
-      
+      // Remove marcadores de PAGE_BREAK do backend e substitui por separador visual
+      let processedText = text.replace(/<!-- PAGE_BREAK -->/g, '<hr>')
+
       // Se o texto contém tags HTML reais (não apenas comentários), usa dangerouslyPasteHTML
       const hasRealHtmlTags = /<(?!--)[a-z][\s\S]*?>/i.test(processedText)
-      
+
       if (hasRealHtmlTags) {
         quill.clipboard.dangerouslyPasteHTML(processedText, 'api')
+      } else if (looksLikeMarkdown(processedText)) {
+        // Markdown (ex: texto do Docling) — converter para HTML rico
+        const htmlContent = markdownToHtml(processedText)
+        quill.clipboard.dangerouslyPasteHTML(htmlContent, 'api')
       } else {
-        // Converte quebras de linha para HTML para preservar formatação
+        // Texto plano — converte quebras de linha para parágrafos HTML
         const htmlContent = processedText
           .split('\n')
           .map(line => line.trim() === '' ? '<p><br></p>' : `<p>${line}</p>`)
