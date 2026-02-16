@@ -295,7 +295,7 @@ defineExpose({
       </div>
       <Transition name="fade">
         <div v-if="sidebarExpanded" class="sidebar-copyright">
-          <span>&copy; 2026 Green Deck</span>
+          <span>Copyright 2026 Green Deck</span>
           <a href="https://www.linkedin.com/in/the-bryan/" target="_blank" rel="noopener noreferrer" class="sidebar-author">
             Erick Bryan Cubas
           </a>
