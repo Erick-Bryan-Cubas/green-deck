@@ -4097,9 +4097,6 @@ onBeforeUnmount(() => {
             <Tag v-if="hasDocumentContext" severity="success" class="pill">
               <i class="pi pi-sparkles mr-2" /> Contexto pronto
             </Tag>
-            <Tag v-else severity="secondary" class="pill">
-              <i class="pi pi-file mr-2" /> Cole um texto para análise
-            </Tag>
 
             <Tag v-if="savedSessionExists" severity="info" class="pill">
               <i class="pi pi-history mr-2" /> Sessões: {{ sessions.length }}

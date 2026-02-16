@@ -740,8 +740,8 @@ class DocumentExtractor:
             logger.info(f"Iniciando extracao de: {path.name} ({SUPPORTED_FORMATS.get(ext, 'Unknown')})")
             result = converter.convert(str(path))
 
-            # Extrai texto em formato Markdown (preserva estrutura)
-            raw_text = result.document.export_to_markdown()
+            # Extrai texto em formato HTML (preserva estrutura com tags semanticas)
+            raw_text = result.document.export_to_html()
 
             # Metadados do documento
             metadata = {
@@ -799,32 +799,13 @@ class DocumentExtractor:
         """
         Limpa o texto extraido aplicando heuristicas.
 
-        - Remove cabecalhos/rodapes repetitivos
-        - Normaliza espacos e quebras de linha
         - Remove artefatos de OCR comuns
+        - Normaliza espacos e caracteres de controle
         """
         import re
 
         if not text:
             return ""
-
-        # Normaliza quebras de linha excessivas
-        text = re.sub(r'\n{4,}', '\n\n\n', text)
-
-        # Remove linhas que sao apenas numeros (numeros de pagina)
-        lines = text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            stripped = line.strip()
-            # Pula linhas que sao apenas numeros (paginas)
-            if stripped.isdigit() and len(stripped) <= 4:
-                continue
-            # Pula linhas muito curtas que parecem artefatos
-            if len(stripped) <= 2 and not stripped.isalpha():
-                continue
-            cleaned_lines.append(line)
-
-        text = '\n'.join(cleaned_lines)
 
         # Normaliza espacos multiplos em linha
         text = re.sub(r'[ \t]{3,}', '  ', text)
@@ -833,8 +814,8 @@ class DocumentExtractor:
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
         # Normaliza aspas tipograficas
-        text = text.replace('"', '"').replace('"', '"')
-        text = text.replace(''', "'").replace(''', "'")
+        text = text.replace('\u201c', '"').replace('\u201d', '"')
+        text = text.replace('\u2018', "'").replace('\u2019', "'")
 
         return text.strip()
 
@@ -1265,12 +1246,12 @@ class DocumentExtractor:
 
                 try:
                     result = converter.convert(tmp_path)
-                    page_markdown = result.document.export_to_markdown()
+                    page_html = result.document.export_to_html()
 
                     if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
-                        page_text = self._clean_text(page_markdown)
+                        page_text = self._clean_text(page_html)
                     else:
-                        page_text = page_markdown
+                        page_text = page_html
 
                     page_word_count = len(page_text.split())
                     total_words += page_word_count
