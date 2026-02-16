@@ -13,18 +13,17 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import Divider from 'primevue/divider'
-import Toast from 'primevue/toast'
-import { useToast } from 'primevue/usetoast'
 import { useAppNotifications } from '@/composables/useAppNotifications'
+import { useAppToast } from '@/composables/useAppToast'
 
 const router = useRouter()
 const route = useRoute()
-const toast = useToast()
+const { notify: notifyToast } = useAppToast()
 const { addNotification } = useAppNotifications()
 
 function notify(message, severity = 'info', life = 3000) {
   const summary = String(message || '').trim()
-  toast.add({ severity, summary, life })
+  notifyToast({ message: summary, type: severity, duration: life })
   addNotification({ message: summary, severity, source: 'Docs' })
 }
 
@@ -904,7 +903,6 @@ watch(currentLang, (newLang) => {
 </script>
 
 <template>
-  <Toast />
   <div class="docs-page">
     <!-- Header Toolbar -->
     <Toolbar class="docs-toolbar">

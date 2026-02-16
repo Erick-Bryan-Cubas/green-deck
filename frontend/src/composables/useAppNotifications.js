@@ -15,6 +15,9 @@ function normalizeSeverity(severity) {
   if (severity === 'danger') return 'error'
   if (severity === 'warning') return 'warn'
   if (severity === 'secondary') return 'info'
+  if (severity === 'loading') return 'info'
+  if (severity === 'default') return 'info'
+  if (severity === 'other') return 'info'
   return ['success', 'info', 'warn', 'error'].includes(severity) ? severity : 'info'
 }
 
@@ -45,6 +48,7 @@ function persistNotifications(list) {
   try {
     localStorage.setItem(LS_NOTIFICATIONS_KEY, JSON.stringify(list.slice(0, MAX_NOTIFICATIONS)))
   } catch {
+    return
   }
 }
 

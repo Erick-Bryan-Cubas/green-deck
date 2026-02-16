@@ -8,8 +8,8 @@ import Tag from 'primevue/tag'
 import Checkbox from 'primevue/checkbox'
 import Skeleton from 'primevue/skeleton'
 import SelectButton from 'primevue/selectbutton'
-import { useToast } from 'primevue/usetoast'
 import { useAppNotifications } from '@/composables/useAppNotifications'
+import { useAppToast } from '@/composables/useAppToast'
 import {
   getDocumentExtractionStatus,
   getDocumentPagesPreview,
@@ -20,12 +20,19 @@ import {
 } from '@/services/api.js'
 
 const emit = defineEmits(['extracted', 'error'])
-const toast = useToast()
+const { notify: notifyToast } = useAppToast()
 const { addNotification } = useAppNotifications()
 
 function notify(message, severity = 'info', detail = '', life = 3000) {
   const summary = String(message || '').trim()
-  toast.add({ severity, summary, detail, life })
+  const description = String(detail || '').trim()
+  notifyToast({
+    title: summary,
+    description,
+    message: summary,
+    type: severity,
+    duration: life
+  })
   addNotification({ message: summary, severity, source: 'Documento' })
 }
 

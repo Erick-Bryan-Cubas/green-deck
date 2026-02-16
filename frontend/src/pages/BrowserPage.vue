@@ -14,7 +14,6 @@ import InputSwitch from 'primevue/inputswitch'
 import Slider from 'primevue/slider'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
-import Toast from 'primevue/toast'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Divider from 'primevue/divider'
@@ -22,7 +21,6 @@ import Textarea from 'primevue/textarea'
 import ProgressBar from 'primevue/progressbar'
 import Popover from 'primevue/popover'
 import AutoComplete from 'primevue/autocomplete'
-import { useToast } from 'primevue/usetoast'
 
 // App components
 import AnkiStatus from '@/components/AnkiStatus.vue'
@@ -30,6 +28,7 @@ import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import { useTheme } from '@/composables/useTheme'
 import { useAppNotifications } from '@/composables/useAppNotifications'
+import { useAppToast } from '@/composables/useAppToast'
 import { sidebarIconColors } from '@/config/theme'
 
 // API service
@@ -40,9 +39,9 @@ import { sanitizeHtml } from '@/utils/sanitize.js'
 
 const router = useRouter()
 const route = useRoute()
-const toast = useToast()
 const { isDark, toggleTheme } = useTheme()
 const { addNotification } = useAppNotifications()
+const { notify: notifyToast } = useAppToast()
 
 // Sidebar ref
 const sidebarRef = ref(null)
@@ -52,14 +51,19 @@ const sidebarRef = ref(null)
 // ----------------------
 function notify(message, severity = 'info', life = 3200) {
   const summary = String(message || '').trim()
-  toast.add({ severity, summary, life })
+  notifyToast({ message: summary, type: severity, duration: life })
   addNotification({ message: summary, severity, source: 'Browser' })
 }
 
 const logsVisible = ref(false)
 const logs = ref([])
+const OPEN_LOGS_EVENT = 'app:open-logs'
 
 const logsHasError = computed(() => logs.value.some((l) => l?.type === 'error' || l?.type === 'danger'))
+
+function handleOpenLogsEvent() {
+  logsVisible.value = true
+}
 
 function addLog(message, type = 'info') {
   const timestamp = new Date().toLocaleTimeString()
@@ -1655,6 +1659,7 @@ async function confirmRecreate() {
 onMounted(async () => {
   await fetchHealth()
   healthTimer = setInterval(fetchHealth, 6000)
+  window.addEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 
   // Apply URL filter parameter if present (before any fetch)
   const filterParam = route.query.filter
@@ -1680,12 +1685,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
+  window.removeEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 })
 </script>
 
 <template>
-  <Toast />
-
   <!-- Sidebar -->
   <SidebarMenu
     ref="sidebarRef"

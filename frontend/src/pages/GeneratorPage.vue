@@ -19,10 +19,8 @@ import ProgressSpinner from 'primevue/progressspinner'
 import Paginator from 'primevue/paginator'
 import Menu from 'primevue/menu'
 import ContextMenu from 'primevue/contextmenu'
-import Toast from 'primevue/toast'
 import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
-import { useToast } from 'primevue/usetoast'
 
 // App components - with lazy loading for performance
 import LazyQuillEditor from '@/components/LazyQuillEditor.vue'
@@ -55,6 +53,7 @@ import { useRouter } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 import { useTheme } from '@/composables/useTheme'
 import { useAppNotifications } from '@/composables/useAppNotifications'
+import { useAppToast } from '@/composables/useAppToast'
 
 // Services
 import {
@@ -78,9 +77,9 @@ import {
 // Security utilities
 import { sanitizeHtml } from '@/utils/sanitize.js'
 
-const toast = useToast()
 const router = useRouter()
 const { isDark, toggleTheme } = useTheme()
+const { notify: notifyToast } = useAppToast()
 const {
   notifications,
   unreadCount,
@@ -94,7 +93,7 @@ const { status: ollamaWsStatus } = useOllamaStatus()
 // ============================================================
 function notify(message, severity = 'info', life = 3000) {
   const summary = String(message || '').trim()
-  toast.add({ severity, summary, life })
+  notifyToast({ message: summary, type: severity, duration: life })
   addNotification({ message: summary, severity, source: 'Generator' })
 }
 
@@ -2008,8 +2007,13 @@ function stopTimer() {
 // ============================================================
 const logsVisible = ref(false)
 const logs = ref([])
+const OPEN_LOGS_EVENT = 'app:open-logs'
 
 const logsHasError = computed(() => logs.value.some((l) => l?.type === 'error' || l?.type === 'danger'))
+
+function handleOpenLogsEvent() {
+  logsVisible.value = true
+}
 
 function addLog(message, type = 'info') {
   const timestamp = new Date().toLocaleTimeString()
@@ -4104,6 +4108,7 @@ onMounted(async () => {
     }
   }
   window.addEventListener('keydown', globalKeyHandler)
+  window.addEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 
   // Se iniciar já no modo leitura, garante layout depois de montar
   if (immersiveReader.value) {
@@ -4118,6 +4123,7 @@ onBeforeUnmount(() => {
   if (analyzeDebounce) clearTimeout(analyzeDebounce)
   if (persistSessionTimer) clearTimeout(persistSessionTimer)
   if (globalKeyHandler) window.removeEventListener('keydown', globalKeyHandler)
+  window.removeEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
   if (ollamaInfoInterval) clearInterval(ollamaInfoInterval)
 
   if (readerScrollRaf) cancelAnimationFrame(readerScrollRaf)
@@ -4142,7 +4148,6 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Toast />
   <ContextMenu ref="contextMenuRef" :model="contextMenuModel" appendTo="body" />
   <Menu ref="exportTextMenuRef" :model="exportTextMenuItems" popup appendTo="body" />
   <Menu ref="sessionQuickMenuRef" :model="sessionQuickMenuItems" popup appendTo="body" />
@@ -4267,25 +4272,33 @@ onBeforeUnmount(() => {
             <i class="pi pi-sparkles mr-2" /> Contexto pronto
           </Tag>
 
-          <Button
-            icon="pi pi-history"
-            outlined
-            rounded
-            :badge="savedSessionExists ? String(sessions.length) : null"
-            badgeSeverity="info"
-            title="Sessões"
-            @click="toggleSessionQuickMenu"
-          />
+          <div class="header-icon-badge-wrap">
+            <Button
+              icon="pi pi-history"
+              outlined
+              rounded
+              title="Sessões"
+              aria-label="Sessões"
+              @click="toggleSessionQuickMenu"
+            />
+            <span v-if="savedSessionExists" class="header-icon-badge is-info">
+              {{ sessions.length > 99 ? '99+' : sessions.length }}
+            </span>
+          </div>
 
-          <Button
-            icon="pi pi-bell"
-            outlined
-            rounded
-            :badge="unreadCount ? String(unreadCount) : null"
-            badgeSeverity="danger"
-            title="Notificações"
-            @click="openNotificationsPanel"
-          />
+          <div class="header-icon-badge-wrap">
+            <Button
+              icon="pi pi-bell"
+              outlined
+              rounded
+              title="Notificações"
+              aria-label="Notificações"
+              @click="openNotificationsPanel"
+            />
+            <span v-if="unreadCount" class="header-icon-badge is-danger">
+              {{ unreadCount > 99 ? '99+' : unreadCount }}
+            </span>
+          </div>
         </div>
 
         <div v-else class="header-right">
@@ -5489,6 +5502,68 @@ onBeforeUnmount(() => {
   min-width: 0;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.header-icon-badge-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-icon-badge {
+  position: absolute;
+  top: -5px;
+  right: -4px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  color: rgba(248, 250, 252, 0.98);
+  border: 1px solid transparent;
+  box-shadow:
+    0 0 0 2px var(--app-bg, #0b1320),
+    0 6px 14px rgba(2, 6, 23, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+  z-index: 2;
+  text-shadow: 0 1px 1px rgba(2, 6, 23, 0.35);
+}
+
+.header-icon-badge.is-info {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--info-color, #3b82f6) 86%, white 14%) 0%,
+    color-mix(in srgb, var(--info-color, #3b82f6) 78%, black 22%) 100%
+  );
+  border-color: color-mix(in srgb, var(--info-color, #3b82f6) 72%, white 28%);
+}
+
+.header-icon-badge.is-danger {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--error-color, #ef4444) 86%, white 14%) 0%,
+    color-mix(in srgb, var(--error-color, #ef4444) 78%, black 22%) 100%
+  );
+  border-color: color-mix(in srgb, var(--error-color, #ef4444) 72%, white 28%);
+}
+
+@media (max-width: 1024px) {
+  .header-icon-badge {
+    top: -4px;
+    right: -3px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
 }
 
 .header-actions-right :deep(.p-button) {

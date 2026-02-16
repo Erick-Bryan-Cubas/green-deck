@@ -2,10 +2,10 @@
  * Composable for notification/toast management
  */
 import { ref } from 'vue'
-import { useToast } from 'primevue/usetoast'
+import { useAppToast } from '@/composables/useAppToast'
 
 export function useNotify() {
-  const toast = useToast()
+  const { notify: notifyToast } = useAppToast()
   const logs = ref([])
 
   /**
@@ -15,7 +15,7 @@ export function useNotify() {
    * @param {number} life - Duration in milliseconds
    */
   function notify(message, severity = 'info', life = 3000) {
-    toast.add({ severity, summary: message, life })
+    notifyToast({ message, type: severity, duration: life })
   }
 
   /**
