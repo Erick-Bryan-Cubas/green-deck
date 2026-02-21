@@ -11,7 +11,7 @@ import { looksLikeMarkdown, markdownToHtml, autolinkUrls } from '../utils/markdo
 // ------------------------------------------------------------
 const EDITOR_THEMES = [
   { value: 'default',          label: 'Padrão',            bg: null,      fg: null,      ph: null },
-  { value: 'kindle',           label: 'Claro',             bg: '#ffffff', fg: '#111827', ph: 'rgba(17,24,39,0.45)' },
+  { value: 'kindle',           label: 'Branco',            bg: '#ffffff', fg: '#111827', ph: 'rgba(17,24,39,0.45)' },
   { value: 'sepia',            label: 'Sépia',             bg: '#f4ecd8', fg: '#5c4b37', ph: 'rgba(92,75,55,0.5)' },
   { value: 'dark',             label: 'Escuro',            bg: '#0f172a', fg: '#e2e8f0', ph: 'rgba(226,232,240,0.45)' },
   { value: 'dracula',          label: 'Dracula',           bg: '#282A36', fg: '#F8F8F2', ph: 'rgba(248,248,242,0.45)' },
@@ -52,31 +52,67 @@ const editorTheme = ref(props.theme || 'default')
 
 let quill = null
 let textChangeTimeout = null
+let resizeObserver = null
 
 let savedRange = null
 
 // ------------------------------------------------------------
-// Line numbers — mede a altura real de cada bloco no editor
-// para que títulos (h1, h2…) e parágrafos fiquem alinhados.
+// Line numbers — conta linhas VISUAIS (como VS Code).
+// Divide a altura de conteúdo de cada bloco pelo line-height
+// computado para saber quantas linhas cada bloco ocupa.
 // ------------------------------------------------------------
+function getLineHeightPx(el) {
+  const computed = window.getComputedStyle(el)
+  const lh = parseFloat(computed.lineHeight)
+  if (!isNaN(lh) && lh > 0) return lh
+  // Fallback: fontSize × 1.42 (padrão do Quill)
+  const fontSize = parseFloat(computed.fontSize) || 13
+  return fontSize * 1.42
+}
+
 function updateLineNumbers() {
   if (!quill || !quill.root) {
     lineHeights.value = [{ height: 0 }]
     return
   }
+
   const editor = quill.root
   const children = editor.children
   const entries = []
+
   for (let i = 0; i < children.length; i++) {
     const child = children[i]
+    const lineHeightPx = getLineHeightPx(child)
+
+    // Altura do conteúdo sem padding/border (importante para <pre>, <blockquote>)
+    const rect = child.getBoundingClientRect()
+    const style = window.getComputedStyle(child)
+    const pt = parseFloat(style.paddingTop) || 0
+    const pb = parseFloat(style.paddingBottom) || 0
+    const bt = parseFloat(style.borderTopWidth) || 0
+    const bb = parseFloat(style.borderBottomWidth) || 0
+    const contentHeight = rect.height - pt - pb - bt - bb
+
+    const visualLineCount = Math.max(1, Math.round(contentHeight / lineHeightPx))
+
+    // Espaço extra entre blocos (margin collapse, etc.)
+    let blockHeight
     if (i < children.length - 1) {
-      // Distância até o próximo bloco — captura margins/collapses reais
-      entries.push({ height: children[i + 1].offsetTop - child.offsetTop })
+      blockHeight = children[i + 1].offsetTop - child.offsetTop
     } else {
-      // Último bloco — usa getBoundingClientRect
-      entries.push({ height: child.getBoundingClientRect().height })
+      blockHeight = rect.height
+    }
+    const extraSpace = blockHeight - rect.height
+
+    // Uma entrada por linha visual
+    for (let line = 0; line < visualLineCount; line++) {
+      let h = lineHeightPx
+      if (line === 0) h += pt + bt
+      if (line === visualLineCount - 1) h += pb + bb + extraSpace
+      entries.push({ height: h })
     }
   }
+
   if (entries.length === 0) entries.push({ height: 0 })
   lineHeights.value = entries
 }
@@ -253,22 +289,22 @@ function showBackgroundPicker(buttonEl) {
   picker.className = PICKER_CLASS
   picker.style.cssText = `
     position: fixed;
-    background: var(--quill-picker-bg);
-    border: 1px solid var(--quill-picker-border);
-    border-radius: 10px;
+    background: var(--quill-picker-bg, #1e293b);
+    border: 1px solid var(--quill-picker-border, rgba(148, 163, 184, 0.18));
+    border-radius: 12px;
     padding: 10px;
-    box-shadow: var(--quill-picker-shadow);
+    box-shadow: var(--quill-picker-shadow, 0 10px 30px rgba(0, 0, 0, 0.45));
     z-index: 99999;
     display: grid;
     grid-template-columns: repeat(5, 1fr);
     gap: 6px;
-    width: 230px;
+    width: 210px;
   `
 
   const rect = buttonEl.getBoundingClientRect()
   // tamanho aproximado do picker (5 colunas, 3 linhas)
-  const pickerW = 230
-  const pickerH = 10 + (3 * 38) + (2 * 6) + 10
+  const pickerW = 210
+  const pickerH = 10 + (3 * 34) + (2 * 6) + 10
   const pos = clampPosition(rect.left, rect.bottom + 8, pickerW, pickerH)
 
   picker.style.left = `${pos.x}px`
@@ -279,31 +315,29 @@ function showBackgroundPicker(buttonEl) {
     btn.type = 'button'
     btn.title = label
 
-    const txtColor = color === 'transparent' ? '#e5e7eb' : textColorForBackground(color)
+    const isRemove = color === 'transparent'
+    const txtColor = isRemove ? '#e5e7eb' : textColorForBackground(color)
     btn.style.cssText = `
-      width: 44px;
-      height: 36px;
+      width: 100%;
+      aspect-ratio: 1;
       border-radius: 8px;
-      border: 2px solid #374151;
-      background-color: ${color === 'transparent' ? 'transparent' : color};
+      border: 1.5px solid rgba(148, 163, 184, 0.15);
+      background-color: ${isRemove ? 'transparent' : color};
       cursor: pointer;
-      transition: transform 0.12s ease, border-color 0.12s ease;
+      transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
       position: relative;
       overflow: hidden;
-      ${color === 'transparent'
-        ? 'background-image: linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc); background-size: 8px 8px; background-position: 0 0, 4px 4px;'
+      ${isRemove
+        ? 'background-image: linear-gradient(45deg, rgba(148,163,184,0.15) 25%, transparent 25%, transparent 75%, rgba(148,163,184,0.15) 75%), linear-gradient(45deg, rgba(148,163,184,0.15) 25%, transparent 25%, transparent 75%, rgba(148,163,184,0.15) 75%); background-size: 8px 8px; background-position: 0 0, 4px 4px;'
         : ''
       }
     `
 
     // mini “A” pra mostrar contraste (ajuda UX)
-    btn.innerHTML = `<span style="
-        position:absolute; inset:0;
-        display:grid; place-items:center;
-        font-weight:900; font-size:12px;
-        color:${txtColor};
-        text-shadow:${txtColor === '#ffffff' ? '0 1px 2px rgba(0,0,0,0.45)' : 'none'};
-      ">A</span>`
+    const iconContent = isRemove
+      ? '<svg width=”14” height=”14” viewBox=”0 0 14 14” fill=”none” stroke=”rgba(248,113,113,0.8)” stroke-width=”2” stroke-linecap=”round”><line x1=”2” y1=”2” x2=”12” y2=”12”/><line x1=”12” y1=”2” x2=”2” y2=”12”/></svg>'
+      : `<span style=”font-weight:800;font-size:11px;color:${txtColor};text-shadow:${txtColor === '#ffffff' ? '0 1px 2px rgba(0,0,0,0.5)' : 'none'};”>A</span>`
+    btn.innerHTML = `<span style=”position:absolute;inset:0;display:grid;place-items:center;”>${iconContent}</span>`
 
     btn.addEventListener('mousedown', (e) => {
       e.preventDefault()
@@ -311,12 +345,14 @@ function showBackgroundPicker(buttonEl) {
     })
 
     btn.addEventListener('mouseenter', () => {
-      btn.style.transform = 'scale(1.06)'
-      btn.style.borderColor = '#ffffff'
+      btn.style.transform = 'scale(1.12)'
+      btn.style.borderColor = 'rgba(255, 255, 255, 0.5)'
+      btn.style.boxShadow = `0 2px 8px ${isRemove ? 'rgba(248,113,113,0.3)' : color + '66'}`
     })
     btn.addEventListener('mouseleave', () => {
       btn.style.transform = 'scale(1)'
-      btn.style.borderColor = '#374151'
+      btn.style.borderColor = 'rgba(148, 163, 184, 0.15)'
+      btn.style.boxShadow = 'none'
     })
 
     btn.addEventListener('click', (e) => {
@@ -793,6 +829,14 @@ onMounted(() => {
   migrateOldHighlights()
   updateLineNumbers()
 
+  // ResizeObserver: atualiza números de linha quando o editor muda de largura
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      updateLineNumbers()
+    })
+    resizeObserver.observe(quill.root)
+  }
+
   // Aplica tema inicial se definido via prop
   if (props.theme && props.theme !== 'default') {
     applyEditorTheme(props.theme)
@@ -805,6 +849,10 @@ onBeforeUnmount(() => {
   removePicker()
   removeThemePicker()
   if (textChangeTimeout) clearTimeout(textChangeTimeout)
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
 
   try {
     const editorEl = editorRef.value?.querySelector('.ql-editor')
@@ -1459,7 +1507,6 @@ defineExpose({
   border-bottom: 2px dashed var(--hl-color);
   border-radius: 2px;
   padding-bottom: 1px;
-  font-weight: 700;
 }
 
 /* Placeholder do Quill — usa tema do editor se ativo, senão fallback para tema global */
