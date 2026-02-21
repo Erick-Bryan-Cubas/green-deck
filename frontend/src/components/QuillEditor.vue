@@ -52,31 +52,67 @@ const editorTheme = ref(props.theme || 'default')
 
 let quill = null
 let textChangeTimeout = null
+let resizeObserver = null
 
 let savedRange = null
 
 // ------------------------------------------------------------
-// Line numbers — mede a altura real de cada bloco no editor
-// para que títulos (h1, h2…) e parágrafos fiquem alinhados.
+// Line numbers — conta linhas VISUAIS (como VS Code).
+// Divide a altura de conteúdo de cada bloco pelo line-height
+// computado para saber quantas linhas cada bloco ocupa.
 // ------------------------------------------------------------
+function getLineHeightPx(el) {
+  const computed = window.getComputedStyle(el)
+  const lh = parseFloat(computed.lineHeight)
+  if (!isNaN(lh) && lh > 0) return lh
+  // Fallback: fontSize × 1.42 (padrão do Quill)
+  const fontSize = parseFloat(computed.fontSize) || 13
+  return fontSize * 1.42
+}
+
 function updateLineNumbers() {
   if (!quill || !quill.root) {
     lineHeights.value = [{ height: 0 }]
     return
   }
+
   const editor = quill.root
   const children = editor.children
   const entries = []
+
   for (let i = 0; i < children.length; i++) {
     const child = children[i]
+    const lineHeightPx = getLineHeightPx(child)
+
+    // Altura do conteúdo sem padding/border (importante para <pre>, <blockquote>)
+    const rect = child.getBoundingClientRect()
+    const style = window.getComputedStyle(child)
+    const pt = parseFloat(style.paddingTop) || 0
+    const pb = parseFloat(style.paddingBottom) || 0
+    const bt = parseFloat(style.borderTopWidth) || 0
+    const bb = parseFloat(style.borderBottomWidth) || 0
+    const contentHeight = rect.height - pt - pb - bt - bb
+
+    const visualLineCount = Math.max(1, Math.round(contentHeight / lineHeightPx))
+
+    // Espaço extra entre blocos (margin collapse, etc.)
+    let blockHeight
     if (i < children.length - 1) {
-      // Distância até o próximo bloco — captura margins/collapses reais
-      entries.push({ height: children[i + 1].offsetTop - child.offsetTop })
+      blockHeight = children[i + 1].offsetTop - child.offsetTop
     } else {
-      // Último bloco — usa getBoundingClientRect
-      entries.push({ height: child.getBoundingClientRect().height })
+      blockHeight = rect.height
+    }
+    const extraSpace = blockHeight - rect.height
+
+    // Uma entrada por linha visual
+    for (let line = 0; line < visualLineCount; line++) {
+      let h = lineHeightPx
+      if (line === 0) h += pt + bt
+      if (line === visualLineCount - 1) h += pb + bb + extraSpace
+      entries.push({ height: h })
     }
   }
+
   if (entries.length === 0) entries.push({ height: 0 })
   lineHeights.value = entries
 }
@@ -793,6 +829,14 @@ onMounted(() => {
   migrateOldHighlights()
   updateLineNumbers()
 
+  // ResizeObserver: atualiza números de linha quando o editor muda de largura
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      updateLineNumbers()
+    })
+    resizeObserver.observe(quill.root)
+  }
+
   // Aplica tema inicial se definido via prop
   if (props.theme && props.theme !== 'default') {
     applyEditorTheme(props.theme)
@@ -805,6 +849,10 @@ onBeforeUnmount(() => {
   removePicker()
   removeThemePicker()
   if (textChangeTimeout) clearTimeout(textChangeTimeout)
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
 
   try {
     const editorEl = editorRef.value?.querySelector('.ql-editor')
