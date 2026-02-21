@@ -52,7 +52,7 @@ export function useContentSelection() {
     delta.ops.forEach((op) => {
       const ins = op.insert
       const len = typeof ins === 'string' ? ins.length : 1
-      const bg = op.attributes?.background
+      const bg = op.attributes?.highlight
 
       if (bg && typeof bg === 'string' && bg.startsWith('#')) {
         const text = typeof ins === 'string' ? ins : ''
@@ -97,7 +97,7 @@ export function useContentSelection() {
 
     delta.ops.forEach((op) => {
       const ins = op.insert
-      const bg = op.attributes?.background
+      const bg = op.attributes?.highlight
 
       if (bg && typeof bg === 'string' && bg.startsWith('#') && typeof ins === 'string') {
         highlightedParts.push(ins)

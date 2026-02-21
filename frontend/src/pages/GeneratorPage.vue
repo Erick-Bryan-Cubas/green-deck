@@ -1232,7 +1232,7 @@ function scanHighlights() {
   delta.ops.forEach((op) => {
     const ins = op.insert
     const len = typeof ins === 'string' ? ins.length : 1
-    const bg = op.attributes?.background
+    const bg = op.attributes?.highlight
 
     if (bg && typeof bg === 'string' && bg.startsWith('#')) {
       // Check if we should merge with previous highlight (same color)
