@@ -1860,6 +1860,9 @@ async def generate_cards_stream(
 
                 response_lengths.append(len(raw))
 
+                if chunked:
+                    yield f"event: stage\ndata: {json.dumps({'stage': 'chunk_completed', 'chunk': idx + 1, 'total': len(chunks), 'response_length': len(raw)})}\n\n"
+
                 save_llm_response(
                     provider=provider,
                     model=model,
