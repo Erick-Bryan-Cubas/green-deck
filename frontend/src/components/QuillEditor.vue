@@ -3,7 +3,8 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Quill from 'quill'
 import 'quill/dist/quill.snow.css'
-import { looksLikeMarkdown, markdownToHtml } from '../utils/markdownToHtml'
+import '../utils/quillHighlightFormat.js'
+import { looksLikeMarkdown, markdownToHtml, autolinkUrls } from '../utils/markdownToHtml'
 
 const props = defineProps({
   placeholder: {
@@ -95,7 +96,7 @@ function getSelectedText(range) {
 function selectionHasHighlight(range) {
   if (!quill || !range || !range.length) return false
   const fmt = quill.getFormat(range.index, range.length)
-  return !!fmt.background
+  return !!fmt.highlight
 }
 
 function hasValidSavedRange() {
@@ -107,8 +108,7 @@ function applyFormatsToSavedRange(formats) {
   if (!hasValidSavedRange()) return
 
   quill.setSelection(savedRange)
-  quill.format('background', formats.background ?? false)
-  quill.format('color', formats.color ?? false)
+  quill.format('highlight', formats.highlight ?? false)
 }
 
 function formatBackground(bg) {
@@ -116,20 +116,17 @@ function formatBackground(bg) {
   if (!hasValidSavedRange()) return
 
   if (!bg || bg === 'transparent') {
-    applyFormatsToSavedRange({ background: false, color: false })
+    applyFormatsToSavedRange({ highlight: false })
     return
   }
 
-  applyFormatsToSavedRange({
-    background: bg,
-    color: textColorForBackground(bg)
-  })
+  applyFormatsToSavedRange({ highlight: bg })
 }
 
 function clearHighlight() {
   if (!quill) return
   if (!hasValidSavedRange()) return
-  applyFormatsToSavedRange({ background: false, color: false })
+  applyFormatsToSavedRange({ highlight: false })
 }
 
 function clearSelection() {
@@ -138,9 +135,9 @@ function clearSelection() {
 }
 
 // ------------------------------------------------------------
-// Normaliza highlights antigos (background mas cor errada)
+// Migra highlights antigos (background → highlight)
 // ------------------------------------------------------------
-function normalizeHighlightTextColors() {
+function migrateOldHighlights() {
   if (!quill) return
 
   const delta = quill.getContents()
@@ -152,7 +149,7 @@ function normalizeHighlightTextColors() {
     const bg = op.attributes?.background
 
     if (bg && typeof bg === 'string' && bg.startsWith('#')) {
-      quill.formatText(idx, len, { color: textColorForBackground(bg) })
+      quill.formatText(idx, len, { background: false, color: false, highlight: bg }, 'api')
     }
     idx += len
   })
@@ -451,7 +448,7 @@ onMounted(() => {
     formats: [
       'header', 'bold', 'italic', 'underline', 'strike',
       'list', 'indent', 'align',
-      'background', 'color',
+      'background', 'color', 'highlight',
       'blockquote', 'code-block', 'code',
       'link', 'script'
     ]
@@ -533,7 +530,7 @@ onMounted(() => {
   editorEl.addEventListener('wheel', preventWheelLeak, { passive: false })
   editorEl.addEventListener('scroll', syncLineNumbersScroll)
 
-  normalizeHighlightTextColors()
+  migrateOldHighlights()
   updateLineCount()
   emit('editor-ready', quill)
 })
@@ -573,7 +570,7 @@ defineExpose({
       return
     }
     quill.setContents(delta, 'api')
-    normalizeHighlightTextColors()
+    migrateOldHighlights()
   },
   setContent: (text) => {
     if (!quill) return
@@ -590,6 +587,26 @@ defineExpose({
       const hasRealHtmlTags = /<(?!--)[a-z][\s\S]*?>/i.test(processedText)
 
       if (hasRealHtmlTags) {
+        // Escapa '<' soltos que não são tags HTML reais (ex: "< https://...")
+        // Sem isso, dangerouslyPasteHTML interpreta como tag inválida e engole o conteúdo
+        processedText = processedText.replace(/<(?![/a-zA-Z!])/g, '&lt;')
+
+        // Corrige URLs classificadas como headings pelo Docling
+        processedText = processedText.replace(
+          /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>/gi,
+          (match, tag, content) => {
+            const plain = content.replace(/<[^>]+>/g, '').trim()
+            const decoded = plain.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
+            const core = decoded.replace(/^[<>\s.]+|[<>\s.]+$/g, '')
+            if (/^https?:\/\//.test(core)) {
+              const cleanUrl = core.replace(/\s+/g, '')
+              return `<p><a href="${cleanUrl}">${cleanUrl}</a></p>`
+            }
+            return match
+          }
+        )
+        // Auto-linkifica URLs em texto plano
+        processedText = autolinkUrls(processedText)
         quill.clipboard.dangerouslyPasteHTML(processedText, 'api')
       } else if (looksLikeMarkdown(processedText)) {
         // Markdown (ex: texto do Docling) — converter para HTML rico
@@ -627,7 +644,7 @@ defineExpose({
 
     delta.ops.forEach((op) => {
       const ins = op.insert
-      const bg = op.attributes?.background
+      const bg = op.attributes?.highlight
 
       if (bg && typeof bg === 'string' && bg.startsWith('#') && typeof ins === 'string') {
         if (currentColor === bg && currentGroup !== null) {
@@ -681,8 +698,8 @@ defineExpose({
     if (!delta || !delta.ops) return false
 
     return delta.ops.some((op) => {
-      const bg = op.attributes?.background
-      return bg && typeof bg === 'string' && bg.startsWith('#')
+      const hl = op.attributes?.highlight
+      return hl && typeof hl === 'string' && hl.startsWith('#')
     })
   },
 
@@ -721,10 +738,8 @@ defineExpose({
 
       if (length > 0 && start >= 0 && end <= textLength) {
         try {
-          const textColor = textColorForBackground(color)
           quill.formatText(start, length, {
-            background: color,
-            color: textColor
+            highlight: color
           })
           appliedCount++
           console.log('[QuillEditor] Format applied:', { start, length, color })
@@ -745,7 +760,7 @@ defineExpose({
   clearTopicHighlights: () => {
     if (!quill) return
     const length = quill.getLength()
-    quill.formatText(0, length, { background: false, color: false })
+    quill.formatText(0, length, { highlight: false, background: false, color: false })
   },
 
   /**
@@ -1134,6 +1149,15 @@ defineExpose({
 :deep(.ql-editor .ql-align-center) { text-align: center; }
 :deep(.ql-editor .ql-align-right) { text-align: right; }
 :deep(.ql-editor .ql-align-justify) { text-align: justify; }
+/* Highlight format: semi-transparent background + dashed underline */
+:deep(.ql-editor .ql-highlight) {
+  background-color: color-mix(in srgb, var(--hl-color) 25%, transparent);
+  border-bottom: 2px dashed var(--hl-color);
+  border-radius: 2px;
+  padding-bottom: 1px;
+  font-weight: 700;
+}
+
 /* Placeholder do Quill (tema escuro) */
 :deep(.ql-editor.ql-blank::before) {
   color: var(--quill-placeholder) !important;

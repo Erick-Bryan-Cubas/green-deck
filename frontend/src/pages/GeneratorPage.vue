@@ -1232,7 +1232,7 @@ function scanHighlights() {
   delta.ops.forEach((op) => {
     const ins = op.insert
     const len = typeof ins === 'string' ? ins.length : 1
-    const bg = op.attributes?.background
+    const bg = op.attributes?.highlight
 
     if (bg && typeof bg === 'string' && bg.startsWith('#')) {
       // Check if we should merge with previous highlight (same color)
@@ -2106,7 +2106,7 @@ function showProgress(title = 'Processing...') {
 }
 
 function setProgress(v, stage = null, details = null, icon = null) {
-  progressValue.value = Math.max(0, Math.min(100, Math.floor(v)))
+  progressValue.value = Math.max(progressValue.value, Math.min(100, Math.floor(v)))
   if (stage) progressStage.value = stage
   if (icon) progressIcon.value = icon
   if (details) progressDetails.value = { ...progressDetails.value, ...details }
@@ -2623,81 +2623,110 @@ async function generateCardsFromSelection() {
           if (stage === 'stage' && data?.stage) {
             const s = data.stage
 
-            // Mapeamento de estagios para UI amigavel (usando icones PrimeVue)
+            // Progresso dinâmico para eventos de chunk (geração em lote)
+            if (s === 'chunking') {
+              setProgress(14, `Texto dividido em ${data.chunks} partes...`, null, 'pi pi-objects-column')
+              addLog(`Texto dividido em ${data.chunks} lotes para processamento`, 'info')
+              return
+            }
+            if (s === 'chunk_generation' && data.chunk && data.total) {
+              const progress = 15 + ((data.chunk - 1) / data.total) * 24
+              setProgress(
+                Math.round(progress),
+                `Gerando lote ${data.chunk} de ${data.total}...`,
+                null,
+                'pi pi-sparkles'
+              )
+              addLog(`Lote ${data.chunk}/${data.total}: gerando...`, 'info')
+              return
+            }
+            if (s === 'chunk_completed' && data.chunk && data.total) {
+              const progress = 16 + (data.chunk / data.total) * 24
+              setProgress(
+                Math.round(progress),
+                `Lote ${data.chunk} de ${data.total} concluído`,
+                null,
+                'pi pi-check'
+              )
+              addLog(`Lote ${data.chunk}/${data.total}: concluído (${data.response_length} chars)`, 'info')
+              return
+            }
+
+            // Mapeamento de estagios fixos para UI amigavel (usando icones PrimeVue)
             const stageMap = {
-              'generation_started': { progress: 15, label: 'Enviando prompt ao LLM...', icon: 'pi pi-send' },
-              'parsed': { 
-                progress: 45, 
-                label: `Parseados ${data.count || 0} cartões`, 
+              'generation_started': { progress: 12, label: 'Enviando prompt ao LLM...', icon: 'pi pi-send' },
+              'parsed': {
+                progress: 42,
+                label: `Parseados ${data.count || 0} cartões`,
                 icon: 'pi pi-file-edit',
                 details: { parsed: data.count, mode: data.mode, beforeFilter: data.before_type_filter }
               },
-              'src_filtered': { 
-                progress: 55, 
-                label: `Validação SRC: ${data.kept || 0} aprovados, ${data.dropped || 0} removidos`, 
+              'src_filtered': {
+                progress: 52,
+                label: `Validação SRC: ${data.kept || 0} aprovados, ${data.dropped || 0} removidos`,
                 icon: 'pi pi-search',
                 details: { srcKept: data.kept, srcDropped: data.dropped }
               },
-              'llm_relevance_filtered': { 
-                progress: 62, 
-                label: `Filtro relevância: ${data.kept || 0} mantidos, ${data.dropped || 0} removidos`, 
+              'llm_relevance_filtered': {
+                progress: 60,
+                label: `Filtro relevância: ${data.kept || 0} mantidos, ${data.dropped || 0} removidos`,
                 icon: 'pi pi-bullseye',
                 details: { relevanceKept: data.kept, relevanceDropped: data.dropped }
               },
-              'src_bypassed': { 
-                progress: 58, 
-                label: `SRC bypass: ${data.count || 0} cartões mantidos`, 
-                icon: 'pi pi-bolt' 
+              'src_bypassed': {
+                progress: 56,
+                label: `SRC bypass: ${data.count || 0} cartões mantidos`,
+                icon: 'pi pi-bolt'
               },
-              'src_relaxed': { 
-                progress: 65, 
-                label: `SRC relaxado: ${data.total_after_relax || 0} cartões (min: ${data.target_min || 0})`, 
-                icon: 'pi pi-sync' 
+              'src_relaxed': {
+                progress: 63,
+                label: `SRC relaxado: ${data.total_after_relax || 0} cartões (min: ${data.target_min || 0})`,
+                icon: 'pi pi-sync'
               },
-              'lang_check': { 
-                progress: 70, 
-                label: `Idioma: ${data.lang || 'unknown'} (${data.cards || 0} cartões)`, 
-                icon: 'pi pi-globe' 
+              'lang_check': {
+                progress: 68,
+                label: `Idioma: ${data.lang || 'unknown'} (${data.cards || 0} cartões)`,
+                icon: 'pi pi-globe'
               },
-              'repair_pass': { 
-                progress: 72, 
-                label: `Iniciando reparo... (${data.reason || ''})`, 
-                icon: 'pi pi-wrench' 
+              'repair_pass': {
+                progress: 70,
+                label: `Iniciando reparo... (${data.reason || ''})`,
+                icon: 'pi pi-wrench'
               },
-              'repair_parsed': { 
-                progress: 80, 
-                label: `Reparo: ${data.count || 0} cartões adicionais`, 
-                icon: 'pi pi-wrench' 
+              'repair_parsed': {
+                progress: 78,
+                label: `Reparo: ${data.count || 0} cartões adicionais`,
+                icon: 'pi pi-wrench'
               },
-              'repair_src_filtered': { 
-                progress: 85, 
-                label: `Reparo SRC: ${data.kept || 0} aprovados`, 
+              'repair_src_filtered': {
+                progress: 83,
+                label: `Reparo SRC: ${data.kept || 0} aprovados`,
                 icon: 'pi pi-search',
                 details: { srcKept: data.kept, srcDropped: data.dropped }
               },
-              'repair_llm_relevance_filtered': { 
-                progress: 88, 
-                label: `Reparo relevância: ${data.kept || 0} mantidos`, 
-                icon: 'pi pi-bullseye' 
+              'repair_llm_relevance_filtered': {
+                progress: 86,
+                label: `Reparo relevância: ${data.kept || 0} mantidos`,
+                icon: 'pi pi-bullseye'
               },
-              'repair_src_bypassed': { 
-                progress: 86, 
-                label: `Reparo SRC bypass: ${data.count || 0} cartões`, 
-                icon: 'pi pi-bolt' 
+              'repair_src_bypassed': {
+                progress: 84,
+                label: `Reparo SRC bypass: ${data.count || 0} cartões`,
+                icon: 'pi pi-bolt'
               },
-              'lang_check_after_repair': { 
-                progress: 92, 
-                label: `Idioma pós-reparo: ${data.lang || 'unknown'} (${data.cards || 0} cartões)`, 
-                icon: 'pi pi-globe' 
+              'lang_check_after_repair': {
+                progress: 90,
+                label: `Idioma pós-reparo: ${data.lang || 'unknown'} (${data.cards || 0} cartões)`,
+                icon: 'pi pi-globe'
               },
-              'done': { 
-                progress: 98, 
-                label: `Concluído: ${data.total_cards || 0} cartões finais`, 
+              'done': {
+                progress: 98,
+                label: `Concluído: ${data.total_cards || 0} cartões finais`,
                 icon: 'pi pi-check-circle',
                 details: { totalCards: data.total_cards }
               }
             }
-            
+
             const stageInfo = stageMap[s]
             if (stageInfo) {
               setProgress(stageInfo.progress, stageInfo.label, stageInfo.details, stageInfo.icon)

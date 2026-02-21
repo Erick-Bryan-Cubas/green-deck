@@ -676,7 +676,7 @@ class DocumentExtractor:
         with tempfile.NamedTemporaryFile(
             suffix=ext,
             delete=False,
-            prefix="green_deck_doc_extract_"
+            prefix="gd_"
         ) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
@@ -685,7 +685,8 @@ class DocumentExtractor:
             result = await self.extract_from_path(
                 tmp_path,
                 quality=quality,
-                chunk_size=chunk_size
+                chunk_size=chunk_size,
+                document_name=Path(filename).stem,
             )
             result.metadata["original_filename"] = filename
             result.metadata["format_type"] = SUPPORTED_FORMATS.get(ext, "Unknown")
@@ -702,6 +703,7 @@ class DocumentExtractor:
         file_path: str,
         quality: ExtractionQuality = ExtractionQuality.CLEANED,
         chunk_size: Optional[int] = None,
+        document_name: Optional[str] = None,
     ) -> ExtractionResult:
         """
         Extrai texto de um arquivo no disco.
@@ -710,6 +712,7 @@ class DocumentExtractor:
             file_path: Caminho para o arquivo
             quality: Nivel de qualidade da extracao
             chunk_size: Se especificado, divide o texto em chunks de N palavras
+            document_name: Nome do documento original (usado no HTML exportado)
 
         Returns:
             ExtractionResult com o texto extraido
@@ -739,6 +742,10 @@ class DocumentExtractor:
 
             logger.info(f"Iniciando extracao de: {path.name} ({SUPPORTED_FORMATS.get(ext, 'Unknown')})")
             result = converter.convert(str(path))
+
+            # Usa o nome original do documento no HTML exportado (evita artefatos de temp file)
+            if document_name:
+                result.document.name = document_name
 
             # Extrai texto em formato HTML (preserva estrutura com tags semanticas)
             raw_text = result.document.export_to_html()
@@ -795,6 +802,61 @@ class DocumentExtractor:
                 error=f"Erro na extracao: {str(e)}"
             )
 
+    def _fix_url_headings(self, html: str) -> str:
+        """
+        Corrige URLs que o Docling classificou incorretamente como headings.
+
+        O Docling usa heuristicas visuais (tamanho de fonte, peso) para
+        determinar headings. URLs standalone em linhas isoladas sao
+        frequentemente classificadas como h1-h6 por engano.
+
+        Trata casos como:
+        - <h2>https://example.com</h2>
+        - <h2><a href="url">url</a></h2>
+        - <h2>&lt; https://example.com/path &gt;</h2>
+        - URLs com espacos/quebras de linha inseridos pela extracao do PDF
+        """
+        import re
+
+        if not html:
+            return html
+
+        def _replace_url_heading(match):
+            full_match = match.group(0)
+            content = match.group(3).strip()
+
+            # Remove tags HTML internas para obter texto puro
+            plain = re.sub(r'<[^>]+>', '', content).strip()
+
+            # Decodifica entidades HTML comuns
+            plain = (
+                plain
+                .replace('&lt;', '<')
+                .replace('&gt;', '>')
+                .replace('&amp;', '&')
+                .replace('&nbsp;', ' ')
+            )
+
+            # Remove angle brackets, pontos e espacos das bordas
+            core = plain.strip('<> .\n\r\t')
+
+            # Verifica se o conteudo e primariamente uma URL
+            if re.match(r'https?://', core):
+                # Remove espacos/quebras inseridos pela extracao do PDF
+                clean_url = re.sub(r'\s+', '', core)
+                return f'<p><a href="{clean_url}">{clean_url}</a></p>'
+
+            return full_match
+
+        html = re.sub(
+            r'<(h[1-6])([^>]*)>(.*?)</\1>',
+            _replace_url_heading,
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        return html
+
     def _clean_text(self, text: str) -> str:
         """
         Limpa o texto extraido aplicando heuristicas.
@@ -807,6 +869,16 @@ class DocumentExtractor:
         if not text:
             return ""
 
+        # Escapa '<' soltos que nao fazem parte de tags HTML reais.
+        # Ex: "acesse: < https://example.com" → "acesse: &lt; https://..."
+        # Sem isso, o parser HTML interpreta "< https://..." como tag invalida
+        # e engole o conteudo (incluindo a URL).
+        # O pattern preserva tags validas: <p>, </div>, <!-- -->, <!DOCTYPE>
+        text = re.sub(r'<(?![/a-zA-Z!])', '&lt;', text)
+
+        # Corrige URLs classificadas como headings pelo Docling
+        text = self._fix_url_headings(text)
+
         # Normaliza espacos multiplos em linha
         text = re.sub(r'[ \t]{3,}', '  ', text)
 
@@ -817,7 +889,52 @@ class DocumentExtractor:
         text = text.replace('\u201c', '"').replace('\u201d', '"')
         text = text.replace('\u2018', "'").replace('\u2019', "'")
 
+        # Auto-linkifica URLs em texto plano (fora de tags <a>)
+        text = self._autolink_urls(text)
+
         return text.strip()
+
+    def _autolink_urls(self, html: str) -> str:
+        """
+        Converte URLs em texto plano para links clicaveis.
+
+        Detecta URLs (https?://...) que nao estao dentro de atributos
+        href ou tags <a>, e envolve em <a href="url">url</a>.
+        Tambem trata URLs com angle brackets: < https://... >.
+        """
+        import re
+
+        if not html:
+            return html
+
+        # Trata URLs com angle brackets: &lt; URL &gt; ou &lt; URL (sem fechar)
+        # Ex: "&lt; https://example.com &gt;" ou "&lt; https://example.com"
+        def _fix_angle_bracket_url(match):
+            url_text = match.group(1).strip()
+            clean_url = re.sub(r'\s+', '', url_text)
+            return f'<a href="{clean_url}">{clean_url}</a>'
+
+        html = re.sub(
+            r'&lt;\s*(https?://[^\s<>&]+(?:[^\s<>&])*?)'
+            r'\s*(?:&gt;|(?=[\s.<]))',
+            _fix_angle_bracket_url,
+            html,
+        )
+
+        # Depois, linkifica URLs soltas que nao estao dentro de <a> ou href
+        # Usa negative lookbehind para nao capturar URLs ja em href="" ou >
+        def _linkify_plain_url(match):
+            url = match.group(0).rstrip('.,;:!?)"\'>')
+            trailing = match.group(0)[len(url):]
+            return f'<a href="{url}">{url}</a>{trailing}'
+
+        html = re.sub(
+            r'(?<!["\'>=/])https?://[^\s<>"\']+',
+            _linkify_plain_url,
+            html,
+        )
+
+        return html
 
     def _chunk_text(
         self,
@@ -1239,13 +1356,14 @@ class DocumentExtractor:
                 with tempfile.NamedTemporaryFile(
                     suffix=".pdf",
                     delete=False,
-                    prefix=f"green_deck_doc_extract_page_{page_num}_"
+                    prefix=f"gd_p{page_num}_"
                 ) as tmp:
                     tmp.write(single_page_pdf)
                     tmp_path = tmp.name
 
                 try:
                     result = converter.convert(tmp_path)
+                    result.document.name = Path(filename).stem
                     page_html = result.document.export_to_html()
 
                     if quality in (ExtractionQuality.CLEANED, ExtractionQuality.LLM):
