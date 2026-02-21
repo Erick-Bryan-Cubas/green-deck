@@ -2,6 +2,37 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
 /**
+ * Converte URLs em texto plano (dentro de HTML) para links clicáveis.
+ * Trata URLs com angle brackets (&lt;URL&gt;) e URLs soltas.
+ */
+export function autolinkUrls(html) {
+  if (!html) return html
+
+  // Trata URLs com angle brackets: &lt; URL &gt; ou &lt; URL (sem fechar)
+  html = html.replace(
+    /&lt;\s*(https?:\/\/[^\s<>&]+(?:[^\s<>&])*?)\s*(?:&gt;|[.\s]|$)/gi,
+    (match, url) => {
+      const clean = url.trim().replace(/\s+/g, '')
+      // Preserva pontuação final que não faz parte do &gt;
+      const suffix = match.endsWith('&gt;') ? '' : match.slice(match.lastIndexOf(url) + url.length).replace(/&gt;/g, '')
+      return `<a href="${clean}">${clean}</a>${suffix}`
+    }
+  )
+
+  // Linkifica URLs soltas que não estão dentro de href="" ou <a>
+  html = html.replace(
+    /(?<!["'>=/])https?:\/\/[^\s<>"']+/g,
+    (match) => {
+      const url = match.replace(/[.,;:!?)"'>]+$/, '')
+      const trailing = match.slice(url.length)
+      return `<a href="${url}">${url}</a>${trailing}`
+    }
+  )
+
+  return html
+}
+
+/**
  * Detecta se o texto contém sintaxe Markdown.
  * Requer 2+ padrões para evitar falsos positivos em texto comum.
  */
@@ -49,6 +80,24 @@ export function markdownToHtml(text) {
     breaks: true,
     async: false,
   })
+
+  // Corrige URLs que foram classificadas como headings (h1-h6)
+  html = html.replace(
+    /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>/gi,
+    (match, tag, content) => {
+      const plain = content.replace(/<[^>]+>/g, '').trim()
+      const decoded = plain.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      const core = decoded.replace(/^[<>\s.]+|[<>\s.]+$/g, '')
+      if (/^https?:\/\//.test(core)) {
+        const cleanUrl = core.replace(/\s+/g, '')
+        return `<p><a href="${cleanUrl}">${cleanUrl}</a></p>`
+      }
+      return match
+    }
+  )
+
+  // Auto-linkifica URLs em texto plano
+  html = autolinkUrls(html)
 
   // Tabelas → code block (Quill não suporta tables)
   html = html.replace(/<table[\s\S]*?<\/table>/gi, (match) => {

@@ -3,7 +3,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Quill from 'quill'
 import 'quill/dist/quill.snow.css'
-import { looksLikeMarkdown, markdownToHtml } from '../utils/markdownToHtml'
+import { looksLikeMarkdown, markdownToHtml, autolinkUrls } from '../utils/markdownToHtml'
 
 const props = defineProps({
   placeholder: {
@@ -590,6 +590,26 @@ defineExpose({
       const hasRealHtmlTags = /<(?!--)[a-z][\s\S]*?>/i.test(processedText)
 
       if (hasRealHtmlTags) {
+        // Escapa '<' soltos que não são tags HTML reais (ex: "< https://...")
+        // Sem isso, dangerouslyPasteHTML interpreta como tag inválida e engole o conteúdo
+        processedText = processedText.replace(/<(?![/a-zA-Z!])/g, '&lt;')
+
+        // Corrige URLs classificadas como headings pelo Docling
+        processedText = processedText.replace(
+          /<(h[1-6])[^>]*>([\s\S]*?)<\/\1>/gi,
+          (match, tag, content) => {
+            const plain = content.replace(/<[^>]+>/g, '').trim()
+            const decoded = plain.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
+            const core = decoded.replace(/^[<>\s.]+|[<>\s.]+$/g, '')
+            if (/^https?:\/\//.test(core)) {
+              const cleanUrl = core.replace(/\s+/g, '')
+              return `<p><a href="${cleanUrl}">${cleanUrl}</a></p>`
+            }
+            return match
+          }
+        )
+        // Auto-linkifica URLs em texto plano
+        processedText = autolinkUrls(processedText)
         quill.clipboard.dangerouslyPasteHTML(processedText, 'api')
       } else if (looksLikeMarkdown(processedText)) {
         // Markdown (ex: texto do Docling) — converter para HTML rico
