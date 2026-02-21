@@ -1,10 +1,26 @@
 <script setup>
 
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Quill from 'quill'
 import 'quill/dist/quill.snow.css'
 import '../utils/quillHighlightFormat.js'
 import { looksLikeMarkdown, markdownToHtml, autolinkUrls } from '../utils/markdownToHtml'
+
+// ------------------------------------------------------------
+// Temas de fundo do editor
+// ------------------------------------------------------------
+const EDITOR_THEMES = [
+  { value: 'default',          label: 'Padrão',            bg: null,      fg: null,      ph: null },
+  { value: 'kindle',           label: 'Claro',             bg: '#ffffff', fg: '#111827', ph: 'rgba(17,24,39,0.45)' },
+  { value: 'sepia',            label: 'Sépia',             bg: '#f4ecd8', fg: '#5c4b37', ph: 'rgba(92,75,55,0.5)' },
+  { value: 'dark',             label: 'Escuro',            bg: '#0f172a', fg: '#e2e8f0', ph: 'rgba(226,232,240,0.45)' },
+  { value: 'dracula',          label: 'Dracula',           bg: '#282A36', fg: '#F8F8F2', ph: 'rgba(248,248,242,0.45)' },
+  { value: 'nord',             label: 'Nord',              bg: '#2e3440', fg: '#d8dee9', ph: 'rgba(216,222,233,0.45)' },
+  { value: 'solarized-dark',   label: 'Solarized Escuro',  bg: '#002b36', fg: '#839496', ph: 'rgba(131,148,150,0.5)' },
+  { value: 'solarized-light',  label: 'Solarized Claro',   bg: '#fdf6e3', fg: '#657b83', ph: 'rgba(101,123,131,0.5)' },
+  { value: 'gruvbox',          label: 'Gruvbox',           bg: '#282828', fg: '#ebdbb2', ph: 'rgba(235,219,178,0.45)' },
+  { value: 'monokai',          label: 'Monokai',           bg: '#272822', fg: '#f8f8f2', ph: 'rgba(248,248,242,0.45)' },
+]
 
 const props = defineProps({
   placeholder: {
@@ -14,6 +30,10 @@ const props = defineProps({
   showLineNumbers: {
     type: Boolean,
     default: false
+  },
+  theme: {
+    type: String,
+    default: 'default'
   }
 })
 
@@ -21,12 +41,14 @@ const emit = defineEmits([
   'selection-changed', // { selectedText, range, hasSelection, hasHighlight }
   'content-changed',   // { fullText, html }
   'editor-ready',      // quill instance
-  'context-menu'       // { originalEvent, hasSelection, hasHighlight, selectedText, range }
+  'context-menu',      // { originalEvent, hasSelection, hasHighlight, selectedText, range }
+  'theme-changed'      // themeValue (string)
 ])
 
 const editorRef = ref(null)
 const lineNumbersRef = ref(null)
-const lineCount = ref(1)
+const lineHeights = ref([])   // array de { height } para cada linha do editor
+const editorTheme = ref(props.theme || 'default')
 
 let quill = null
 let textChangeTimeout = null
@@ -34,12 +56,29 @@ let textChangeTimeout = null
 let savedRange = null
 
 // ------------------------------------------------------------
-// Line numbers
+// Line numbers — mede a altura real de cada bloco no editor
+// para que títulos (h1, h2…) e parágrafos fiquem alinhados.
 // ------------------------------------------------------------
-function updateLineCount() {
-  if (!quill) return
-  const text = quill.getText()
-  lineCount.value = Math.max(1, (text.match(/\n/g) || []).length + 1)
+function updateLineNumbers() {
+  if (!quill || !quill.root) {
+    lineHeights.value = [{ height: 0 }]
+    return
+  }
+  const editor = quill.root
+  const children = editor.children
+  const entries = []
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i]
+    if (i < children.length - 1) {
+      // Distância até o próximo bloco — captura margins/collapses reais
+      entries.push({ height: children[i + 1].offsetTop - child.offsetTop })
+    } else {
+      // Último bloco — usa getBoundingClientRect
+      entries.push({ height: child.getBoundingClientRect().height })
+    }
+  }
+  if (entries.length === 0) entries.push({ height: 0 })
+  lineHeights.value = entries
 }
 
 function syncLineNumbersScroll() {
@@ -307,6 +346,201 @@ function showBackgroundPicker(buttonEl) {
 }
 
 // ------------------------------------------------------------
+// Theme picker (cor de fundo do editor)
+// ------------------------------------------------------------
+const THEME_PICKER_CLASS = 'custom-theme-picker'
+let themePickerCleanupFns = []
+
+function removeThemePicker() {
+  const existing = document.querySelector(`.${THEME_PICKER_CLASS}`)
+  if (existing) existing.remove()
+  themePickerCleanupFns.forEach((fn) => {
+    try { fn() } catch {}
+  })
+  themePickerCleanupFns = []
+}
+
+function applyEditorTheme(themeValue) {
+  editorTheme.value = themeValue
+  if (!quill) return
+
+  const container = editorRef.value  // editorRef.value É o .ql-container (Quill transforma o div)
+  const editor = quill?.root         // quill.root é o .ql-editor
+  const toolbar = container?.previousElementSibling // .ql-toolbar é irmão anterior
+  if (!container || !editor) return
+
+  const theme = EDITOR_THEMES.find((t) => t.value === themeValue)
+
+  const lineNrEl = lineNumbersRef.value
+
+  if (!theme || !theme.bg) {
+    // "Padrão" — remove overrides
+    container.style.removeProperty('background-color')
+    editor.style.removeProperty('color')
+    editor.style.removeProperty('--editor-theme-placeholder')
+    if (toolbar) {
+      toolbar.style.removeProperty('background-color')
+      toolbar.style.removeProperty('color')
+    }
+    if (lineNrEl) {
+      lineNrEl.style.removeProperty('--editor-theme-linenr-bg')
+      lineNrEl.style.removeProperty('--editor-theme-linenr-text')
+      lineNrEl.style.removeProperty('--editor-theme-linenr-border')
+    }
+  } else {
+    container.style.setProperty('background-color', theme.bg)
+    editor.style.setProperty('color', theme.fg)
+    if (theme.ph) {
+      editor.style.setProperty('--editor-theme-placeholder', theme.ph)
+    }
+    if (toolbar) {
+      toolbar.style.setProperty('background-color', theme.bg)
+      toolbar.style.setProperty('color', theme.fg)
+    }
+    // Line numbers gutter — derivar cores do tema
+    if (lineNrEl) {
+      lineNrEl.style.setProperty('--editor-theme-linenr-bg', `color-mix(in srgb, ${theme.bg} 92%, ${theme.fg})`)
+      lineNrEl.style.setProperty('--editor-theme-linenr-text', `color-mix(in srgb, ${theme.fg} 40%, transparent)`)
+      lineNrEl.style.setProperty('--editor-theme-linenr-border', `color-mix(in srgb, ${theme.fg} 10%, transparent)`)
+    }
+  }
+
+  emit('theme-changed', themeValue)
+}
+
+function showThemePicker(buttonEl) {
+  const existing = document.querySelector(`.${THEME_PICKER_CLASS}`)
+  if (existing) {
+    removeThemePicker()
+    return
+  }
+
+  // Fechar color picker se aberto
+  removePicker()
+
+  const picker = document.createElement('div')
+  picker.className = THEME_PICKER_CLASS
+  picker.style.cssText = `
+    position: fixed;
+    background: var(--quill-picker-bg, #111827);
+    border: 1px solid var(--quill-picker-border, #374151);
+    border-radius: 12px;
+    padding: 10px;
+    box-shadow: var(--quill-picker-shadow, 0 10px 30px rgba(0, 0, 0, 0.55));
+    z-index: 99999;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    width: 300px;
+  `
+
+  const rect = buttonEl.getBoundingClientRect()
+  const pickerW = 300
+  const pickerH = 10 + (4 * 72) + (3 * 8) + 10
+  const pos = clampPosition(rect.left, rect.bottom + 8, pickerW, pickerH)
+  picker.style.left = `${pos.x}px`
+  picker.style.top = `${pos.y}px`
+
+  EDITOR_THEMES.forEach((theme) => {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.title = theme.label
+
+    const isActive = editorTheme.value === theme.value
+    const swatchBg = theme.bg || 'var(--p-content-background, #1e293b)'
+    const swatchFg = theme.fg || 'var(--text-color, #e5e7eb)'
+
+    btn.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 6px;
+      border-radius: 8px;
+      border: 2px solid ${isActive ? '#6366f1' : '#374151'};
+      background: transparent;
+      cursor: pointer;
+      transition: transform 0.12s ease, border-color 0.12s ease;
+      ${isActive ? 'box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35);' : ''}
+    `
+
+    const swatch = document.createElement('div')
+    swatch.style.cssText = `
+      width: 100%;
+      height: 36px;
+      border-radius: 6px;
+      background-color: ${swatchBg};
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 14px;
+      color: ${swatchFg};
+      border: 1px solid rgba(148, 163, 184, 0.15);
+    `
+    swatch.textContent = 'Aa'
+
+    const label = document.createElement('span')
+    label.style.cssText = `
+      font-size: 10px;
+      color: rgba(229, 231, 235, 0.7);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 80px;
+    `
+    label.textContent = theme.label
+
+    btn.appendChild(swatch)
+    btn.appendChild(label)
+
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+    })
+
+    btn.addEventListener('mouseenter', () => {
+      btn.style.transform = 'scale(1.04)'
+      btn.style.borderColor = '#6366f1'
+    })
+    btn.addEventListener('mouseleave', () => {
+      btn.style.transform = 'scale(1)'
+      btn.style.borderColor = isActive ? '#6366f1' : '#374151'
+    })
+
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      applyEditorTheme(theme.value)
+      removeThemePicker()
+    })
+
+    picker.appendChild(btn)
+  })
+
+  document.body.appendChild(picker)
+
+  const onDocClick = (e) => {
+    if (!picker.contains(e.target) && e.target !== buttonEl) removeThemePicker()
+  }
+  document.addEventListener('click', onDocClick)
+  themePickerCleanupFns.push(() => document.removeEventListener('click', onDocClick))
+
+  const onScroll = () => removeThemePicker()
+  const onResize = () => removeThemePicker()
+  window.addEventListener('scroll', onScroll, true)
+  window.addEventListener('resize', onResize)
+  themePickerCleanupFns.push(() => window.removeEventListener('scroll', onScroll, true))
+  themePickerCleanupFns.push(() => window.removeEventListener('resize', onResize))
+}
+
+// Watch para sincronizar com prop theme (ex: Zen Mode troca tema)
+watch(() => props.theme, (newTheme) => {
+  if (newTheme !== editorTheme.value) {
+    applyEditorTheme(newTheme)
+  }
+})
+
+// ------------------------------------------------------------
 // Context menu: clamp para não vazar a tela
 // (1) emitimos um MouseEvent “clampado”
 // (2) fallback: após abrir, tenta ajustar .p-contextmenu visível
@@ -482,6 +716,32 @@ onMounted(() => {
     } else {
       toolbar.container.appendChild(highlightGroup)
     }
+
+    // Cria botão de seletor de tema de fundo
+    const themeGroup = document.createElement('span')
+    themeGroup.className = 'ql-formats ql-theme-group'
+
+    const themeBtn = document.createElement('button')
+    themeBtn.type = 'button'
+    themeBtn.className = 'ql-theme-picker'
+    themeBtn.title = 'Tema do editor'
+    themeBtn.innerHTML = '<i class="pi pi-palette" style="font-size: 14px;"></i>'
+
+    themeBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      showThemePicker(themeBtn)
+    })
+
+    themeGroup.appendChild(themeBtn)
+
+    // Insere após o grupo do marca-texto
+    const hlGroup = toolbar.container.querySelector('.ql-highlight-group')
+    if (hlGroup) {
+      hlGroup.after(themeGroup)
+    } else {
+      toolbar.container.appendChild(themeGroup)
+    }
   }
 
   quill.on('selection-change', (range) => {
@@ -508,7 +768,7 @@ onMounted(() => {
       : false
 
     // Update line count immediately for responsive UI
-    updateLineCount()
+    updateLineNumbers()
 
     textChangeTimeout = setTimeout(() => {
       const fullText = quill.getText()
@@ -531,12 +791,19 @@ onMounted(() => {
   editorEl.addEventListener('scroll', syncLineNumbersScroll)
 
   migrateOldHighlights()
-  updateLineCount()
+  updateLineNumbers()
+
+  // Aplica tema inicial se definido via prop
+  if (props.theme && props.theme !== 'default') {
+    applyEditorTheme(props.theme)
+  }
+
   emit('editor-ready', quill)
 })
 
 onBeforeUnmount(() => {
   removePicker()
+  removeThemePicker()
   if (textChangeTimeout) clearTimeout(textChangeTimeout)
 
   try {
@@ -553,6 +820,8 @@ defineExpose({
   formatBackground,
   clearHighlight,
   clearSelection,
+  setTheme: (value) => applyEditorTheme(value),
+  getTheme: () => editorTheme.value,
   getFullText: () => (quill ? quill.getText().trim() : ''),
   // Retorna o texto exato do editor sem trim (para posicionamento preciso)
   getRawText: () => {
@@ -802,7 +1071,12 @@ defineExpose({
       ref="lineNumbersRef"
       class="qe-line-numbers"
     >
-      <div v-for="n in lineCount" :key="n" class="qe-line-number">{{ n }}</div>
+      <div
+        v-for="(line, idx) in lineHeights"
+        :key="idx"
+        class="qe-line-number"
+        :style="line.height ? { height: line.height + 'px' } : {}"
+      >{{ idx + 1 }}</div>
     </div>
   </div>
 </template>
@@ -831,27 +1105,29 @@ defineExpose({
   width: 44px;
   padding-top: 12px;
   padding-right: 6px;
-  background: var(--quill-line-number-bg, rgba(15, 23, 42, 0.9));
-  border-right: 1px solid var(--quill-line-number-border, rgba(148, 163, 184, 0.18));
-  border-bottom: 1px solid var(--quill-line-number-border, rgba(148, 163, 184, 0.18));
-  border-left: 1px solid var(--quill-line-number-border, rgba(148, 163, 184, 0.18));
+  background: var(--editor-theme-linenr-bg, rgba(255, 255, 255, 0.04));
+  border-right: 1px solid var(--editor-theme-linenr-border, rgba(148, 163, 184, 0.10));
+  border-bottom: none;
+  border-left: none;
   border-radius: 0 0 0 14px;
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, monospace;
   font-size: 0.75em;
-  line-height: 1.42;
-  color: var(--quill-line-number-text, rgba(226, 232, 240, 0.6));
+  color: var(--editor-theme-linenr-text, rgba(148, 163, 184, 0.40));
   user-select: none;
   overflow-y: hidden;
   overflow-x: hidden;
   z-index: 1;
-  box-shadow: inset -6px 0 8px -6px rgba(0, 0, 0, 0.15);
+  transition: background 0.25s ease, color 0.25s ease, border-color 0.25s ease;
 }
 
 .qe-line-number {
-  line-height: 1.42;
-  height: 1.42em;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
   padding-right: 4px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 /* Quando line numbers estão ativos, adiciona padding ao container e placeholder */
@@ -955,6 +1231,34 @@ defineExpose({
 }
 
 :deep(.ql-toolbar.ql-snow .ql-highlight-group) {
+  border-right: 1px solid var(--quill-toolbar-sep);
+}
+
+/* Botão de seletor de tema */
+:deep(.ql-toolbar.ql-snow .ql-theme-picker) {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border: none;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s, box-shadow 0.15s;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-theme-picker:hover) {
+  transform: scale(1.08);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4);
+}
+
+:deep(.ql-toolbar.ql-snow .ql-theme-picker i) {
+  color: #ffffff;
+}
+
+:deep(.ql-toolbar.ql-snow .ql-theme-group) {
   border-right: 1px solid var(--quill-toolbar-sep);
 }
 
@@ -1158,9 +1462,9 @@ defineExpose({
   font-weight: 700;
 }
 
-/* Placeholder do Quill (tema escuro) */
+/* Placeholder do Quill — usa tema do editor se ativo, senão fallback para tema global */
 :deep(.ql-editor.ql-blank::before) {
-  color: var(--quill-placeholder) !important;
+  color: var(--editor-theme-placeholder, var(--quill-placeholder)) !important;
   opacity: 1 !important;
 }
 

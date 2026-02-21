@@ -264,9 +264,16 @@ const readerPageWidthPx = ref(680)
 const readerStepPx = ref(0)
 
 const readerThemeOptions = [
+  { value: 'default', label: 'Padrão', icon: 'pi-cog' },
   { value: 'kindle', label: 'Claro', icon: 'pi-sun' },
   { value: 'sepia', label: 'Sépia', icon: 'pi-palette' },
-  { value: 'dark', label: 'Escuro', icon: 'pi-moon' }
+  { value: 'dark', label: 'Escuro', icon: 'pi-moon' },
+  { value: 'dracula', label: 'Dracula', icon: 'pi-moon' },
+  { value: 'nord', label: 'Nord', icon: 'pi-cloud' },
+  { value: 'solarized-dark', label: 'Sol. Escuro', icon: 'pi-star' },
+  { value: 'solarized-light', label: 'Sol. Claro', icon: 'pi-sun' },
+  { value: 'gruvbox', label: 'Gruvbox', icon: 'pi-palette' },
+  { value: 'monokai', label: 'Monokai', icon: 'pi-code' }
 ]
 
 const readerVars = computed(() => ({
@@ -315,6 +322,13 @@ function setReaderTheme(theme) {
   readerTheme.value = theme
   readerDark.value = theme === 'dark'
   requestReaderLayout({ preserveProgress: true })
+}
+
+function onEditorThemeChanged(themeValue) {
+  if (themeValue !== readerTheme.value) {
+    readerTheme.value = themeValue
+    readerDark.value = themeValue === 'dark'
+  }
 }
 
 // Touch/Swipe handlers para navegação móvel
@@ -4196,6 +4210,12 @@ onBeforeUnmount(() => {
       'reader-kindle': immersiveReader && readerTheme === 'kindle',
       'reader-sepia': immersiveReader && readerTheme === 'sepia',
       'reader-dark': immersiveReader && readerTheme === 'dark',
+      'reader-dracula': immersiveReader && readerTheme === 'dracula',
+      'reader-nord': immersiveReader && readerTheme === 'nord',
+      'reader-solarized-dark': immersiveReader && readerTheme === 'solarized-dark',
+      'reader-solarized-light': immersiveReader && readerTheme === 'solarized-light',
+      'reader-gruvbox': immersiveReader && readerTheme === 'gruvbox',
+      'reader-monokai': immersiveReader && readerTheme === 'monokai',
       'reader-pdf-pagination': immersiveReader && usePdfPagination,
       'controls-hidden': immersiveReader && !readerControlsVisible,
       'sidebar-expanded': sidebarRef?.sidebarExpanded
@@ -4673,9 +4693,11 @@ onBeforeUnmount(() => {
                 <LazyQuillEditor
                   ref="editorRef"
                   :show-line-numbers="showLineNumbers && !immersiveReader"
+                  :theme="readerTheme"
                   @selection-changed="onSelectionChanged"
                   @content-changed="onContentChanged"
                   @context-menu="onEditorContextMenu"
+                  @theme-changed="onEditorThemeChanged"
                 />
 
                 <!-- Overlay de carregamento durante segmentação de tópicos -->
@@ -7777,6 +7799,114 @@ onBeforeUnmount(() => {
 .reader-mode.reader-dark .reader-surface :deep(.ql-editor){
   background: #0f172a !important;
   color: #e2e8f0 !important;
+}
+
+/* =========================
+   Tema Dracula
+========================= */
+.reader-mode.reader-dracula .panel-editor{
+  background: #282A36 !important;
+}
+.reader-mode.reader-dracula .reader-surface :deep(.ql-container),
+.reader-mode.reader-dracula .reader-surface :deep(.ql-editor){
+  background: #282A36 !important;
+  color: #F8F8F2 !important;
+}
+.reader-mode.reader-dracula .reader-surface :deep(.ql-toolbar){
+  background: rgba(40,42,54,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(248,248,242,0.1) !important;
+  color: #F8F8F2 !important;
+}
+
+/* =========================
+   Tema Nord
+========================= */
+.reader-mode.reader-nord .panel-editor{
+  background: #2e3440 !important;
+}
+.reader-mode.reader-nord .reader-surface :deep(.ql-container),
+.reader-mode.reader-nord .reader-surface :deep(.ql-editor){
+  background: #2e3440 !important;
+  color: #d8dee9 !important;
+}
+.reader-mode.reader-nord .reader-surface :deep(.ql-toolbar){
+  background: rgba(46,52,64,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(216,222,233,0.1) !important;
+  color: #d8dee9 !important;
+}
+
+/* =========================
+   Tema Solarized Escuro
+========================= */
+.reader-mode.reader-solarized-dark .panel-editor{
+  background: #002b36 !important;
+}
+.reader-mode.reader-solarized-dark .reader-surface :deep(.ql-container),
+.reader-mode.reader-solarized-dark .reader-surface :deep(.ql-editor){
+  background: #002b36 !important;
+  color: #839496 !important;
+}
+.reader-mode.reader-solarized-dark .reader-surface :deep(.ql-toolbar){
+  background: rgba(0,43,54,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(131,148,150,0.15) !important;
+  color: #839496 !important;
+}
+
+/* =========================
+   Tema Solarized Claro
+========================= */
+.reader-mode.reader-solarized-light .panel-editor{
+  background: #fdf6e3 !important;
+}
+.reader-mode.reader-solarized-light .reader-surface :deep(.ql-container),
+.reader-mode.reader-solarized-light .reader-surface :deep(.ql-editor){
+  background: #fdf6e3 !important;
+  color: #657b83 !important;
+}
+.reader-mode.reader-solarized-light .reader-surface :deep(.ql-toolbar){
+  background: rgba(253,246,227,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(101,123,131,0.15) !important;
+  color: #657b83 !important;
+}
+
+/* =========================
+   Tema Gruvbox
+========================= */
+.reader-mode.reader-gruvbox .panel-editor{
+  background: #282828 !important;
+}
+.reader-mode.reader-gruvbox .reader-surface :deep(.ql-container),
+.reader-mode.reader-gruvbox .reader-surface :deep(.ql-editor){
+  background: #282828 !important;
+  color: #ebdbb2 !important;
+}
+.reader-mode.reader-gruvbox .reader-surface :deep(.ql-toolbar){
+  background: rgba(40,40,40,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(235,219,178,0.1) !important;
+  color: #ebdbb2 !important;
+}
+
+/* =========================
+   Tema Monokai
+========================= */
+.reader-mode.reader-monokai .panel-editor{
+  background: #272822 !important;
+}
+.reader-mode.reader-monokai .reader-surface :deep(.ql-container),
+.reader-mode.reader-monokai .reader-surface :deep(.ql-editor){
+  background: #272822 !important;
+  color: #f8f8f2 !important;
+}
+.reader-mode.reader-monokai .reader-surface :deep(.ql-toolbar){
+  background: rgba(39,40,34,0.95) !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(248,248,242,0.1) !important;
+  color: #f8f8f2 !important;
 }
 
 /* =========================
