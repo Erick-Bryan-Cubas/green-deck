@@ -1283,25 +1283,10 @@ const currentHighlightLabel = computed(() => {
 
 function goToHighlight(index) {
   if (!editorRef.value || highlightPositions.value.length === 0) return
-  
   const pos = highlightPositions.value[index]
   if (!pos) return
-  
   currentHighlightIndex.value = index
-  
-  // Acessa o Quill interno via exposed method ou diretamente
-  const quill = editorRef.value.$el?.querySelector('.ql-editor')?.parentElement?.__quill
-  if (quill) {
-    quill.setSelection(pos.index, pos.length)
-    // Scroll para o highlight
-    const bounds = quill.getBounds(pos.index, pos.length)
-    if (bounds) {
-      const container = editorRef.value.$el?.querySelector('.ql-container')
-      if (container) {
-        container.scrollTop = bounds.top - container.clientHeight / 3
-      }
-    }
-  }
+  editorRef.value.scrollToPosition(pos.index, pos.length)
 }
 
 function goToPrevHighlight() {
