@@ -11,6 +11,10 @@ const props = defineProps({
   showLineNumbers: {
     type: Boolean,
     default: false
+  },
+  theme: {
+    type: String,
+    default: 'default'
   }
 })
 
@@ -18,7 +22,8 @@ const emit = defineEmits([
   'selection-changed',
   'content-changed',
   'editor-ready',
-  'context-menu'
+  'context-menu',
+  'theme-changed'
 ])
 
 // Lazy load QuillEditor with loading state
@@ -119,6 +124,14 @@ function getRawText() {
   return editorRef.value?.getRawText?.() || ''
 }
 
+function setTheme(value) {
+  return editorRef.value?.setTheme?.(value)
+}
+
+function getTheme() {
+  return editorRef.value?.getTheme?.() || 'default'
+}
+
 defineExpose({
   getHtml,
   getText,
@@ -137,7 +150,9 @@ defineExpose({
   hasHighlightedContent,
   applyTopicHighlights,
   clearTopicHighlights,
-  scrollToPosition
+  scrollToPosition,
+  setTheme,
+  getTheme
 })
 </script>
 
@@ -146,10 +161,12 @@ defineExpose({
     ref="editorRef"
     :placeholder="placeholder"
     :show-line-numbers="showLineNumbers"
+    :theme="theme"
     @selection-changed="emit('selection-changed', $event)"
     @content-changed="emit('content-changed', $event)"
     @editor-ready="emit('editor-ready', $event)"
     @context-menu="emit('context-menu', $event)"
+    @theme-changed="emit('theme-changed', $event)"
   />
 </template>
 
