@@ -8,9 +8,14 @@
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Green Deck</title>
+
+    <!-- Brython: Python no browser -->
+    <script src="/node_modules/brython/brython.min.js"></script>
+    <script src="/node_modules/brython/brython_stdlib.js"></script>
   </head>
-  <body>
+  <body onload="brython({debug: 0})">
     <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
+    <script type="text/python" src="/py/markdown_processor.py"></script>
   </body>
 </html>

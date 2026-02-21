@@ -10,6 +10,12 @@ import { createToastflow } from 'vue-toastflow'
 import './style.css'
 import { initTheme } from '@/composables/useTheme'
 
+// Expoe libs JS no window para Brython (Python no browser) acessar
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+window.marked = marked
+window.DOMPurify = DOMPurify
+
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 
