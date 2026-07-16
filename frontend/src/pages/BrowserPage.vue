@@ -1,5 +1,6 @@
 <!-- frontend/src/pages/BrowserPage.vue -->
 <script setup>
+/* global performance, TextDecoder */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 
@@ -1034,6 +1035,12 @@ const translateTranslatedCount = ref(0)
 const translateFailedCount = ref(0)
 const translateSkippedCount = ref(0)
 const translateLastError = ref('')
+const translateMaxConcurrency = ref(5)
+const translateContext = ref('')
+const translateEffectiveConcurrency = ref(5)
+const translateInFlight = ref(0)
+const translateRetryCount = ref(0)
+const translateRateLimitCount = ref(0)
 let translateAbortController = null
 
 // Language detection
@@ -1059,6 +1066,15 @@ const translateLoadingModels = ref(false)
 
 // Computed: only LLM models (not embedding)
 const translateLlmModels = computed(() => translateAvailableModels.value.filter(m => m.type !== 'embedding'))
+const translateSelectedModelInfo = computed(() =>
+  translateLlmModels.value.find(model => model.name === translateSelectedModel.value) || null
+)
+const translateSelectedProvider = computed(() => translateSelectedModelInfo.value?.provider || 'ollama')
+const translateConcurrencyPreview = computed(() =>
+  translateSelectedProvider.value === 'ollama'
+    ? Math.min(Number(translateMaxConcurrency.value) || 1, 2)
+    : Math.min(Number(translateMaxConcurrency.value) || 1, 10)
+)
 const translateNoteTypeOptions = computed(() =>
   translateNoteTypes.value.map(type => ({
     label: `${type.name} (${type.noteCount} nota${type.noteCount === 1 ? '' : 's'})`,
@@ -1296,6 +1312,10 @@ async function confirmTranslate() {
   translateTranslatedCount.value = 0
   translateFailedCount.value = 0
   translateSkippedCount.value = 0
+  translateEffectiveConcurrency.value = translateConcurrencyPreview.value
+  translateInFlight.value = 0
+  translateRetryCount.value = 0
+  translateRateLimitCount.value = 0
   translateStatus.value = 'preparing'
   translateLastNoteStatus.value = ''
   translateLastError.value = ''
@@ -1321,6 +1341,8 @@ async function confirmTranslate() {
       model,
       noteType: translateSelectedNoteType.value,
       fieldNames: translateSelectedFields.value,
+      maxConcurrency: Number(translateMaxConcurrency.value) || 5,
+      translationContext: translateContext.value.trim() || null,
       openaiApiKey: keys.openaiApiKey || null,
       perplexityApiKey: keys.perplexityApiKey || null,
       anthropicApiKey: keys.anthropicApiKey || null
@@ -1328,7 +1350,7 @@ async function confirmTranslate() {
 
     const sourceName = translateUseEntireDeck.value ? `deck "${deck.value}"` : `${cardIds.length} cartões`
     addLog(
-      `Tradução iniciada: ${sourceName} | tipo=${translateSelectedNoteType.value} campos=${translateSelectedFields.value.join(', ')} | modelo=${model || 'default'} idioma=pt-br`,
+      `Tradução iniciada: ${sourceName} | tipo=${translateSelectedNoteType.value} campos=${translateSelectedFields.value.join(', ')} | modelo=${model || 'default'} concorrência=${payload.maxConcurrency} idioma=pt-br`,
       'info'
     )
 
@@ -1355,7 +1377,7 @@ async function confirmTranslate() {
       buffer += decoder.decode(value, { stream: true })
 
       // Process complete event blocks (separated by double newline)
-      let parts = buffer.split('\n\n')
+      const parts = buffer.split('\n\n')
       buffer = parts.pop() // keep incomplete tail
 
       for (const part of parts) {
@@ -1372,13 +1394,19 @@ async function confirmTranslate() {
 
           if (event === 'start' && parsed) {
             translateTotal.value = parsed.totalNotes || 0
+            translateEffectiveConcurrency.value = parsed.effectiveConcurrency || translateConcurrencyPreview.value
+            translateInFlight.value = parsed.inFlight || 0
             translateStatus.value = 'translating'
-            addLog(`Tradução iniciada: ${parsed.totalNotes} notas | provider=${parsed.provider} model=${parsed.model}`, 'info')
+            addLog(`Tradução iniciada: ${parsed.totalNotes} notas | provider=${parsed.provider} model=${parsed.model} concorrência=${parsed.effectiveConcurrency}`, 'info')
           } else if (event === 'progress' && parsed) {
             translateCurrent.value = parsed.current || 0
             translateTotal.value = parsed.total || translateTotal.value
             translateProgress.value = parsed.percent || 0
             translateLastNoteStatus.value = parsed.status || ''
+            translateEffectiveConcurrency.value = parsed.effectiveConcurrency || translateEffectiveConcurrency.value
+            translateInFlight.value = parsed.inFlight || 0
+            translateRetryCount.value = parsed.retries || 0
+            translateRateLimitCount.value = parsed.rateLimits || 0
 
             if (parsed.status === 'success') {
               translateTranslatedCount.value++
@@ -1392,6 +1420,10 @@ async function confirmTranslate() {
             }
           } else if (event === 'result' && parsed) {
             finalResult = parsed
+            translateEffectiveConcurrency.value = parsed.effectiveConcurrency || translateEffectiveConcurrency.value
+            translateRetryCount.value = parsed.retryCount || 0
+            translateRateLimitCount.value = parsed.rateLimitCount || 0
+            translateInFlight.value = 0
             translateStatus.value = 'done'
             translateProgress.value = 100
           } else if (event === 'error' && parsed) {
@@ -1414,6 +1446,10 @@ async function confirmTranslate() {
 
     const requestId = finalResult.requestId || '—'
     addLog(`Tradução concluída: requestId=${requestId} tempo=${elapsed}ms`, 'info')
+    addLog(
+      `Processamento: concorrência=${finalResult.effectiveConcurrency} velocidade=${finalResult.notesPerSecond || 0} notas/s retries=${finalResult.retryCount || 0} rateLimits=${finalResult.rateLimitCount || 0}`,
+      finalResult.rateLimitCount ? 'warn' : 'info'
+    )
 
     if (finalResult.timings) {
       addLog(
@@ -2622,6 +2658,57 @@ onUnmounted(() => {
             </small>
             </div>
 
+            <div class="translate-concurrency-section">
+              <div>
+                <label class="section-label" for="translate-concurrency">Traduções simultâneas</label>
+                <small class="muted">Ajuste entre 1 e 10 conforme o limite da sua API.</small>
+              </div>
+              <div class="translate-concurrency-control">
+                <InputNumber
+                  inputId="translate-concurrency"
+                  v-model="translateMaxConcurrency"
+                  :min="1"
+                  :max="10"
+                  showButtons
+                  buttonLayout="horizontal"
+                  decrementButtonIcon="pi pi-minus"
+                  incrementButtonIcon="pi pi-plus"
+                />
+                <Tag severity="info" class="pill">
+                  Efetiva: {{ translateConcurrencyPreview }}
+                </Tag>
+              </div>
+              <div
+                v-if="translateSelectedProvider === 'ollama' && translateMaxConcurrency > 2"
+                class="translate-alert translate-alert-warning"
+              >
+                <i class="pi pi-exclamation-triangle mr-2"></i>
+                No Ollama, o GreenDeck limita a concorrência efetiva a 2 para proteger os recursos locais.
+              </div>
+            </div>
+
+            <div class="translate-context-section">
+              <div class="translate-context-header">
+                <div>
+                  <label class="section-label" for="translate-context">Contexto da tradução</label>
+                  <small class="muted">Opcional — ajuda o modelo a escolher termos e interpretar ambiguidades.</small>
+                </div>
+                <small class="muted">{{ translateContext.length }}/6000</small>
+              </div>
+              <Textarea
+                id="translate-context"
+                v-model="translateContext"
+                :maxlength="6000"
+                autoResize
+                rows="4"
+                class="w-100"
+                placeholder="Ex.: Cartões de cardiologia para estudantes de medicina. Preserve nomes de medicamentos e use terminologia clínica brasileira."
+              />
+              <small class="muted">
+                O contexto orienta todas as notas desta tradução e não será gravado nos campos do Anki.
+              </small>
+            </div>
+
             <div class="translate-info">
             <div class="info-box">
               <i class="pi pi-info-circle"></i>
@@ -2726,6 +2813,10 @@ onUnmounted(() => {
               <div class="stat-label">Puladas</div>
               <div class="stat-value stat-value-warning">{{ translateSkippedCount }}</div>
             </div>
+            <div class="stat stat-info">
+              <div class="stat-label">Em andamento</div>
+              <div class="stat-value">{{ translateInFlight }}/{{ translateEffectiveConcurrency }}</div>
+            </div>
           </div>
 
           <!-- Status Message -->
@@ -2733,6 +2824,10 @@ onUnmounted(() => {
             <div class="status-item">
               <i class="pi" :class="translateLastNoteStatus === 'success' ? 'pi-check' : translateLastNoteStatus === 'failed' ? 'pi-times' : 'pi-minus'"></i>
               <span>Última: <strong>{{ translateLastNoteStatus || '—' }}</strong></span>
+            </div>
+            <div class="status-item" v-if="translateRetryCount || translateRateLimitCount">
+              <i class="pi pi-refresh"></i>
+              <span>Retries: <strong>{{ translateRetryCount }}</strong><span v-if="translateRateLimitCount"> · limites 429: <strong>{{ translateRateLimitCount }}</strong></span></span>
             </div>
             <div v-if="translateLastError" class="status-error">{{ translateLastError }}</div>
           </div>
@@ -3842,8 +3937,15 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--color-success) 12%, transparent);
 }
 
+.translate-alert-warning{
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  color: var(--color-warning);
+}
+
 .translate-alert-error i,
-.translate-alert-success i{
+.translate-alert-success i,
+.translate-alert-warning i{
   color: inherit;
 }
 
@@ -4319,6 +4421,62 @@ onUnmounted(() => {
 .model-option .provider-tag{
   font-size: 10px;
   padding: 2px 6px;
+}
+.translate-concurrency-section{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  border-radius:16px;
+  padding:12px;
+  border:1px solid var(--ghost-border);
+  background:var(--ghost-bg-strong);
+}
+.translate-concurrency-section > div:first-child{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+}
+.translate-concurrency-section .section-label{
+  font-weight:700;
+  font-size:13px;
+}
+.translate-concurrency-control{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.translate-concurrency-control :deep(.p-inputnumber){ width:150px; }
+.translate-concurrency-control :deep(.p-inputnumber-input){ width:58px; text-align:center; }
+.translate-context-section{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  border-radius:16px;
+  padding:12px;
+  border:1px solid var(--ghost-border);
+  background:var(--ghost-bg-strong);
+}
+.translate-context-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px;
+}
+.translate-context-header > div{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+.translate-context-section .section-label{
+  font-weight:700;
+  font-size:13px;
+}
+.translate-context-section :deep(textarea){
+  width:100%;
+  resize:vertical;
 }
 
 @media (max-width: 600px){
