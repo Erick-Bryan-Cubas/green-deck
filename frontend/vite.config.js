@@ -2,13 +2,16 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [vue()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
   },
+  // Remove console.* e debugger apenas no build de produção
+  // (em dev os logs continuam disponíveis para depuração)
+  esbuild: command === 'build' ? { drop: ['console', 'debugger'] } : undefined,
   // Configuração necessária para @tato30/vue-pdf (PDF.js)
   optimizeDeps: {
     include: ['pdfjs-dist']
@@ -34,7 +37,16 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:3000'
+      '/api': {
+        target: 'http://127.0.0.1:3000',
+        // Sem isso, um ECONNRESET (backend fora do ar ou cliente que fecha
+        // a conexão no meio da request) derruba o dev server inteiro.
+        configure: (proxy) => {
+          proxy.on('error', (err) => {
+            console.warn('[vite proxy] /api indisponível:', err.code || err.message)
+          })
+        }
+      }
     }
   }
-})
+}))

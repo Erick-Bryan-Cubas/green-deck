@@ -47,12 +47,14 @@ const emit = defineEmits([
 
 const editorRef = ref(null)
 const lineNumbersRef = ref(null)
+const wrapRef = ref(null)
 const lineHeights = ref([])   // array de { height } para cada linha do editor
 const editorTheme = ref(props.theme || 'default')
 
 let quill = null
 let textChangeTimeout = null
 let resizeObserver = null
+let toolbarObserver = null
 
 let savedRange = null
 
@@ -333,11 +335,11 @@ function showBackgroundPicker(buttonEl) {
       }
     `
 
-    // mini “A” pra mostrar contraste (ajuda UX)
+    // mini "A" pra mostrar contraste (ajuda UX)
     const iconContent = isRemove
-      ? '<svg width=”14” height=”14” viewBox=”0 0 14 14” fill=”none” stroke=”rgba(248,113,113,0.8)” stroke-width=”2” stroke-linecap=”round”><line x1=”2” y1=”2” x2=”12” y2=”12”/><line x1=”12” y1=”2” x2=”2” y2=”12”/></svg>'
-      : `<span style=”font-weight:800;font-size:11px;color:${txtColor};text-shadow:${txtColor === '#ffffff' ? '0 1px 2px rgba(0,0,0,0.5)' : 'none'};”>A</span>`
-    btn.innerHTML = `<span style=”position:absolute;inset:0;display:grid;place-items:center;”>${iconContent}</span>`
+      ? '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="rgba(248,113,113,0.8)" stroke-width="2" stroke-linecap="round"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>'
+      : `<span style="font-weight:800;font-size:11px;color:${txtColor};text-shadow:${txtColor === '#ffffff' ? '0 1px 2px rgba(0,0,0,0.5)' : 'none'};">A</span>`
+    btn.innerHTML = `<span style="position:absolute;inset:0;display:grid;place-items:center;">${iconContent}</span>`
 
     btn.addEventListener('mousedown', (e) => {
       e.preventDefault()
@@ -835,6 +837,19 @@ onMounted(() => {
       updateLineNumbers()
     })
     resizeObserver.observe(quill.root)
+
+    // A toolbar pode quebrar em 2 linhas em painéis estreitos; mantém o gutter
+    // de números de linha alinhado logo abaixo dela (em vez de um 42px fixo).
+    const toolbarEl = editorRef.value?.previousElementSibling
+    if (toolbarEl) {
+      const syncToolbarHeight = () => {
+        const h = Math.round(toolbarEl.getBoundingClientRect().height)
+        wrapRef.value?.style.setProperty('--ql-toolbar-h', `${h}px`)
+      }
+      syncToolbarHeight()
+      toolbarObserver = new ResizeObserver(syncToolbarHeight)
+      toolbarObserver.observe(toolbarEl)
+    }
   }
 
   // Aplica tema inicial se definido via prop
@@ -852,6 +867,10 @@ onBeforeUnmount(() => {
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
+  }
+  if (toolbarObserver) {
+    toolbarObserver.disconnect()
+    toolbarObserver = null
   }
 
   try {
@@ -1025,25 +1044,14 @@ defineExpose({
    * @param {Array} segments - Array of {start, end, color} objects
    */
   applyTopicHighlights: (segments) => {
-    console.log('[QuillEditor] applyTopicHighlights called with:', segments?.length, 'segments')
-    if (!quill) {
-      console.warn('[QuillEditor] applyTopicHighlights - quill not initialized')
-      return
-    }
-    if (!Array.isArray(segments)) {
-      console.warn('[QuillEditor] applyTopicHighlights - segments is not an array')
-      return
-    }
+    if (!quill || !Array.isArray(segments)) return
 
     // Quill adiciona \n implícito no final, então o comprimento real do texto é getLength() - 1
-    const quillLength = quill.getLength()
-    const textLength = quillLength - 1
-    console.log('[QuillEditor] Quill length:', quillLength, '| Real text length:', textLength)
+    const textLength = quill.getLength() - 1
 
     // Sort segments from end to start to preserve positions
     const sorted = [...segments].sort((a, b) => b.start - a.start)
 
-    let appliedCount = 0
     for (const seg of sorted) {
       const start = seg.start
       // Limitar end ao tamanho real do texto
@@ -1051,23 +1059,14 @@ defineExpose({
       const length = end - start
       const color = seg.color || '#e5e7eb'
 
-      console.log('[QuillEditor] Processing segment:', { start, end, length, color, textLength })
-
       if (length > 0 && start >= 0 && end <= textLength) {
         try {
-          quill.formatText(start, length, {
-            highlight: color
-          })
-          appliedCount++
-          console.log('[QuillEditor] Format applied:', { start, length, color })
+          quill.formatText(start, length, { highlight: color })
         } catch (e) {
-          console.error('[QuillEditor] Error applying format:', e)
+          console.error('[QuillEditor] Error applying topic highlight:', e)
         }
-      } else {
-        console.warn('[QuillEditor] Skipping segment - out of bounds:', { start, end, length, textLength })
       }
     }
-    console.log('[QuillEditor] applyTopicHighlights completed:', appliedCount, 'of', segments.length, 'applied')
   },
 
   /**
@@ -1110,7 +1109,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="qe-wrap" :class="{ 'with-line-numbers': showLineNumbers }">
+  <div ref="wrapRef" class="qe-wrap" :class="{ 'with-line-numbers': showLineNumbers }">
     <!-- O Quill cria a toolbar automaticamente baseado em toolbarOptions -->
     <div ref="editorRef" class="qe-editor"></div>
     <!-- Line numbers posicionados absolutamente ao lado do conteúdo -->
@@ -1148,7 +1147,7 @@ defineExpose({
 .qe-line-numbers {
   position: absolute;
   left: 0;
-  top: 42px; /* Altura da toolbar */
+  top: var(--ql-toolbar-h, 42px); /* segue a altura real da toolbar (pode quebrar em 2 linhas) */
   bottom: 0;
   width: 44px;
   padding-top: 12px;
@@ -1195,23 +1194,12 @@ defineExpose({
   border-radius: 14px 14px 0 0;
   padding: 8px 12px;
   display: flex;
-  flex-wrap: nowrap;
-  gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  /* Wrap onto a second row on narrow panels instead of hiding tools behind
+     a horizontal scrollbar — every formatting control stays reachable. */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 4px;
   box-shadow: inset 0 -1px 0 rgba(148, 163, 184, 0.08);
-}
-
-:deep(.ql-toolbar.ql-snow::-webkit-scrollbar) {
-  height: 3px;
-}
-:deep(.ql-toolbar.ql-snow::-webkit-scrollbar-thumb) {
-  background: rgba(148, 163, 184, 0.3);
-  border-radius: 3px;
-}
-:deep(.ql-toolbar.ql-snow::-webkit-scrollbar-track) {
-  background: transparent;
 }
 
 /* Grupos de botões com separador gradiente */

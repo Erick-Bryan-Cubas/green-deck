@@ -1697,7 +1697,7 @@ onUnmounted(() => {
     :footer-actions="sidebarFooterActions"
   />
 
-  <div class="app-shell" :class="{ 'sidebar-expanded': sidebarRef?.sidebarExpanded }">
+  <div class="app-shell" :class="{ 'sidebar-expanded': sidebarRef?.sidebarExpanded, 'sidebar-closed': sidebarRef && !sidebarRef.sidebarOpen }">
     <Toolbar class="app-header">
       <template #start>
         <div class="header-left">
@@ -3042,7 +3042,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  margin-left: 104px;
+  margin-left: 96px; /* 12px + sidebar 72px + 12px */
   margin-right: 12px;
   margin-top: 12px;
   margin-bottom: 12px;
@@ -3056,6 +3056,11 @@ onUnmounted(() => {
 
 .app-shell.sidebar-expanded {
   margin-left: 324px;
+}
+
+/* Sidebar fechada (via ×): o shell recupera a largura toda */
+.app-shell.sidebar-closed {
+  margin-left: 12px;
 }
 
 .main {
