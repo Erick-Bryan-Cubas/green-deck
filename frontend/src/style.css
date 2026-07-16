@@ -8,10 +8,32 @@
   -moz-osx-font-smoothing: grayscale;
   color-scheme: dark;
 
+  /* =========================
+     Scale tokens — one rhythmic system for type, icons and controls.
+     Use these instead of ad-hoc px so sizing stays consistent across the app.
+  ========================= */
+  /* Type scale (1.125 minor-third-ish, rounded to whole px) */
+  --fs-2xs: 0.6875rem; /* 11px — micro labels, badges */
+  --fs-xs: 0.75rem;    /* 12px — meta, pills, captions */
+  --fs-sm: 0.8125rem;  /* 13px — secondary UI text */
+  --fs-md: 0.875rem;   /* 14px — default UI text */
+  --fs-lg: 1rem;       /* 16px — panel titles */
+  --fs-xl: 1.125rem;   /* 18px — section headings */
+  --fs-2xl: 1.375rem;  /* 22px — empty-state titles */
+
+  /* Icon sizes — keep to these three steps */
+  --icon-sm: 0.8125rem; /* 13px — inline / toolbar icons */
+  --icon-md: 0.9375rem; /* 15px — standard button icons */
+  --icon-lg: 1.125rem;  /* 18px — prominent / hero icons */
+
+  /* Control (icon-button) hit targets */
+  --control-sm: 30px;
+  --control-md: 36px;
+
   --app-bg: #0b0f1a;
   --app-bg-soft: #0f172a;
   --app-text: #e5e7eb;
-  --app-text-muted: rgba(226, 232, 240, 0.68);
+  --app-text-muted: rgba(226, 232, 240, 0.78); /* ≥4.5:1 sobre --app-bg */
   --app-border: rgba(148, 163, 184, 0.18);
   --app-surface: rgba(17, 24, 39, 0.68);
   --app-card: rgba(17, 24, 39, 0.56);
@@ -211,7 +233,7 @@
   --sidebar-header-border: rgba(148, 163, 184, 0.1);
   --sidebar-header-bg: linear-gradient(180deg, rgba(16, 185, 129, 0.1) 0%, transparent 100%);
   --sidebar-text: rgba(255, 255, 255, 0.85);
-  --sidebar-text-muted: rgba(255, 255, 255, 0.5);
+  --sidebar-text-muted: rgba(255, 255, 255, 0.65);
   --sidebar-icon-bg: rgba(255, 255, 255, 0.06);
   --sidebar-hover-bg: rgba(99, 102, 241, 0.12);
   --sidebar-active-bg: rgba(99, 102, 241, 0.18);
@@ -239,7 +261,7 @@
   --app-bg: #f6f7fb;
   --app-bg-soft: #ffffff;
   --app-text: #0f172a;
-  --app-text-muted: rgba(15, 23, 42, 0.6);
+  --app-text-muted: rgba(15, 23, 42, 0.72); /* ≥4.5:1 sobre fundos claros */
   --app-border: rgba(148, 163, 184, 0.35);
   --app-surface: rgba(255, 255, 255, 0.86);
   --app-card: rgba(255, 255, 255, 0.9);
@@ -317,7 +339,7 @@
   --sidebar-header-border: rgba(148, 163, 184, 0.2);
   --sidebar-header-bg: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, transparent 100%);
   --sidebar-text: rgba(15, 23, 42, 0.85);
-  --sidebar-text-muted: rgba(15, 23, 42, 0.55);
+  --sidebar-text-muted: rgba(15, 23, 42, 0.68);
   --sidebar-icon-bg: rgba(15, 23, 42, 0.06);
   --sidebar-hover-bg: rgba(59, 130, 246, 0.1);
   --sidebar-active-bg: rgba(59, 130, 246, 0.16);
@@ -485,6 +507,40 @@ a {
 
 a:hover {
   color: #5c7cff;
+}
+
+/* =========================
+   Responsive app-shell (global — applies to every page's shell)
+   The per-page scoped styles hardcode `margin-left: 104px` (desktop rail)
+   and `height: 100vh`. These overrides adapt the shell to the collapsing
+   sidebar and to mobile viewports, where the sidebar becomes an overlay.
+========================= */
+@media (min-width: 769px) and (max-width: 1100px) {
+  /* Sidebar rail still present but the app benefits from tighter gutters */
+  .app-shell {
+    margin-right: 8px !important;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Sidebar is an off-canvas overlay here, so the shell reclaims full width */
+  .app-shell,
+  .app-shell.sidebar-expanded {
+    margin-left: 8px !important;
+    margin-right: 8px !important;
+    margin-top: 8px !important;
+    margin-bottom: 8px !important;
+    border-radius: 18px !important;
+    /* dvh accounts for mobile browser URL bars; 100vh overflows on iOS/Android */
+    height: calc(100dvh - 16px) !important;
+  }
+}
+
+@supports (height: 100dvh) {
+  /* !important needed to beat the per-page scoped `height: 100vh` selector */
+  .app-shell {
+    height: calc(100dvh - 24px) !important;
+  }
 }
 
 /* =========================
