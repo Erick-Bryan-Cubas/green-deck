@@ -34,6 +34,12 @@ CORS_ORIGINS = os.getenv(
 RATE_LIMIT_DEFAULT = os.getenv("RATE_LIMIT_DEFAULT", "100/minute")
 RATE_LIMIT_GENERATE = os.getenv("RATE_LIMIT_GENERATE", "10/minute")
 
+# Card translation concurrency. Request values are still validated by the API;
+# these settings let each environment apply stricter operational limits.
+TRANSLATION_DEFAULT_CONCURRENCY = int(os.getenv("TRANSLATION_DEFAULT_CONCURRENCY", "5"))
+TRANSLATION_MAX_CONCURRENCY = int(os.getenv("TRANSLATION_MAX_CONCURRENCY", "10"))
+TRANSLATION_OLLAMA_MAX_CONCURRENCY = int(os.getenv("TRANSLATION_OLLAMA_MAX_CONCURRENCY", "2"))
+
 # Document Processing Configuration
 DOCUMENT_EXTRACTION_TIMEOUT = int(os.getenv("DOCUMENT_EXTRACTION_TIMEOUT", "300"))  # 5 min
 DOCUMENT_PREVIEW_TIMEOUT = int(os.getenv("DOCUMENT_PREVIEW_TIMEOUT", "0"))  # 0 = sem timeout
