@@ -11,6 +11,7 @@ import MultiSelect from 'primevue/multiselect'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import InputSwitch from 'primevue/inputswitch'
+import Checkbox from 'primevue/checkbox'
 import Slider from 'primevue/slider'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
@@ -1041,6 +1042,15 @@ const translateAlreadyPtCount = ref(0)
 const translateNeedsTranslationCount = ref(0)
 const translateDetectError = ref('')
 const translateUseEntireDeck = ref(false)
+const translateStep = ref(1)
+
+// Análise prévia: tipo de nota e campos traduzíveis
+const translateAnalyzingFields = ref(false)
+const translateAnalysisError = ref('')
+const translateNoteTypes = ref([])
+const translateSelectedNoteType = ref('')
+const translateFieldMode = ref('auto')
+const translateSelectedFields = ref([])
 
 // Model selection for translation
 const translateAvailableModels = ref([])
@@ -1049,6 +1059,104 @@ const translateLoadingModels = ref(false)
 
 // Computed: only LLM models (not embedding)
 const translateLlmModels = computed(() => translateAvailableModels.value.filter(m => m.type !== 'embedding'))
+const translateNoteTypeOptions = computed(() =>
+  translateNoteTypes.value.map(type => ({
+    label: `${type.name} (${type.noteCount} nota${type.noteCount === 1 ? '' : 's'})`,
+    value: type.name
+  }))
+)
+const translateSelectedTypeProfile = computed(() =>
+  translateNoteTypes.value.find(type => type.name === translateSelectedNoteType.value) || null
+)
+const translateFieldProfiles = computed(() => translateSelectedTypeProfile.value?.fields || [])
+const canContinueTranslation = computed(() =>
+  !translateAnalyzingFields.value &&
+  !!translateSelectedNoteType.value &&
+  translateSelectedFields.value.length > 0
+)
+
+function applyRecommendedTranslationFields() {
+  translateSelectedFields.value = translateFieldProfiles.value
+    .filter(field => field.recommended)
+    .map(field => field.name)
+}
+
+function setTranslateFieldMode(mode) {
+  translateFieldMode.value = mode
+  if (mode === 'auto') applyRecommendedTranslationFields()
+}
+
+async function analyzeTranslationFields() {
+  const deckName = deck.value
+  const cardIds = selected.value?.map(card => card.cardId) || []
+
+  if (!deckName && !cardIds.length) {
+    translateAnalysisError.value = 'Nenhum deck ou cartão selecionado'
+    return
+  }
+
+  translateAnalyzingFields.value = true
+  translateAnalysisError.value = ''
+  try {
+    const payload = translateUseEntireDeck.value
+      ? { deckName }
+      : { cardIds }
+    const response = await fetch('/api/anki-translation-analysis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    const data = await readJsonSafe(response)
+    if (data?.__nonJson) throw new Error('A análise de campos não retornou JSON')
+    if (!response.ok || data?.success === false) {
+      throw new Error(data?.error || `HTTP ${response.status}`)
+    }
+
+    translateNoteTypes.value = Array.isArray(data.noteTypes) ? data.noteTypes : []
+    const selectedModels = new Set(
+      (translateUseEntireDeck.value ? [] : selected.value)
+        .map(card => card?.modelName)
+        .filter(Boolean)
+    )
+    const preferredType = selectedModels.size === 1 ? [...selectedModels][0] : noteType.value
+    const preferredExists = translateNoteTypes.value.some(type => type.name === preferredType)
+    translateSelectedNoteType.value = preferredExists
+      ? preferredType
+      : (translateNoteTypes.value[0]?.name || '')
+    applyRecommendedTranslationFields()
+
+    addLog(
+      `Análise de tradução: ${data.totalNotes || 0} notas, ${translateNoteTypes.value.length} tipos`,
+      'info'
+    )
+  } catch (error) {
+    translateNoteTypes.value = []
+    translateSelectedNoteType.value = ''
+    translateSelectedFields.value = []
+    translateAnalysisError.value = error?.message || String(error)
+    addLog(`Erro na análise dos campos: ${translateAnalysisError.value}`, 'error')
+  } finally {
+    translateAnalyzingFields.value = false
+  }
+}
+
+async function refreshTranslateScope() {
+  translateAlreadyPtCount.value = 0
+  translateNeedsTranslationCount.value = 0
+  translateDetectError.value = ''
+  await analyzeTranslationFields()
+}
+
+function continueTranslateConfiguration() {
+  if (!canContinueTranslation.value) {
+    notify('Selecione ao menos um campo para traduzir.', 'warn', 4200)
+    return
+  }
+  translateStep.value = 2
+  if (!translateAlreadyPtCount.value && !translateDetectingLanguages.value) {
+    detectCardLanguages()
+  }
+}
 
 async function detectCardLanguages() {
   const deckName = deck.value
@@ -1065,9 +1173,11 @@ async function detectCardLanguages() {
   translateNeedsTranslationCount.value = 0
 
   try {
-    const payload = translateUseEntireDeck.value 
-      ? { deckName }
-      : { cardIds }
+    const payload = {
+      ...(translateUseEntireDeck.value ? { deckName } : { cardIds }),
+      noteType: translateSelectedNoteType.value || null,
+      fieldNames: translateSelectedFields.value
+    }
 
     const resp = await fetch('/api/detect-card-languages', {
       method: 'POST',
@@ -1140,17 +1250,19 @@ async function openTranslateDialog() {
   
   // Reset state
   translateUseEntireDeck.value = false
+  translateStep.value = 1
+  translateFieldMode.value = 'auto'
+  translateAnalysisError.value = ''
+  translateNoteTypes.value = []
+  translateSelectedNoteType.value = ''
+  translateSelectedFields.value = []
   translateAlreadyPtCount.value = 0
   translateNeedsTranslationCount.value = 0
   translateDetectError.value = ''
   
   translateDialogVisible.value = true
   fetchTranslateModels()
-  
-  // Auto-detect languages se houver cards selecionados
-  if (selected.value?.length) {
-    setTimeout(() => detectCardLanguages(), 500)
-  }
+  analyzeTranslationFields()
 }
 
 function cancelTranslate() {
@@ -1166,6 +1278,11 @@ function cancelTranslate() {
 async function confirmTranslate() {
   if (!selected.value?.length && !translateUseEntireDeck.value) {
     notify('Selecione cartões ou ative "Traduzir deck inteiro".', 'warn', 4200)
+    return
+  }
+  if (!translateSelectedNoteType.value || !translateSelectedFields.value.length) {
+    notify('Escolha o tipo de cartão e os campos da tradução.', 'warn', 4200)
+    translateStep.value = 1
     return
   }
 
@@ -1202,13 +1319,18 @@ async function confirmTranslate() {
       ...(translateUseEntireDeck.value && { deckName: deck.value }),
       targetLanguage: 'pt-br',
       model,
+      noteType: translateSelectedNoteType.value,
+      fieldNames: translateSelectedFields.value,
       openaiApiKey: keys.openaiApiKey || null,
       perplexityApiKey: keys.perplexityApiKey || null,
       anthropicApiKey: keys.anthropicApiKey || null
     }
 
     const sourceName = translateUseEntireDeck.value ? `deck "${deck.value}"` : `${cardIds.length} cartões`
-    addLog(`Tradução iniciada: ${sourceName} | modelo=${model || 'default'} idioma=pt-br`, 'info')
+    addLog(
+      `Tradução iniciada: ${sourceName} | tipo=${translateSelectedNoteType.value} campos=${translateSelectedFields.value.join(', ')} | modelo=${model || 'default'} idioma=pt-br`,
+      'info'
+    )
 
     const response = await fetch('/api/anki-translate', {
       method: 'POST',
@@ -2329,36 +2451,136 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Opção: Traduzir Deck Inteiro -->
-          <div class="translate-deck-toggle">
-            <InputSwitch v-model="translateUseEntireDeck" @change="() => { translateAlreadyPtCount = 0; translateDetectError = ''; }" />
-            <label class="translate-deck-label">Traduzir deck inteiro "{{ deck }}"</label>
-            <Button 
-              v-if="translateUseEntireDeck || selected.length"
-              icon="pi pi-search" 
-              severity="secondary" 
-              text 
-              @click="detectCardLanguages"
-              :loading="translateDetectingLanguages"
-              v-tooltip.top="'Detectar quantos já estão em português'"
-              class="translate-detect-btn"
-            />
+          <div class="translate-steps" aria-label="Etapas da tradução">
+            <div class="translate-step" :class="{ active: translateStep === 1, done: translateStep > 1 }">
+              <span>1</span>
+              <div>
+                <strong>Campos e tipo</strong>
+                <small>O que será traduzido</small>
+              </div>
+            </div>
+            <i class="pi pi-angle-right"></i>
+            <div class="translate-step" :class="{ active: translateStep === 2 }">
+              <span>2</span>
+              <div>
+                <strong>Modelo e confirmação</strong>
+                <small>Como traduzir</small>
+              </div>
+            </div>
           </div>
 
-          <!-- Detecção de Idioma -->
-          <div v-if="translateDetectError" class="translate-alert translate-alert-error">
-            <i class="pi pi-exclamation-circle mr-2"></i>
-            {{ translateDetectError }}
-          </div>
+          <template v-if="translateStep === 1">
+            <!-- Opção: Traduzir Deck Inteiro -->
+            <div class="translate-deck-toggle">
+              <InputSwitch v-model="translateUseEntireDeck" @change="refreshTranslateScope" />
+              <label class="translate-deck-label">Traduzir deck inteiro "{{ deck }}"</label>
+              <Button
+                icon="pi pi-refresh"
+                severity="secondary"
+                text
+                @click="analyzeTranslationFields"
+                :loading="translateAnalyzingFields"
+                v-tooltip.top="'Analisar novamente os tipos e campos'"
+                class="translate-detect-btn"
+              />
+            </div>
 
-          <div v-if="translateAlreadyPtCount > 0" class="translate-alert translate-alert-success">
-            <i class="pi pi-info-circle mr-2"></i>
-            <strong>{{ translateAlreadyPtCount }}</strong> cartões já estão em português
-            <span v-if="translateNeedsTranslationCount">, <strong>{{ translateNeedsTranslationCount }}</strong> precisam tradução</span>
-          </div>
+            <div v-if="translateAnalysisError" class="translate-alert translate-alert-error">
+              <i class="pi pi-exclamation-circle mr-2"></i>
+              {{ translateAnalysisError }}
+            </div>
 
-          <!-- Model Selection -->
-          <div class="translate-model-section">
+            <div class="translate-config-section">
+              <label class="section-label">Tipo de cartão (nota)</label>
+              <Select
+                v-model="translateSelectedNoteType"
+                :options="translateNoteTypeOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="Selecione o tipo encontrado"
+                :loading="translateAnalyzingFields"
+                :disabled="translateAnalyzingFields || !translateNoteTypeOptions.length"
+                filter
+                class="model-select"
+                @change="applyRecommendedTranslationFields"
+              />
+              <small class="muted">
+                A tradução altera somente notas deste tipo e mantém o tipo original no Anki.
+              </small>
+            </div>
+
+            <div class="translate-config-section">
+              <div class="translate-fields-header">
+                <label class="section-label">Campos que devem ser traduzidos</label>
+                <div class="translate-mode-buttons">
+                  <Button
+                    label="Reconhecer automaticamente"
+                    icon="pi pi-sparkles"
+                    size="small"
+                    :outlined="translateFieldMode !== 'auto'"
+                    @click="setTranslateFieldMode('auto')"
+                  />
+                  <Button
+                    label="Selecionar manualmente"
+                    icon="pi pi-check-square"
+                    size="small"
+                    severity="secondary"
+                    :outlined="translateFieldMode !== 'manual'"
+                    @click="setTranslateFieldMode('manual')"
+                  />
+                </div>
+              </div>
+
+              <div v-if="translateAnalyzingFields" class="translate-analysis-loading">
+                <i class="pi pi-spin pi-spinner"></i>
+                Verificando conteúdo dos campos...
+              </div>
+              <div v-else-if="translateFieldProfiles.length" class="translate-field-list">
+                <label
+                  v-for="field in translateFieldProfiles"
+                  :key="field.name"
+                  class="translate-field-row"
+                  :class="{ numeric: field.numericOnly, empty: !field.nonEmptyCount }"
+                >
+                  <Checkbox
+                    v-model="translateSelectedFields"
+                    :value="field.name"
+                    :disabled="translateFieldMode === 'auto'"
+                  />
+                  <span class="translate-field-name">{{ field.name }}</span>
+                  <Tag v-if="field.numericOnly" severity="secondary" class="pill">somente números</Tag>
+                  <Tag v-else-if="!field.nonEmptyCount" severity="secondary" class="pill">vazio</Tag>
+                  <Tag v-else-if="field.recommended" severity="success" class="pill">texto detectado</Tag>
+                  <small>{{ field.nonEmptyCount }} preenchido{{ field.nonEmptyCount === 1 ? '' : 's' }}</small>
+                </label>
+              </div>
+              <div v-else-if="!translateAnalysisError" class="muted">
+                Nenhum campo encontrado para este tipo.
+              </div>
+
+              <div class="translate-alert translate-alert-success" v-if="translateSelectedFields.length">
+                <i class="pi pi-lock mr-2"></i>
+                O conteúdo traduzido voltará ao mesmo campo de origem:
+                <strong>{{ translateSelectedFields.join(', ') }}</strong>.
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
+            <!-- Detecção de Idioma -->
+            <div v-if="translateDetectError" class="translate-alert translate-alert-error">
+              <i class="pi pi-exclamation-circle mr-2"></i>
+              {{ translateDetectError }}
+            </div>
+
+            <div v-if="translateAlreadyPtCount > 0" class="translate-alert translate-alert-success">
+              <i class="pi pi-info-circle mr-2"></i>
+              <strong>{{ translateAlreadyPtCount }}</strong> cartões já estão em português
+              <span v-if="translateNeedsTranslationCount">, <strong>{{ translateNeedsTranslationCount }}</strong> precisam tradução</span>
+            </div>
+
+            <!-- Model Selection -->
+            <div class="translate-model-section">
             <label class="section-label">Modelo para Tradução</label>
             <div class="model-selector-row">
               <Select
@@ -2398,9 +2620,9 @@ onUnmounted(() => {
             <small class="muted" v-if="!translateLlmModels.length && !translateLoadingModels">
               Nenhum modelo disponível. Verifique se Ollama está rodando ou configure API keys em GeneratorPage.
             </small>
-          </div>
+            </div>
 
-          <div class="translate-info">
+            <div class="translate-info">
             <div class="info-box">
               <i class="pi pi-info-circle"></i>
               <div>
@@ -2413,15 +2635,16 @@ onUnmounted(() => {
                 </ul>
               </div>
             </div>
-          </div>
-
-          <div class="translate-warning" v-if="!translateUseEntireDeck && selectedNotesCount > 10">
-            <i class="pi pi-exclamation-triangle"></i>
-            <div class="muted">
-              Você selecionou muitas notas. A tradução pode demorar alguns minutos.
-              Tempo estimado: ~{{ Math.ceil(selectedNotesCount * 3 / 60) }} min
             </div>
-          </div>
+
+            <div class="translate-warning" v-if="!translateUseEntireDeck && selectedNotesCount > 10">
+              <i class="pi pi-exclamation-triangle"></i>
+              <div class="muted">
+                Você selecionou muitas notas. A tradução pode demorar alguns minutos.
+                Tempo estimado: ~{{ Math.ceil(selectedNotesCount * 3 / 60) }} min
+              </div>
+            </div>
+          </template>
         </div>
 
         <template #footer>
@@ -2437,8 +2660,23 @@ onUnmounted(() => {
               </Tag>
             </div>
             <div class="footer-right">
-              <Button label="Cancelar" icon="pi pi-times" severity="secondary" outlined @click="translateDialogVisible = false" />
               <Button
+                :label="translateStep === 1 ? 'Cancelar' : 'Voltar'"
+                :icon="translateStep === 1 ? 'pi pi-times' : 'pi pi-arrow-left'"
+                severity="secondary"
+                outlined
+                @click="translateStep === 1 ? (translateDialogVisible = false) : (translateStep = 1)"
+              />
+              <Button
+                v-if="translateStep === 1"
+                label="Continuar"
+                icon="pi pi-arrow-right"
+                iconPos="right"
+                :disabled="!canContinueTranslation"
+                @click="continueTranslateConfiguration"
+              />
+              <Button
+                v-else
                 label="Traduzir agora"
                 icon="pi pi-language"
                 :disabled="(!selected.length && !translateUseEntireDeck) || !ankiHealth.ok || !translateSelectedModel"
@@ -3879,6 +4117,111 @@ onUnmounted(() => {
 
 /* Translate modal */
 .translate-modal{ display:flex; flex-direction:column; gap: 12px; }
+.translate-steps{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap: 12px;
+  padding: 4px 0;
+}
+.translate-steps > i{ color: var(--app-text-muted); }
+.translate-step{
+  display:flex;
+  align-items:center;
+  gap: 9px;
+  color: var(--app-text-muted);
+}
+.translate-step > span{
+  display:grid;
+  place-items:center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--app-border);
+  background: var(--ghost-bg);
+  font-size: 12px;
+  font-weight: 800;
+}
+.translate-step > div{
+  display:flex;
+  flex-direction:column;
+  line-height:1.2;
+}
+.translate-step strong{ font-size: 12px; }
+.translate-step small{ font-size: 10px; margin-top: 2px; }
+.translate-step.active{ color: var(--app-text); }
+.translate-step.active > span,
+.translate-step.done > span{
+  color: white;
+  border-color: var(--color-info);
+  background: var(--color-info);
+}
+.translate-config-section{
+  display:flex;
+  flex-direction:column;
+  gap: 9px;
+  border-radius: 16px;
+  padding: 12px;
+  border: 1px solid var(--ghost-border);
+  background: var(--ghost-bg-strong);
+}
+.translate-config-section > .section-label,
+.translate-fields-header .section-label{
+  font-weight: 700;
+  font-size: 13px;
+}
+.translate-fields-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 12px;
+  flex-wrap:wrap;
+}
+.translate-mode-buttons{
+  display:flex;
+  gap: 6px;
+  flex-wrap:wrap;
+}
+.translate-analysis-loading{
+  display:flex;
+  align-items:center;
+  gap: 9px;
+  min-height: 64px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+.translate-field-list{
+  display:grid;
+  gap: 6px;
+  max-height: 250px;
+  overflow:auto;
+  padding-right: 3px;
+}
+.translate-field-row{
+  display:grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto auto;
+  align-items:center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 11px;
+  background: var(--modal-surface-bg);
+  cursor:pointer;
+}
+.translate-field-row.numeric,
+.translate-field-row.empty{ opacity: 0.72; }
+.translate-field-row:has(.p-checkbox-disabled){ cursor:default; }
+.translate-field-name{
+  min-width:0;
+  overflow-wrap:anywhere;
+  font-size:13px;
+  font-weight:650;
+}
+.translate-field-row > small{
+  color:var(--app-text-muted);
+  font-size:10px;
+  text-align:right;
+}
 .translate-hero{
   display:flex;
   justify-content:space-between;
@@ -3976,6 +4319,17 @@ onUnmounted(() => {
 .model-option .provider-tag{
   font-size: 10px;
   padding: 2px 6px;
+}
+
+@media (max-width: 600px){
+  .translate-step small{ display:none; }
+  .translate-fields-header{ align-items:flex-start; }
+  .translate-mode-buttons{ width:100%; }
+  .translate-mode-buttons :deep(.p-button){ flex:1; }
+  .translate-field-row{
+    grid-template-columns:auto minmax(100px, 1fr) auto;
+  }
+  .translate-field-row > small{ display:none; }
 }
 
 /* Translate Progress Modal */
