@@ -1,6 +1,6 @@
 ﻿<!-- frontend/src/components/SidebarMenu.vue -->
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 defineProps({
@@ -20,9 +20,53 @@ defineProps({
 
 const emit = defineEmits(['close'])
 
+// Mobile breakpoint: below this the sidebar behaves as an off-canvas overlay.
+const MOBILE_BREAKPOINT = 768
+const isMobile = ref(false)
+
 const sidebarOpen = ref(true)
 const sidebarExpanded = ref(false)
 const expandedMenus = ref(new Set())
+
+function syncViewport() {
+  const mobile = window.innerWidth <= MOBILE_BREAKPOINT
+  if (mobile === isMobile.value) return
+  isMobile.value = mobile
+  if (mobile) {
+    // Start collapsed and, when opened, always show the full (labelled) menu.
+    sidebarOpen.value = false
+    sidebarExpanded.value = true
+  } else {
+    // Restore the desktop rail (icon-only) and reveal it.
+    sidebarOpen.value = true
+    sidebarExpanded.value = false
+    expandedMenus.value.clear()
+  }
+}
+
+function handleKeydown(e) {
+  if (e.key === 'Escape' && isMobile.value && sidebarOpen.value) {
+    closeSidebar()
+  }
+}
+
+// Lock body scroll while the mobile overlay is open.
+watch([sidebarOpen, isMobile], ([open, mobile]) => {
+  const lock = open && mobile
+  document.body.style.overflow = lock ? 'hidden' : ''
+})
+
+onMounted(() => {
+  syncViewport()
+  window.addEventListener('resize', syncViewport)
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncViewport)
+  window.removeEventListener('keydown', handleKeydown)
+  document.body.style.overflow = ''
+})
 
 // Hover state for mini-popups
 const hoveredItem = ref(null)
@@ -62,7 +106,7 @@ function handleMouseEnter(event, item) {
   const rect = event.currentTarget.getBoundingClientRect()
   hoverPosition.value = {
     top: item.submenu ? rect.top : rect.top + rect.height / 2,
-    left: rect.right + 12
+    left: rect.right + 8
   }
   hoveredItem.value = item
 }
@@ -127,19 +171,38 @@ function handleItemClick(item) {
   if (item.command) {
     item.command()
   }
+  // On mobile the sidebar is a modal overlay: navigating should dismiss it.
+  if (isMobile.value && !item.submenu) {
+    closeSidebar()
+  }
 }
 
 // Expose state for parent components
 defineExpose({
   sidebarOpen,
   sidebarExpanded,
+  isMobile,
   toggleSidebar,
   closeSidebar
 })
 </script>
 
 <template>
-  <aside v-if="sidebarOpen" class="sidebar" :class="{ 'expanded': sidebarExpanded }">
+  <!-- Backdrop for the mobile off-canvas overlay -->
+  <Transition name="backdrop">
+    <div
+      v-if="isMobile && sidebarOpen"
+      class="sidebar-backdrop"
+      aria-hidden="true"
+      @click="closeSidebar"
+    ></div>
+  </Transition>
+
+  <aside
+    v-if="sidebarOpen"
+    class="sidebar"
+    :class="{ 'expanded': sidebarExpanded, 'is-mobile': isMobile }"
+  >
     <div class="sidebar-header">
       <img :src="logoSrc" alt="Logo" class="sidebar-logo" />
 
@@ -163,13 +226,25 @@ defineExpose({
       </Transition>
 
       <Button
+        v-if="isMobile"
+        icon="pi pi-times"
+        text
+        rounded
+        severity="secondary"
+        class="sidebar-toggle"
+        aria-label="Fechar menu"
+        v-tooltip.right="'Fechar menu'"
+        @click="closeSidebar"
+      />
+      <Button
+        v-else
         :icon="sidebarExpanded ? 'pi pi-chevron-left' : 'pi pi-chevron-right'"
         text
         rounded
         severity="secondary"
-        @click="toggleSidebarExpand"
         class="sidebar-toggle"
         v-tooltip.right="sidebarExpanded ? 'Recolher menu' : 'Expandir menu'"
+        @click="toggleSidebarExpand"
       />
     </div>
 
@@ -287,8 +362,9 @@ defineExpose({
           v-for="(action, idx) in footerActions"
           :key="idx"
           class="sidebar-footer-btn"
-          @click="action.command?.()"
+          :aria-label="action.tooltip"
           v-tooltip.top="action.tooltip"
+          @click="action.command?.()"
         >
           <i :class="action.icon"></i>
         </button>
@@ -348,7 +424,7 @@ defineExpose({
   left: 12px;
   top: 12px;
   bottom: 12px;
-  width: 80px;
+  width: 72px;
   background: linear-gradient(180deg, var(--sidebar-bg-start) 0%, var(--sidebar-bg-end) 100%);
   backdrop-filter: blur(24px);
   border: 1px solid var(--sidebar-border);
@@ -365,34 +441,67 @@ defineExpose({
   width: 300px;
 }
 
+/* =========================
+   Mobile: off-canvas overlay
+========================= */
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 999;
+}
+
+.backdrop-enter-active,
+.backdrop-leave-active {
+  transition: opacity 0.25s ease;
+}
+
+.backdrop-enter-from,
+.backdrop-leave-to {
+  opacity: 0;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    left: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 0 24px 24px 0;
+    z-index: 1001;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  }
+
+  /* Always show the labelled menu inside the mobile drawer */
+  .sidebar.is-mobile,
+  .sidebar.is-mobile.expanded {
+    width: min(300px, 86vw);
+    max-width: 86vw;
+  }
+
+  .sidebar-header,
+  .sidebar-footer {
+    border-radius: 0;
+  }
+}
+
 .sidebar-header {
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--sidebar-header-border);
   display: flex;
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  background: var(--sidebar-header-bg);
-  min-height: 56px;
+  min-height: 52px;
   overflow: visible;
   gap: 10px;
   border-radius: 23px 23px 0 0;
 }
 
-.sidebar.expanded .sidebar-header {
-  padding: 12px 14px;
-}
-
 .sidebar-logo {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
-  filter: drop-shadow(0 2px 8px var(--sidebar-logo-shadow));
-  transition: transform 0.3s ease;
-}
-
-.sidebar:hover .sidebar-logo {
-  transform: scale(1.05);
 }
 
 .sidebar-toggle {
@@ -413,7 +522,6 @@ defineExpose({
 
 .sidebar-toggle:hover {
   background: transparent !important;
-  transform: scale(1.15);
 }
 
 .sidebar-toggle :deep(.p-button-icon) {
@@ -434,9 +542,9 @@ defineExpose({
   flex: 1;
   overflow-y: auto;
   overflow-x: visible;
-  padding: 12px 8px;
+  padding: 10px;
   scrollbar-width: thin;
-  scrollbar-color: var(--sidebar-scrollbar) transparent;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
 }
 
 .sidebar.expanded .sidebar-nav {
@@ -462,8 +570,9 @@ defineExpose({
 
 .sidebar-separator {
   height: 1px;
-  background: linear-gradient(90deg, transparent 0%, var(--sidebar-separator) 50%, transparent 100%);
-  margin: 12px 16px;
+  background: var(--sidebar-separator);
+  opacity: 0.6;
+  margin: 10px 12px;
 }
 
 .sidebar-item {
@@ -476,15 +585,16 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 6px;
+  gap: 10px;
+  padding: 0;
+  height: 40px;
   border: none;
   background: transparent;
   color: var(--sidebar-text);
-  border-radius: 14px;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  font-size: 14px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  font-size: 13px;
   font-weight: 600;
   text-align: left;
   white-space: nowrap;
@@ -494,29 +604,27 @@ defineExpose({
 
 .sidebar.expanded .sidebar-link {
   justify-content: flex-start;
-  padding: 10px 14px;
+  padding: 0 10px;
+  height: 38px;
 }
 
+/* Indicador de item ativo — apenas no ativo, nunca no hover */
 .sidebar-link::before {
   content: '';
   position: absolute;
-  left: 0;
+  left: -10px;
   top: 50%;
   transform: translateY(-50%) scaleY(0);
-  width: 4px;
-  height: 24px;
-  background: linear-gradient(180deg, var(--sidebar-accent) 0%, var(--sidebar-accent-strong) 100%);
-  border-radius: 0 4px 4px 0;
-  transition: transform 0.2s ease;
+  width: 3px;
+  height: 18px;
+  background: var(--sidebar-accent-strong);
+  border-radius: 0 3px 3px 0;
+  transition: transform 0.15s ease;
 }
 
 .sidebar-link:hover {
   background: var(--sidebar-hover-bg);
   color: var(--app-text);
-}
-
-.sidebar-link:hover::before {
-  transform: translateY(-50%) scaleY(1);
 }
 
 .sidebar-link.expanded,
@@ -525,197 +633,58 @@ defineExpose({
   color: var(--app-text);
 }
 
-.sidebar-link.expanded::before,
 .sidebar-link.active::before {
   transform: translateY(-50%) scaleY(1);
-  background: linear-gradient(180deg, var(--color-primary) 0%, var(--sidebar-accent-strong) 100%);
 }
 
 .sidebar-icon-wrap {
-  width: 46px;
-  height: 46px;
-  min-width: 46px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--sidebar-icon-bg);
-  border-radius: 12px;
+  background: transparent;
+  border-radius: 9px;
   flex-shrink: 0;
-  transition: all 0.2s ease;
 }
 
 .sidebar.expanded .sidebar-icon-wrap {
-  width: 38px;
-  height: 38px;
-  min-width: 38px;
-  border-radius: 10px;
-}
-
-.sidebar-link:hover .sidebar-icon-wrap {
-  background: color-mix(in srgb, var(--icon-color, var(--color-primary)) 18%, transparent);
-  transform: scale(1.08);
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
 }
 
 .sidebar-icon {
-  font-size: 17px;
+  font-size: 15px;
   color: var(--icon-color, var(--sidebar-text));
-  transition: color 0.2s ease;
+  transition: color 0.15s ease;
 }
 
-/* Icon microinteractions (specific icons only) */
-@keyframes sidebar-cog-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(180deg);
-  }
+/* Status do item de logs — cor semântica com respiração sutil (sem gradientes) */
+.sidebar-icon.is-logs-ok {
+  color: var(--color-success);
+  animation: sidebar-logs-breathe 2.8s ease-in-out infinite;
 }
 
-.sidebar-link:hover .sidebar-icon.pi-cog {
-  animation: sidebar-cog-spin 0.6s ease;
+.sidebar-icon.is-logs-error {
+  color: var(--color-danger);
 }
 
-.submenu-link:hover .submenu-icon.pi-cog {
-  animation: sidebar-cog-spin 0.6s ease;
-}
-
-@keyframes sidebar-sessions-tick {
-  0% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(-10deg);
+@keyframes sidebar-logs-breathe {
+  0%,
+  100% {
+    opacity: 1;
   }
   50% {
-    transform: rotate(10deg);
-  }
-  75% {
-    transform: rotate(-6deg);
-  }
-  100% {
-    transform: rotate(0deg);
+    opacity: 0.55;
   }
 }
 
-@keyframes sidebar-cards-shuffle {
-  0% {
-    transform: translateX(0) rotate(0deg) scale(1);
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-icon.is-logs-ok {
+    animation: none;
   }
-  30% {
-    transform: translateX(-1px) rotate(-7deg) scale(1.03);
-  }
-  60% {
-    transform: translateX(1px) rotate(6deg) scale(1.06);
-  }
-  100% {
-    transform: translateX(0) rotate(0deg) scale(1);
-  }
-}
-
-@keyframes sidebar-browser-browse {
-  0% {
-    transform: translateY(0) scale(1);
-  }
-  35% {
-    transform: translateY(-2px) scale(1.04);
-  }
-  65% {
-    transform: translateY(1px) scale(1.02);
-  }
-  100% {
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes sidebar-dashboard-rise {
-  0% {
-    transform: scaleY(1) translateY(0);
-  }
-  35% {
-    transform: scaleY(1.12) translateY(-1px);
-  }
-  65% {
-    transform: scaleY(0.96) translateY(0);
-  }
-  100% {
-    transform: scaleY(1) translateY(0);
-  }
-}
-
-.sidebar-link:hover .sidebar-icon.pi-history {
-  animation: sidebar-sessions-tick 0.75s ease;
-  transform-origin: 50% 50%;
-}
-
-.sidebar-link:hover .sidebar-icon.pi-clone {
-  animation: sidebar-cards-shuffle 0.75s ease;
-  transform-origin: 50% 50%;
-}
-
-.sidebar-link:hover .sidebar-icon.pi-database {
-  animation: sidebar-browser-browse 0.8s ease;
-  transform-origin: 50% 50%;
-}
-
-.sidebar-link:hover .sidebar-icon.pi-chart-bar {
-  animation: sidebar-dashboard-rise 0.8s ease;
-  transform-origin: 50% 100%;
-}
-
-.submenu-link:hover .submenu-icon.pi-history {
-  animation: sidebar-sessions-tick 0.75s ease;
-  transform-origin: 50% 50%;
-}
-
-.submenu-link:hover .submenu-icon.pi-clone {
-  animation: sidebar-cards-shuffle 0.75s ease;
-  transform-origin: 50% 50%;
-}
-
-.submenu-link:hover .submenu-icon.pi-database {
-  animation: sidebar-browser-browse 0.8s ease;
-  transform-origin: 50% 50%;
-}
-
-.submenu-link:hover .submenu-icon.pi-chart-bar {
-  animation: sidebar-dashboard-rise 0.8s ease;
-  transform-origin: 50% 100%;
-}
-
-@keyframes sidebar-logs-ecg-scan {
-  from {
-    background-position: 140% 0;
-  }
-  to {
-    background-position: -40% 0;
-  }
-}
-
-/* ECG-like scan over the wave icon (ok state) */
-.sidebar-icon.is-logs-ok.pi-wave-pulse {
-  display: inline-block;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--color-danger) 20%, transparent) 42%,
-    var(--color-danger) 50%,
-    color-mix(in srgb, var(--color-danger) 20%, transparent) 58%,
-    transparent 100%
-  );
-  background-size: 240% 100%;
-  background-repeat: no-repeat;
-  background-position: 140% 0;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--color-danger) 28%, transparent));
-  animation: sidebar-logs-ecg-scan 1.05s linear infinite;
-}
-
-.sidebar-link:hover .sidebar-icon:not(.is-logs-ok) {
-  color: var(--icon-color, var(--app-text));
 }
 
 .sidebar-label {
@@ -746,11 +715,11 @@ defineExpose({
 }
 
 .sidebar-submenu {
-  padding: 6px 0 6px 20px;
-  margin-top: 4px;
+  padding: 4px 0 4px 12px;
+  margin-top: 2px;
   overflow: hidden;
-  border-left: 2px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
-  margin-left: 28px;
+  border-left: 1px solid var(--sidebar-separator);
+  margin-left: 23px;
 }
 
 .submenu-separator {
@@ -763,24 +732,23 @@ defineExpose({
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: 10px;
+  padding: 7px 10px;
   border: none;
   background: transparent;
   color: color-mix(in srgb, var(--sidebar-text) 85%, transparent);
-  border-radius: 12px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
   font-size: 13px;
   text-align: left;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
   position: relative;
 }
 
 .submenu-link:hover:not(.disabled) {
-  background: color-mix(in srgb, var(--sidebar-icon-bg) 90%, transparent);
+  background: var(--sidebar-hover-bg);
   color: var(--app-text);
-  transform: translateX(4px);
 }
 
 .submenu-link.active {
@@ -799,19 +767,14 @@ defineExpose({
 }
 
 .submenu-icon-wrap {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--sidebar-icon-bg) 80%, transparent);
-  border-radius: 8px;
+  background: transparent;
+  border-radius: 6px;
   flex-shrink: 0;
-  transition: all 0.2s ease;
-}
-
-.submenu-link:hover:not(.disabled) .submenu-icon-wrap {
-  background: color-mix(in srgb, var(--icon-color, var(--color-primary)) 20%, transparent);
 }
 
 .submenu-icon {
@@ -923,7 +886,6 @@ defineExpose({
 }
 
 .submenu-link:hover:not(.disabled) .submenu-badge {
-  transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--color-success) 50%, transparent);
 }
 
@@ -1033,9 +995,8 @@ defineExpose({
 }
 
 .sidebar-footer-btn:hover {
-  background: color-mix(in srgb, var(--sidebar-icon-bg) 90%, transparent);
-  color: var(--color-success);
-  transform: scale(1.1);
+  background: var(--sidebar-hover-bg);
+  color: var(--app-text);
 }
 
 .sidebar-copyright {
@@ -1086,15 +1047,15 @@ defineExpose({
 .sidebar-popup-portal {
   position: fixed;
   transform: translateY(-50%);
-  background: linear-gradient(135deg, var(--sidebar-popup-bg-start) 0%, var(--sidebar-popup-bg-end) 100%);
+  background: var(--sidebar-popup-bg-start);
   border: 1px solid var(--sidebar-popup-border);
-  border-radius: 12px;
-  padding: 10px 14px;
+  border-radius: 10px;
+  padding: 7px 12px;
   display: flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
-  box-shadow: var(--sidebar-popup-shadow);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
   z-index: 9999;
   pointer-events: auto;
 }
@@ -1125,31 +1086,6 @@ defineExpose({
 .sidebar-popup-portal.has-submenu .popup-header {
   padding: 12px 14px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--sidebar-popup-border) 60%, transparent);
-}
-
-.sidebar-popup-portal::before {
-  content: '';
-  position: absolute;
-  left: -6px;
-  top: 24px;
-  border: 6px solid transparent;
-  border-right-color: var(--sidebar-popup-border);
-}
-
-.sidebar-popup-portal::after {
-  content: '';
-  position: absolute;
-  left: -5px;
-  top: 24px;
-  border: 5px solid transparent;
-  border-right-color: var(--sidebar-popup-arrow);
-}
-
-/* Adjust arrow position for simple popups */
-.sidebar-popup-portal:not(.has-submenu)::before,
-.sidebar-popup-portal:not(.has-submenu)::after {
-  top: 50%;
-  transform: translateY(-50%);
 }
 
 .sidebar-popup-portal .sidebar-popup-label {
@@ -1215,7 +1151,7 @@ defineExpose({
 .sidebar-popup-enter-from,
 .sidebar-popup-leave-to {
   opacity: 0;
-  transform: translateY(-50%) translateX(-8px);
+  transform: translateY(-50%) translateX(-4px);
 }
 
 .sidebar-popup-enter-to,
