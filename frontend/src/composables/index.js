@@ -2,6 +2,9 @@
  * Composables index - Export all composables
  */
 export { useSidebar } from './useSidebar'
+export { useApiKeysDialog } from './useApiKeysDialog'
+export { useModelSelectionDialog } from './useModelSelectionDialog'
+export { usePromptSettingsDialog } from './usePromptSettingsDialog'
 export { useSessionManager } from './useSessionManager'
 export { useNotify } from './useNotify'
 export { useAnkiStatus, useOllamaStatus, useServicesStatus } from './useStatusWebSocket'

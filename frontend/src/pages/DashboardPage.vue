@@ -19,17 +19,22 @@ import Divider from 'primevue/divider'
 // App components - with lazy loading for performance
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import LazyChart from '@/components/LazyChart.vue'
+import ApiKeysDialog from '@/components/modals/ApiKeysDialog.vue'
+import ModelSelectionDialog from '@/components/modals/ModelSelectionDialog.vue'
+import PromptSettingsDialog from '@/components/modals/PromptSettingsDialog.vue'
 import { sidebarIconColors } from '@/config/theme'
 
 // Composables
 import { useDashboardFilters } from '@/composables/useDashboardFilters'
 import { useAnimatedNumber } from '@/composables/useAnimatedNumber'
-import { useTheme } from '@/composables/useTheme'
+import { useSidebar } from '@/composables/useSidebar'
+import { useApiKeysDialog } from '@/composables/useApiKeysDialog'
+import { useModelSelectionDialog } from '@/composables/useModelSelectionDialog'
+import { usePromptSettingsDialog } from '@/composables/usePromptSettingsDialog'
 import { useAppNotifications } from '@/composables/useAppNotifications'
 import { useAppToast } from '@/composables/useAppToast'
 
 const router = useRouter()
-const { isDark, toggleTheme } = useTheme()
 const { addNotification } = useAppNotifications()
 const { notify: notifyToast } = useAppToast()
 
@@ -65,29 +70,59 @@ function notify(message, severity = 'info', life = 3200) {
 }
 
 // ============================================================
-// Sidebar Menu Items
+// Sidebar — menu unificado (mesma estrutura em todas as páginas)
 // ============================================================
-const sidebarMenuItems = computed(() => [
-  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cartões salvos', command: () => router.push('/browser') },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', active: true },
-  { separator: true },
-  {
-    key: 'actions',
-    label: 'Ações',
-    icon: 'pi pi-cog',
-    iconColor: sidebarIconColors.settings,
-    tooltip: 'Ações rápidas',
-    submenu: [
-      { label: 'Atualizar dados', icon: 'pi pi-refresh', iconColor: sidebarIconColors.generator, command: fetchDashboard }
-    ]
-  }
-])
+const {
+  visible: apiKeysVisible,
+  storedKeys: apiKeysStored,
+  hasStoredKeys: hasStoredApiKeys,
+  open: openApiKeys,
+  onSave: onApiKeysSave,
+  onClear: onApiKeysClear
+} = useApiKeysDialog({ notify })
 
-const sidebarFooterActions = computed(() => [
-  { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
-])
+// Seleção de modelo IA — abre localmente, persiste no localStorage
+const {
+  visible: modelSelectionVisible,
+  availableModels: genAvailableModels,
+  isLoadingModels: genModelsLoading,
+  selectedModel: genModel,
+  selectedValidationModel: genValidationModel,
+  selectedAnalysisModel: genAnalysisModel,
+  open: openModelSelection,
+  save: saveModelSelection,
+  fetchModels: refreshGenModels
+} = useModelSelectionDialog({ notify })
+
+// Prompts de geração — abre localmente, persiste no localStorage
+const {
+  visible: promptSettingsVisible,
+  savedPrompts: genSavedPrompts,
+  hasCustomPrompts: genHasCustomPrompts,
+  open: openPromptSettings,
+  onSave: onPromptsSave,
+  onReset: onPromptsReset
+} = usePromptSettingsDialog({ notify })
+
+const { sidebarMenuItems, sidebarFooterActions } = useSidebar({
+  activePage: 'dashboard',
+  settings: {
+    onModel: openModelSelection,
+    onPrompts: openPromptSettings,
+    onKeys: openApiKeys,
+    promptsBadge: () => (genHasCustomPrompts.value ? '✓' : null)
+  },
+  topItems: () => [
+    {
+      key: 'refresh',
+      label: 'Atualizar dados',
+      icon: 'pi pi-refresh',
+      iconColor: sidebarIconColors.generator,
+      tooltip: 'Recarregar estatísticas do dashboard',
+      command: fetchDashboard
+    }
+  ]
+})
 
 // --- helpers ---
 async function readJsonSafe(resp) {
@@ -891,6 +926,37 @@ onUnmounted(() => {
       <div class="footer-space" />
     </div>
   </div>
+
+  <!-- Configurações (menu lateral) — diálogos hospedados nesta página -->
+  <ApiKeysDialog
+    v-model:visible="apiKeysVisible"
+    :stored-keys="apiKeysStored"
+    :has-stored-keys="hasStoredApiKeys"
+    @save="onApiKeysSave"
+    @clear="onApiKeysClear"
+  />
+
+  <ModelSelectionDialog
+    v-model:visible="modelSelectionVisible"
+    :available-models="genAvailableModels"
+    :selected-model="genModel"
+    :selected-validation-model="genValidationModel"
+    :selected-analysis-model="genAnalysisModel"
+    :is-loading-models="genModelsLoading"
+    @update:selected-model="genModel = $event"
+    @update:selected-validation-model="genValidationModel = $event"
+    @update:selected-analysis-model="genAnalysisModel = $event"
+    @save="saveModelSelection"
+    @refresh="refreshGenModels"
+  />
+
+  <PromptSettingsDialog
+    v-model:visible="promptSettingsVisible"
+    :saved-prompts="genSavedPrompts"
+    :has-custom-prompts="genHasCustomPrompts"
+    @save="onPromptsSave"
+    @reset="onPromptsReset"
+  />
 
   <!-- Deck Detail Dialog -->
   <Dialog

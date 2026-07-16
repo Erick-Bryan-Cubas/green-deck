@@ -53,9 +53,9 @@ import QuestionExportDialog from '@/components/modals/QuestionExportDialog.vue'
 // Question components
 import QuestionCardItem from '@/components/QuestionCardItem.vue'
 import QuizInteractive from '@/components/QuizInteractive.vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useOllamaStatus } from '@/composables/useStatusWebSocket'
-import { useTheme } from '@/composables/useTheme'
+import { useSidebar } from '@/composables/useSidebar'
 import { useAppNotifications } from '@/composables/useAppNotifications'
 import { useAppToast } from '@/composables/useAppToast'
 
@@ -82,7 +82,7 @@ import {
 import { sanitizeHtml } from '@/utils/sanitize.js'
 
 const router = useRouter()
-const { isDark, toggleTheme } = useTheme()
+const route = useRoute()
 const { notify: notifyToast } = useAppToast()
 const {
   notifications,
@@ -3666,93 +3666,67 @@ const totalCardsAcrossSessions = computed(() =>
   sessions.value.reduce((acc, session) => acc + sessionCardCount(session), 0)
 )
 
-const sidebarMenuItems = computed(() => [
-  {
-    key: 'sessions',
-    label: 'Sessões',
-    icon: 'pi pi-history',
-    iconColor: colorTokens.primary,
-    badge: sessions.value.length,
-    tooltip: 'Gerenciar sessões de estudo',
-    submenu: [
-      { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: colorTokens.success, command: newSession },
-      { separator: true },
-      ...sessions.value
-        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-        .slice(0, 8)
-        .map((s) => ({
-          label: `${s.title}`,
-          sessionInfo: buildSessionInfo(s),
-          metricCount: sessionCardCount(s),
-          sublabelMetric: `${sessionCardCount(s)} ${sessionCardCount(s) === 1 ? 'cartão' : 'cartões'}`,
-          icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
-          iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
-          active: s.id === activeSessionId.value,
-          actionIcon: 'pi pi-trash',
-          actionTooltip: 'Apagar sessão',
-          actionCommand: () => deleteSessionWithConfirmation(s.id),
-          command: () => restoreSessionById(s.id)
-        })),
-      ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: colorTokens.neutral, disabled: true }] : []),
-      { separator: true },
-      { label: 'Total de cartões', icon: 'pi pi-chart-pie', iconColor: colorTokens.success, badge: totalCardsAcrossSessions.value, disabled: true },
-      { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: clearAllSessionsWithConfirmation }
-    ]
+// Menu lateral unificado — estrutura compartilhada com todas as páginas;
+// Sessões e Cartões entram como itens específicos desta página (topItems).
+const { sidebarMenuItems, sidebarFooterActions } = useSidebar({
+  activePage: 'generator',
+  onOpenLogs: () => { logsVisible.value = true },
+  logsHasError: () => logsHasError.value,
+  settings: {
+    onModel: openModelSelection,
+    onPrompts: openPromptSettings,
+    onKeys: openApiKeys,
+    promptsBadge: () => (hasCustomPromptsSaved.value ? '✓' : null)
   },
-  {
-    key: 'cards',
-    label: 'Cartões',
-    icon: 'pi pi-clone',
-    iconColor: colorTokens.success,
-    badge: cards.value.length,
-    tooltip: 'Gerenciar flashcards gerados',
-    submenu: [
-      { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: colorTokens.info, disabled: !cards.value.length, command: exportToAnkiOpenConfig },
-      { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: colorTokens.primary, disabled: !cards.value.length, command: exportAsMarkdown },
-      { separator: true },
-      { label: 'Limpar Cartões', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, disabled: !cards.value.length, command: clearAllCards }
-    ]
-  },
-  {
-    key: 'config',
-    label: 'Configurações',
-    icon: 'pi pi-cog',
-    iconColor: colorTokens.neutral,
-    tooltip: 'Ajustes e preferências',
-    submenu: [
-      { label: 'Escolher Modelo IA', icon: 'pi pi-microchip-ai', iconColor: colorTokens.success, command: openModelSelection },
-      {
-        label: 'Prompts de Geração',
-        icon: 'pi pi-file-edit',
-        iconColor: colorTokens.primary,
-        command: openPromptSettings,
-        badge: hasCustomPromptsSaved.value ? '✓' : null,
-        badgeColor: colorTokens.primary
-      },
-      { label: 'Chaves de API', icon: 'pi pi-key', iconColor: colorTokens.warning, command: openApiKeys }
-    ]
-  },
-  { separator: true },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: colorTokens.info, tooltip: 'Navegar pelos cartões salvos', command: () => router.push('/browser') },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: colorTokens.warning, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
-  {
-    key: 'logs',
-    label: 'Logs',
-    icon: 'pi pi-wave-pulse',
-    status: logsHasError.value ? 'error' : 'ok',
-    iconColor: logsHasError.value ? colorTokens.danger : colorTokens.neutral,
-    tooltip: 'Ver registros do sistema',
-    command: () => {
-      logsVisible.value = true
+  topItems: () => [
+    {
+      key: 'sessions',
+      label: 'Sessões',
+      icon: 'pi pi-history',
+      iconColor: colorTokens.primary,
+      badge: sessions.value.length,
+      tooltip: 'Gerenciar sessões de estudo',
+      submenu: [
+        { label: 'Nova sessão', icon: 'pi pi-plus', iconColor: colorTokens.success, command: newSession },
+        { separator: true },
+        ...sessions.value
+          .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+          .slice(0, 8)
+          .map((s) => ({
+            label: `${s.title}`,
+            sessionInfo: buildSessionInfo(s),
+            metricCount: sessionCardCount(s),
+            sublabelMetric: `${sessionCardCount(s)} ${sessionCardCount(s) === 1 ? 'cartão' : 'cartões'}`,
+            icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
+            iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
+            active: s.id === activeSessionId.value,
+            actionIcon: 'pi pi-trash',
+            actionTooltip: 'Apagar sessão',
+            actionCommand: () => deleteSessionWithConfirmation(s.id),
+            command: () => restoreSessionById(s.id)
+          })),
+        ...(sessions.value.length > 8 ? [{ label: `+${sessions.value.length - 8} mais...`, icon: 'pi pi-ellipsis-h', iconColor: colorTokens.neutral, disabled: true }] : []),
+        { separator: true },
+        { label: 'Total de cartões', icon: 'pi pi-chart-pie', iconColor: colorTokens.success, badge: totalCardsAcrossSessions.value, disabled: true },
+        { label: 'Limpar todas', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, command: clearAllSessionsWithConfirmation }
+      ]
+    },
+    {
+      key: 'cards',
+      label: 'Cartões',
+      icon: 'pi pi-clone',
+      iconColor: colorTokens.success,
+      badge: cards.value.length,
+      tooltip: 'Gerenciar flashcards gerados',
+      submenu: [
+        { label: 'Exportar para Anki', icon: 'pi pi-send', iconColor: colorTokens.info, disabled: !cards.value.length, command: exportToAnkiOpenConfig },
+        { label: 'Exportar Markdown', icon: 'pi pi-file-export', iconColor: colorTokens.primary, disabled: !cards.value.length, command: exportAsMarkdown },
+        { separator: true },
+        { label: 'Limpar Cartões', icon: 'pi pi-trash', iconColor: colorTokens.danger, danger: true, disabled: !cards.value.length, command: clearAllCards }
+      ]
     }
-  }
-])
-
-// Footer actions para o sidebar
-const sidebarFooterActions = computed(() => [
-  { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
-])
+  ]
+})
 
 // ============================================================
 // Context menu do editor
@@ -4062,6 +4036,16 @@ onMounted(async () => {
     // Mostra modal de introdução
     introModalVisible.value = true
     // O fluxo pós-intro (Ollama selection -> API keys) será disparado ao finalizar a intro
+  }
+
+  // Deep-link de configurações (/?settings=model|prompts|keys) — usado pelo
+  // menu lateral unificado quando a ação é acionada a partir de outra página
+  const settingsParam = route.query.settings
+  if (settingsParam) {
+    if (settingsParam === 'model') openModelSelection()
+    else if (settingsParam === 'prompts') openPromptSettings()
+    else if (settingsParam === 'keys') openApiKeys()
+    router.replace({ query: {} })
   }
 
   if (sessions.value.length && !cards.value.length && !normalizePlainText(lastFullText.value)) {
