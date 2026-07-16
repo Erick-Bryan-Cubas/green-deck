@@ -2,7 +2,7 @@
 <script setup>
 /* global performance, TextDecoder */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 
 // PrimeVue
 import Toolbar from 'primevue/toolbar'
@@ -28,10 +28,15 @@ import AutoComplete from 'primevue/autocomplete'
 import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
-import { useTheme } from '@/composables/useTheme'
+import ApiKeysDialog from '@/components/modals/ApiKeysDialog.vue'
+import ModelSelectionDialog from '@/components/modals/ModelSelectionDialog.vue'
+import PromptSettingsDialog from '@/components/modals/PromptSettingsDialog.vue'
+import { useSidebar } from '@/composables/useSidebar'
+import { useApiKeysDialog } from '@/composables/useApiKeysDialog'
+import { useModelSelectionDialog } from '@/composables/useModelSelectionDialog'
+import { usePromptSettingsDialog } from '@/composables/usePromptSettingsDialog'
 import { useAppNotifications } from '@/composables/useAppNotifications'
 import { useAppToast } from '@/composables/useAppToast'
-import { sidebarIconColors } from '@/config/theme'
 
 // API service
 import { getStoredApiKeys } from '@/services/api.js'
@@ -39,9 +44,7 @@ import { getStoredApiKeys } from '@/services/api.js'
 // Security utilities
 import { sanitizeHtml } from '@/utils/sanitize.js'
 
-const router = useRouter()
 const route = useRoute()
-const { isDark, toggleTheme } = useTheme()
 const { addNotification } = useAppNotifications()
 const { notify: notifyToast } = useAppToast()
 
@@ -77,30 +80,53 @@ function clearLogs() {
 }
 
 // ============================================================
-// Sidebar Menu Items
+// Sidebar — menu unificado (mesma estrutura em todas as páginas)
 // ============================================================
-const sidebarMenuItems = computed(() => [
-  { key: 'generator', label: 'Generator', icon: 'pi pi-bolt', iconColor: sidebarIconColors.generator, tooltip: 'Gerar flashcards', command: () => router.push('/') },
-  { key: 'browser', label: 'Browser', icon: 'pi pi-database', iconColor: sidebarIconColors.browser, tooltip: 'Navegar pelos cartões salvos', active: true },
-  { key: 'dashboard', label: 'Dashboard', icon: 'pi pi-chart-bar', iconColor: sidebarIconColors.dashboard, tooltip: 'Estatísticas de estudo', command: () => router.push('/dashboard') },
-  { separator: true },
-  {
-    key: 'logs',
-    label: 'Logs',
-    icon: 'pi pi-wave-pulse',
-    status: logsHasError.value ? 'error' : 'ok',
-    iconColor: logsHasError.value ? sidebarIconColors.logs : sidebarIconColors.browser,
-    tooltip: 'Ver registros do sistema',
-    command: () => {
-      logsVisible.value = true
-    }
-  }
-])
+// Diálogo de Chaves de API hospedado nesta página (as chaves ficam no
+// localStorage, então funciona sem depender do Gerador)
+const {
+  visible: apiKeysVisible,
+  storedKeys: apiKeysStored,
+  hasStoredKeys: hasStoredApiKeys,
+  open: openApiKeys,
+  onSave: onApiKeysSave,
+  onClear: onApiKeysClear
+} = useApiKeysDialog({ notify })
 
-const sidebarFooterActions = computed(() => [
-  { icon: 'pi pi-question-circle', tooltip: 'Documentação', command: () => router.push('/docs') },
-  { icon: isDark.value ? 'pi pi-sun' : 'pi pi-moon', tooltip: isDark.value ? 'Ativar modo claro' : 'Ativar modo escuro', command: toggleTheme }
-])
+// Seleção de modelo IA — abre localmente, persiste no localStorage
+const {
+  visible: modelSelectionVisible,
+  availableModels: genAvailableModels,
+  isLoadingModels: genModelsLoading,
+  selectedModel: genModel,
+  selectedValidationModel: genValidationModel,
+  selectedAnalysisModel: genAnalysisModel,
+  open: openModelSelection,
+  save: saveModelSelection,
+  fetchModels: refreshGenModels
+} = useModelSelectionDialog({ notify })
+
+// Prompts de geração — abre localmente, persiste no localStorage
+const {
+  visible: promptSettingsVisible,
+  savedPrompts: genSavedPrompts,
+  hasCustomPrompts: genHasCustomPrompts,
+  open: openPromptSettings,
+  onSave: onPromptsSave,
+  onReset: onPromptsReset
+} = usePromptSettingsDialog({ notify })
+
+const { sidebarMenuItems, sidebarFooterActions } = useSidebar({
+  activePage: 'browser',
+  onOpenLogs: () => { logsVisible.value = true },
+  logsHasError: () => logsHasError.value,
+  settings: {
+    onModel: openModelSelection,
+    onPrompts: openPromptSettings,
+    onKeys: openApiKeys,
+    promptsBadge: () => (genHasCustomPrompts.value ? '✓' : null)
+  }
+})
 
 // ----------------------
 // helpers
@@ -3252,6 +3278,37 @@ onUnmounted(() => {
           </div>
         </template>
       </Dialog>
+
+      <!-- Configurações (menu lateral) — diálogos hospedados nesta página -->
+      <ApiKeysDialog
+        v-model:visible="apiKeysVisible"
+        :stored-keys="apiKeysStored"
+        :has-stored-keys="hasStoredApiKeys"
+        @save="onApiKeysSave"
+        @clear="onApiKeysClear"
+      />
+
+      <ModelSelectionDialog
+        v-model:visible="modelSelectionVisible"
+        :available-models="genAvailableModels"
+        :selected-model="genModel"
+        :selected-validation-model="genValidationModel"
+        :selected-analysis-model="genAnalysisModel"
+        :is-loading-models="genModelsLoading"
+        @update:selected-model="genModel = $event"
+        @update:selected-validation-model="genValidationModel = $event"
+        @update:selected-analysis-model="genAnalysisModel = $event"
+        @save="saveModelSelection"
+        @refresh="refreshGenModels"
+      />
+
+      <PromptSettingsDialog
+        v-model:visible="promptSettingsVisible"
+        :saved-prompts="genSavedPrompts"
+        :has-custom-prompts="genHasCustomPrompts"
+        @save="onPromptsSave"
+        @reset="onPromptsReset"
+      />
 
       <!-- Logs -->
       <Dialog v-model:visible="logsVisible" modal :draggable="false" class="dlg dlg-logs modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
