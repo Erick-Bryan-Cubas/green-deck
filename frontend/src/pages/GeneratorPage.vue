@@ -18,6 +18,7 @@ import ProgressBar from 'primevue/progressbar'
 import ProgressSpinner from 'primevue/progressspinner'
 import Paginator from 'primevue/paginator'
 import Menu from 'primevue/menu'
+import TieredMenu from 'primevue/tieredmenu'
 import ContextMenu from 'primevue/contextmenu'
 import Tag from 'primevue/tag'
 import Divider from 'primevue/divider'
@@ -29,6 +30,9 @@ import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
 import DocumentUpload from '@/components/DocumentUpload.vue'
 import TopicLegend from '@/components/TopicLegend.vue'
+import SelectionBar from '@/components/SelectionBar.vue'
+import EditorPanelHead from '@/components/EditorPanelHead.vue'
+import CardsPanelHead from '@/components/CardsPanelHead.vue'
 import { colorTokens, sidebarIconColors } from '@/config/theme'
 
 // Modal components
@@ -1821,7 +1825,6 @@ watch(
 
 // Busca
 const cardSearch = ref('')
-const searchExpanded = ref(false)
 const filteredCards = computed(() => {
   const q = (cardSearch.value || '').trim().toLowerCase()
   if (!q) return cards.value
@@ -2551,6 +2554,15 @@ function getSourceLabel() {
       return ''
   }
 }
+
+// Tooltip do indicador de fonte no cabeçalho de Cartões
+const generationSourceTitle = computed(() => {
+  if (!lastGenerationSource.value) return ''
+  const extra = lastGenerationSource.value === 'full' && lastGenerationWordCount.value
+    ? ` (${formatCount(lastGenerationWordCount.value)} palavras)`
+    : ''
+  return 'Última geração: ' + getSourceLabel() + extra
+})
 
 async function generateCardsFromSelection() {
   // Resolve which content to use (fallback hierarchy)
@@ -3295,27 +3307,43 @@ ${html}
 }
 
 // Menu de exportação do texto
-const exportTextMenuRef = ref(null)
 const exportTextMenuItems = computed(() => [
-  { 
-    label: 'Exportar como TXT', 
-    icon: 'pi pi-file', 
-    command: () => exportTextAs('txt') 
+  {
+    label: 'Exportar como TXT',
+    icon: 'pi pi-file',
+    command: () => exportTextAs('txt')
   },
-  { 
-    label: 'Exportar como Markdown', 
-    icon: 'pi pi-hashtag', 
-    command: () => exportTextAs('md') 
+  {
+    label: 'Exportar como Markdown',
+    icon: 'pi pi-hashtag',
+    command: () => exportTextAs('md')
   },
-  { 
-    label: 'Exportar como HTML', 
-    icon: 'pi pi-code', 
-    command: () => exportTextAs('html') 
+  {
+    label: 'Exportar como HTML',
+    icon: 'pi pi-code',
+    command: () => exportTextAs('html')
   }
 ])
 
-function showExportTextMenu(event) {
-  exportTextMenuRef.value?.toggle(event)
+// Menu "⋯" do editor — agrupa ações secundárias para reduzir a densidade do cabeçalho
+const editorMoreMenuRef = ref(null)
+const editorMoreMenuItems = computed(() => [
+  {
+    label: showLineNumbers.value ? 'Ocultar números de linha' : 'Mostrar números de linha',
+    icon: 'pi pi-list',
+    command: () => { showLineNumbers.value = !showLineNumbers.value }
+  },
+  { separator: true },
+  {
+    label: 'Exportar texto',
+    icon: 'pi pi-download',
+    disabled: !textStats.value.words,
+    items: exportTextMenuItems.value
+  }
+])
+
+function toggleEditorMoreMenu(event) {
+  editorMoreMenuRef.value?.toggle(event)
 }
 
 const sessionQuickMenuRef = ref(null)
@@ -4177,7 +4205,7 @@ onBeforeUnmount(() => {
 
 <template>
   <ContextMenu ref="contextMenuRef" :model="contextMenuModel" appendTo="body" />
-  <Menu ref="exportTextMenuRef" :model="exportTextMenuItems" popup appendTo="body" />
+  <TieredMenu ref="editorMoreMenuRef" :model="editorMoreMenuItems" popup appendTo="body" />
   <Menu ref="sessionQuickMenuRef" :model="sessionQuickMenuItems" popup appendTo="body" />
 
   <!-- Sidebar -->
@@ -4203,7 +4231,8 @@ onBeforeUnmount(() => {
       'reader-monokai': immersiveReader && readerTheme === 'monokai',
       'reader-pdf-pagination': immersiveReader && usePdfPagination,
       'controls-hidden': immersiveReader && !readerControlsVisible,
-      'sidebar-expanded': sidebarRef?.sidebarExpanded
+      'sidebar-expanded': sidebarRef?.sidebarExpanded,
+      'sidebar-closed': sidebarRef && !sidebarRef.sidebarOpen
     }"
     @mousemove="resetControlsTimer"
   >
@@ -4213,13 +4242,14 @@ onBeforeUnmount(() => {
         <template v-if="!immersiveReader">
           <div class="header-left header-actions-left">
             <Button
+              v-if="!sidebarRef?.sidebarOpen"
               icon="pi pi-bars"
               text
               rounded
-              @click="sidebarRef?.toggleSidebar()"
               class="menu-toggle"
+              aria-label="Abrir menu"
               title="Menu"
-              v-if="!sidebarRef?.sidebarOpen"
+              @click="sidebarRef?.toggleSidebar()"
             />
 
             <DocumentUpload
@@ -4457,133 +4487,24 @@ onBeforeUnmount(() => {
         <!-- Editor -->
         <SplitterPanel :size="immersiveReader ? 100 : 70" :minSize="25">
           <div class="panel panel-editor">
-            <div class="panel-head">
-              <div class="panel-title">
-                <i class="pi pi-pencil mr-2" />
-                Editor
-                
-                <!-- Indicador de salvamento -->
-                <Transition name="fade">
-                  <Tag 
-                    v-if="saveStatus !== 'idle'" 
-                    :severity="saveStatusSeverity" 
-                    class="pill save-status ml-2"
-                  >
-                    <i :class="saveStatusIcon" class="mr-1" /> {{ saveStatusText }}
-                  </Tag>
-                </Transition>
-              </div>
-
-              <div class="panel-actions">
-                <!-- Modo Zen + números de linha (movidos do header) -->
-                <div class="editor-zen-group">
-                  <div class="editor-switch" title="Ativar Modo Zen">
-                    <span class="editor-switch-label">
-                      <i class="pi pi-bullseye" />
-                      Modo Zen
-                    </span>
-                    <InputSwitch
-                      class="zen-switch"
-                      :modelValue="immersiveReader"
-                      @update:modelValue="setReaderEnabled"
-                      :title="immersiveReader ? 'Sair do Modo Zen (Esc)' : 'Ativar Modo Zen'"
-                    />
-                  </div>
-                  <div class="editor-switch" title="Mostrar/ocultar números de linha">
-                    <span class="editor-switch-label">
-                      <i class="pi pi-list" />
-                      Nº de linhas
-                    </span>
-                    <InputSwitch
-                      class="line-switch"
-                      v-model="showLineNumbers"
-                      :title="showLineNumbers ? 'Ocultar números de linha' : 'Mostrar números de linha'"
-                    />
-                  </div>
-                </div>
-                <!-- Undo/Redo do Editor -->
-                <div class="editor-undo-redo">
-                  <Button
-                    icon="pi pi-undo"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    @click="editorUndo"
-                    title="Desfazer edição (Ctrl+Z)"
-                  />
-                  <Button
-                    icon="pi pi-redo"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    @click="editorRedo"
-                    title="Refazer edição (Ctrl+Y)"
-                  />
-                </div>
-                
-                <!-- Busca no texto -->
-                <Button
-                  icon="pi pi-search"
-                  severity="secondary"
-                  :outlined="editorSearchVisible"
-                  text
-                  rounded
-                  size="small"
-                  @click="toggleEditorSearch"
-                  title="Buscar no texto (Ctrl+F)"
-                />
-                
-                <!-- Navegação de Highlights -->
-                <div v-if="hasHighlights" class="highlight-nav">
-                  <Button
-                    icon="pi pi-chevron-left"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    @click="goToPrevHighlight"
-                    title="Highlight anterior"
-                  />
-                  <Tag severity="warning" class="pill highlight-counter">
-                    <i class="pi pi-palette mr-1" /> {{ currentHighlightLabel }}
-                  </Tag>
-                  <Button
-                    icon="pi pi-chevron-right"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    @click="goToNextHighlight"
-                    title="Próximo highlight"
-                  />
-                </div>
-                
-                <!-- Estatísticas de texto -->
-                <div class="text-stats">
-                  <Tag severity="secondary" class="pill stats-pill">
-                    <i class="pi pi-align-left mr-1" /> {{ textStats.words }} palavras
-                  </Tag>
-                  <Tag severity="secondary" class="pill stats-pill">
-                    <i class="pi pi-clock mr-1" /> {{ textStats.readingTimeLabel }}
-                  </Tag>
-                </div>
-                
-                <!-- Exportar texto -->
-                <Button
-                  icon="pi pi-download"
-                  severity="secondary"
-                  text
-                  rounded
-                  size="small"
-                  :disabled="!textStats.words"
-                  @click="showExportTextMenu"
-                  title="Exportar texto"
-                />
-
-              </div>
-            </div>
+            <EditorPanelHead
+              :save-status="saveStatus"
+              :save-status-severity="saveStatusSeverity"
+              :save-status-icon="saveStatusIcon"
+              :save-status-text="saveStatusText"
+              :immersive-reader="immersiveReader"
+              :search-active="editorSearchVisible"
+              :has-highlights="hasHighlights"
+              :highlight-label="currentHighlightLabel"
+              :text-stats="textStats"
+              @set-reader="setReaderEnabled"
+              @undo="editorUndo"
+              @redo="editorRedo"
+              @toggle-search="toggleEditorSearch"
+              @prev-highlight="goToPrevHighlight"
+              @next-highlight="goToNextHighlight"
+              @more="toggleEditorMoreMenu"
+            />
 
             <div class="panel-body" :class="{ 'reader-body': immersiveReader }">
               <!-- Barra de progresso flutuante -->
@@ -4747,150 +4668,36 @@ onBeforeUnmount(() => {
         <!-- Cards -->
         <SplitterPanel class="cards-splitter" :size="immersiveReader ? 0 : 42" :minSize="immersiveReader ? 0 : 20">
           <div class="panel panel-output">
-            <div class="panel-head">
-              <div class="panel-title">
-                <i class="pi pi-clone mr-2" />
-                Cartões
-                <Tag :severity="hasCards ? 'success' : 'secondary'" class="pill ml-2 cards-total-pill">
-                  <i class="pi pi-inbox mr-1" />
-                  <span class="total-label">Total</span>
-                  <span class="total-sep">•</span>
-                  <span class="total-value">{{ hasCards ? formatCount(cards.length) : '0' }}</span>
-                </Tag>
-                <Tag v-if="hasSelectedCards" severity="warning" class="pill ml-2">
-                  {{ selectedCount }} selecionados
-                </Tag>
-                <!-- Indicador da fonte da última geração -->
-                <Transition name="fade">
-                  <Tag 
-                    v-if="lastGenerationSource && hasCards" 
-                    :severity="lastGenerationSource === 'selection' ? 'info' : lastGenerationSource === 'highlight' ? 'warning' : 'secondary'" 
-                    class="pill ml-2 generation-source-tag"
-                    :title="'Última geração: ' + getSourceLabel() + (lastGenerationSource === 'full' && lastGenerationWordCount ? ` (${formatCount(lastGenerationWordCount)} palavras)` : '')"
-                  >
-                    <i :class="lastGenerationSource === 'selection' ? 'pi pi-mouse' : lastGenerationSource === 'highlight' ? 'pi pi-palette' : 'pi pi-file'" class="mr-1" style="font-size: 0.75rem" />
-                    <span class="source-label">
-                      {{ lastGenerationSource === 'selection' ? 'Seleção' : lastGenerationSource === 'highlight' ? 'Marcações' : 'Texto completo' }}
-                    </span>
-                    <span v-if="lastGenerationSource === 'full' && lastGenerationWordCount" class="source-count">
-                      {{ formatCount(lastGenerationWordCount) }} palavras
-                    </span>
-                  </Tag>
-                </Transition>
-              </div>
-
-              <div class="panel-actions">
-                <!-- Undo/Redo buttons -->
-                <div class="undo-redo-group">
-                  <Button
-                    icon="pi pi-undo"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    :disabled="!canUndo"
-                    @click="undo"
-                    title="Desfazer (Ctrl+Z)"
-                  />
-                  <Button
-                    icon="pi pi-refresh"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    :disabled="!canRedo"
-                    @click="redo"
-                    title="Refazer (Ctrl+Y)"
-                  />
-                </div>
-
-                <!-- Selection mode toggle -->
-                <Button
-                  :icon="isSelectionMode ? 'pi pi-check-square' : 'pi pi-stop'"
-                  :severity="isSelectionMode ? 'primary' : 'secondary'"
-                  :outlined="isSelectionMode"
-                  text
-                  rounded
-                  size="small"
-                  :disabled="!hasCards"
-                  @click="toggleSelectionMode"
-                  :title="isSelectionMode ? 'Sair do modo seleção' : 'Modo seleção'"
-                />
-
-                <div class="search-wrap" :class="{ 'expanded': searchExpanded }">
-                  <button class="search-toggle" @click="searchExpanded = !searchExpanded" type="button">
-                    <i class="pi pi-search" />
-                  </button>
-                  <InputText 
-                    v-show="searchExpanded" 
-                    v-model="cardSearch" 
-                    class="search" 
-                    placeholder="Buscar..."
-                    @blur="!cardSearch && (searchExpanded = false)"
-                  />
-                </div>
-
-                <div class="export-group">
-                  <Button
-                    class="clear-all-btn"
-                    icon="pi pi-delete-left"
-                    :disabled="!hasCards"
-                    severity="danger"
-                    text
-                    rounded
-                    @click="openClearAllCards"
-                    title="Limpar todos os cartões"
-                  />
-                  <Button
-                    class="export-btn"
-                    :disabled="!hasCards"
-                    icon="pi pi-send"
-                    outlined
-                    rounded
-                    v-tooltip.top="'Exportar para o Anki'"
-                    @click="exportToAnkiOpenConfig"
-                  />
-                </div>
-              </div>
-            </div>
+            <CardsPanelHead
+              v-model:search="cardSearch"
+              :has-cards="hasCards"
+              :cards-total-label="hasCards ? formatCount(cards.length) : '0'"
+              :selected-count="hasSelectedCards ? selectedCount : 0"
+              :generation-source="lastGenerationSource || ''"
+              :generation-count-label="lastGenerationSource === 'full' && lastGenerationWordCount ? `${formatCount(lastGenerationWordCount)} palavras` : ''"
+              :source-title="generationSourceTitle"
+              :can-undo="canUndo"
+              :can-redo="canRedo"
+              :selection-mode="isSelectionMode"
+              @undo="undo"
+              @redo="redo"
+              @toggle-selection="toggleSelectionMode"
+              @clear-all="openClearAllCards"
+              @export="exportToAnkiOpenConfig"
+            />
 
             <!-- Floating selection bar -->
             <Transition name="slide-up">
-              <div v-if="hasSelectedCards" class="selection-bar">
-                <div class="selection-info">
-                  <Checkbox 
-                    :modelValue="allCardsSelected" 
-                    @update:modelValue="toggleSelectAll"
-                    binary
-                  />
-                  <span class="selection-count">{{ selectedCount }} de {{ cards.length }}</span>
-                </div>
-                <div class="selection-actions">
-                  <Button
-                    icon="pi pi-send"
-                    label="Exportar"
-                    severity="primary"
-                    size="small"
-                    @click="bulkExportSelected"
-                  />
-                  <Button
-                    icon="pi pi-trash"
-                    label="Excluir"
-                    severity="danger"
-                    size="small"
-                    @click="bulkDeleteSelected"
-                  />
-                  <Button
-                    icon="pi pi-times"
-                    severity="secondary"
-                    text
-                    rounded
-                    size="small"
-                    @click="clearSelection"
-                    title="Cancelar seleção"
-                  />
-                </div>
-              </div>
+              <SelectionBar
+                v-if="hasSelectedCards"
+                :selected-count="selectedCount"
+                :total-count="cards.length"
+                :all-selected="allCardsSelected"
+                @toggle-select-all="toggleSelectAll"
+                @export="bulkExportSelected"
+                @delete="bulkDeleteSelected"
+                @cancel="clearSelection"
+              />
             </Transition>
 
             <div class="panel-body output-body">
@@ -5388,7 +5195,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  margin-left: 104px;
+  margin-left: 96px; /* 12px + sidebar 72px + 12px */
   margin-right: 12px;
   margin-top: 12px;
   margin-bottom: 12px;
@@ -5402,6 +5209,11 @@ onBeforeUnmount(() => {
 
 .app-shell.sidebar-expanded {
   margin-left: 324px;
+}
+
+/* Sidebar fechada (via ×): o shell recupera a largura toda */
+.app-shell.sidebar-closed {
+  margin-left: 12px;
 }
 
 .main {
@@ -5419,7 +5231,7 @@ onBeforeUnmount(() => {
   top: 0;
   z-index: 50;
   border: 0;
-  padding: 12px 16px;
+  padding: 8px 14px;
   backdrop-filter: blur(16px);
   border-radius: 24px 24px 0 0;
   background: var(--header-bg);
@@ -5507,17 +5319,37 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.header-actions-left::-webkit-scrollbar {
-  display: none;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .header-actions-left :deep(.p-button) {
   white-space: nowrap;
   flex-shrink: 0;
+  font-size: var(--fs-sm);
+  padding: 0.45rem 0.85rem;
+}
+
+.header-actions-left :deep(.p-button .p-button-icon) {
+  font-size: var(--icon-sm);
+}
+
+/* Medium widths: collapse the primary action buttons to icon-only so all
+   actions stay visible and tappable instead of scrolling out of reach.
+   The buttons keep their `title` attribute, so tooltips still label them. */
+@media (max-width: 1180px) {
+  .header-actions-left :deep(.p-button-label) {
+    display: none;
+  }
+  .header-actions-left :deep(.p-button .p-button-icon) {
+    margin: 0;
+  }
+  .header-actions-left :deep(.p-button) {
+    width: 40px;
+    padding-left: 0;
+    padding-right: 0;
+    justify-content: center;
+  }
 }
 
 .header-status-center {
@@ -5603,8 +5435,12 @@ onBeforeUnmount(() => {
 }
 
 .header-actions-right :deep(.p-button) {
-  width: 40px;
-  height: 40px;
+  width: var(--control-md);
+  height: var(--control-md);
+}
+
+.header-actions-right :deep(.p-button .p-button-icon) {
+  font-size: var(--icon-md);
 }
 
 .controls {
@@ -5621,8 +5457,8 @@ onBeforeUnmount(() => {
 }
 
 .menu-toggle {
-  width: 40px;
-  height: 40px;
+  width: var(--control-md);
+  height: var(--control-md);
 }
 
 @media (max-width: 1200px) {
@@ -5851,26 +5687,8 @@ onBeforeUnmount(() => {
   box-shadow: var(--panel-shadow-hover);
 }
 
-.panel-head {
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--panel-head-border);
-  background: var(--panel-head-bg);
-  min-width: 0;
-}
-
-.panel-title {
-  font-weight: 800;
-  letter-spacing: -0.2px;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
+/* .panel-head/.panel-title/.panel-actions migraram para
+   EditorPanelHead.vue e CardsPanelHead.vue */
 
 .panel-body {
   padding: 12px;
@@ -5980,71 +5798,7 @@ onBeforeUnmount(() => {
   transform: translateY(-12px);
 }
 
-/* Search (cards) */
-.search-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.search-toggle {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--chip-bg);
-  border: 1px solid var(--chip-border);
-  color: var(--chip-text);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-}
-
-.search-toggle:hover {
-  background: var(--chip-hover-bg);
-  border-color: var(--chip-hover-border);
-  color: var(--chip-hover-text);
-  transform: scale(1.05);
-}
-
-.search-wrap.expanded .search-toggle {
-  background: var(--chip-active-bg);
-  border-color: var(--chip-active-border);
-  color: var(--chip-active-text);
-}
-
-.search {
-  width: 0;
-  opacity: 0;
-  padding: 0;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--chip-bg);
-  border: 1px solid var(--chip-border);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  font-size: 14px;
-}
-
-.search-wrap.expanded .search {
-  width: 200px;
-  opacity: 1;
-  padding: 0 12px;
-}
-
-.search:focus {
-  background: var(--chip-hover-bg);
-  border-color: var(--chip-active-border);
-  box-shadow: var(--searchbar-input-focus-ring);
-}
-
-.search::placeholder {
-  color: var(--searchbar-placeholder);
-  font-weight: 500;
-}
+/* Busca de cards migrou para CardsPanelHead.vue */
 
 /* Empty */
 .empty-state {
@@ -6062,15 +5816,16 @@ onBeforeUnmount(() => {
   margin-bottom: 6px;
 }
 .empty-title {
-  font-size: 18px;
+  font-size: var(--fs-2xl);
   font-weight: 900;
   letter-spacing: -0.3px;
 }
 .empty-subtitle {
   margin-top: 8px;
   max-width: 62ch;
+  font-size: var(--fs-md);
   opacity: 0.82;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 .empty-actions {
   margin-top: 16px;
@@ -6122,93 +5877,10 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-/* =========================
-   Editor Actions (Undo/Redo, Stats, Highlights)
-========================= */
-.editor-undo-redo {
-  display: flex;
-  gap: 2px;
-  align-items: center;
-}
+/* Ações do editor e undo/redo dos cards migraram para
+   EditorPanelHead.vue e CardsPanelHead.vue */
 
-.highlight-nav {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.highlight-counter {
-  font-variant-numeric: tabular-nums;
-  min-width: 60px;
-  justify-content: center;
-}
-
-.text-stats {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.stats-pill {
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  opacity: 0.85;
-}
-
-.save-status {
-  font-size: 11px;
-  animation: fadeInStatus 0.3s ease;
-}
-
-@keyframes fadeInStatus {
-  from {
-    opacity: 0;
-    transform: translateX(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-/* =========================
-   Seleção múltipla e Undo/Redo (Cards)
-========================= */
-.undo-redo-group {
-  display: flex;
-  gap: 2px;
-  align-items: center;
-}
-
-.selection-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  background: var(--selection-bg);
-  border: 1px solid var(--selection-border);
-  border-radius: 12px;
-  margin: 0 12px 12px 12px;
-  backdrop-filter: blur(8px);
-}
-
-.selection-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.selection-count {
-  font-weight: 700;
-  font-size: 14px;
-  color: var(--selection-text);
-}
-
-.selection-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
+/* Estilos da selection-bar migraram para components/SelectionBar.vue */
 
 .card-checkbox {
   margin-right: 8px;
@@ -6365,7 +6037,6 @@ onBeforeUnmount(() => {
   .preview-grid {
     grid-template-columns: 1fr;
   }
-  .search-wrap { width: 100%; }
 }
 .preview-block {
   padding: 12px 16px;
@@ -6691,6 +6362,7 @@ onBeforeUnmount(() => {
 .pill {
   border-radius: 999px;
   font-weight: 900;
+  font-size: var(--fs-xs);
 }
 .pill.subtle { opacity: 0.9; }
 
@@ -7379,29 +7051,12 @@ onBeforeUnmount(() => {
   font-size: 0.75rem;
 }
 
-/* =========================
-   Espaços dos botões (Cards header)
-========================= */
-.panel-actions{
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: nowrap;
-  min-width: 0;
-  flex-shrink: 1;
-}
-
-.editor-zen-group{
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
+/* Switch do Modo Zen — ainda usado no header do modo leitura */
 .editor-switch{
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  padding: 4px 8px;
   border-radius: 999px;
   background: linear-gradient(135deg, rgba(30, 41, 59, 0.45), rgba(15, 23, 42, 0.65));
   border: 1px solid rgba(148, 163, 184, 0.2);
@@ -7442,116 +7097,8 @@ onBeforeUnmount(() => {
     0 0 14px rgba(168, 85, 247, 0.35);
 }
 
-.line-switch:deep(.p-inputswitch-slider){
-  background: rgba(71, 85, 105, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
-}
-
-.line-switch:deep(.p-inputswitch.p-highlight .p-inputswitch-slider){
-  background: linear-gradient(135deg, #a855f7, #6366f1);
-  box-shadow:
-    0 0 0 1px rgba(168, 85, 247, 0.45),
-    0 0 14px rgba(168, 85, 247, 0.35);
-}
-
-.export-group{
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.export-btn{
-  flex-shrink: 0;
-}
-
-/* Cards panel-title — overflow handling para pills */
-.panel-output .panel-title {
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.cards-total-pill {
-  flex-shrink: 0;
-}
-
-.generation-source-tag {
-  flex-shrink: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* =========================
-   Container Queries — Editor Header (colapso por prioridade)
-========================= */
-
-/* < 800px — esconde stats de texto (palavras, tempo de leitura) */
-@container editor-panel (max-width: 800px) {
-  .text-stats {
-    display: none;
-  }
-}
-
-/* < 650px — colapsa labels dos switches (fica só ícone + toggle) */
-@container editor-panel (max-width: 650px) {
-  .editor-switch-label {
-    font-size: 0;
-    gap: 0;
-  }
-  .editor-switch-label i {
-    font-size: 0.9rem;
-  }
-  .editor-switch {
-    padding: 6px 8px;
-    gap: 6px;
-  }
-  .editor-zen-group {
-    gap: 4px;
-  }
-  .panel-actions {
-    gap: 8px;
-  }
-}
-
-/* < 500px — esconde grupo zen inteiro */
-@container editor-panel (max-width: 500px) {
-  .editor-zen-group {
-    display: none;
-  }
-}
-
-/* =========================
-   Container Queries — Cards Header (colapso por prioridade)
-========================= */
-
-/* < 600px — esconde tag de fonte da geração */
-@container cards-panel (max-width: 600px) {
-  .generation-source-tag {
-    display: none !important;
-  }
-}
-
-/* < 480px — esconde undo/redo e tags secundárias do título */
-@container cards-panel (max-width: 480px) {
-  .undo-redo-group {
-    display: none;
-  }
-  .panel-title .pill:not(.cards-total-pill) {
-    display: none;
-  }
-}
-
-/* < 380px — esconde botão de modo seleção e busca */
-@container cards-panel (max-width: 380px) {
-  .panel-output .panel-actions > :deep(.p-button):not(:last-child) {
-    display: none;
-  }
-  .search-wrap {
-    display: none;
-  }
-}
+/* Controles dos cabeçalhos de painel (normalização, container queries)
+   migraram para EditorPanelHead.vue e CardsPanelHead.vue */
 
 /* =========================
    MODO LEITURA (full screen + paginação) — Melhorado
