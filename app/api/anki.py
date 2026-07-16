@@ -403,7 +403,8 @@ def _extract_notesinfo_fields(note_info: Dict[str, Any]) -> Tuple[Dict[str, str]
         for fname, fv in fields.items():
             if isinstance(fv, dict):
                 val = str(fv.get("value") or "")
-                order = safe_int(fv.get("order"), default=9999) or 9999
+                parsed_order = safe_int(fv.get("order"), default=9999)
+                order = parsed_order if parsed_order is not None else 9999
             else:
                 val = str(fv or "")
                 order = 9999
@@ -1706,12 +1707,19 @@ async def anki_migrate_fields(req: AnkiMigrateFieldsRequest):
 OLLAMA_TRANSLATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "translated_fields": {
-            "type": "object",
-            "additionalProperties": {"type": "string"}
+        "translations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field_id": {"type": "string"},
+                    "translated_text": {"type": "string"},
+                },
+                "required": ["field_id", "translated_text"],
+            },
         }
     },
-    "required": ["translated_fields"]
+    "required": ["translations"]
 }
 
 PROMPT_TRANSLATE = """\
@@ -1732,7 +1740,8 @@ REGRAS OBRIGATÓRIAS:
 5) Mantenha termos técnicos em inglês quando não houver tradução consagrada.
 6) Mantenha siglas e acrônimos originais (ex: AWS, API, HTTP).
 7) Use português brasileiro natural e fluente.
-8) Se um campo estiver vazio ou contiver apenas mídia/HTML, retorne-o inalterado.
+8) Cada item possui um field_id imutável. NUNCA troque conteúdo entre field_ids.
+9) Retorne exatamente um item para cada field_id recebido, sem criar ou omitir itens.
 
 EXEMPLOS DE TRADUÇÃO:
 
@@ -1746,7 +1755,10 @@ Original: "[sound:audio.mp3]<br>What is the capital of France?"
 Traduzido: "[sound:audio.mp3]<br>Qual é a capital da França?"
 
 SAÍDA:
-{ "translated_fields": { "campo1": "valor traduzido", "campo2": "valor traduzido" } }
+{ "translations": [
+  { "field_id": "field_0", "translated_text": "valor traduzido" },
+  { "field_id": "field_1", "translated_text": "outro valor traduzido" }
+] }
 """
 
 
@@ -1755,10 +1767,179 @@ class AnkiTranslateRequest(BaseModel):
     deckName: Optional[str] = None  # Se omitido, usa cardIds; se definido, traduz todo deck
     targetLanguage: str = "pt-br"
     model: Optional[str] = None  # Modelo para tradução (ex: gpt-4o, sonar, qwen-flashcard)
+    noteType: Optional[str] = None  # Se definido, traduz apenas notas deste tipo
+    fieldNames: List[str] = Field(default_factory=list)  # Vazio = detecção automática
     # API Keys para providers externos
     openaiApiKey: Optional[str] = None
     perplexityApiKey: Optional[str] = None
     anthropicApiKey: Optional[str] = None
+
+
+class AnkiTranslationAnalysisRequest(BaseModel):
+    cardIds: List[int] = Field(default_factory=list)
+    deckName: Optional[str] = None
+
+
+def _translation_text_only(value: Any) -> str:
+    """Remove apenas estrutura não textual para classificar um campo."""
+    text = str(value or "")
+    text = re.sub(r'\[sound:[^\]]+\]', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'<img\b[^>]*>', '', text, flags=re.IGNORECASE)
+    text = TAG_PAT.sub('', text)
+    text = _html.unescape(text).replace('\xa0', ' ')
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _is_numeric_only_translation_field(value: Any) -> bool:
+    """True para campos cujo conteúdo útil é composto somente por números/sinais."""
+    text = _translation_text_only(value)
+    if not text or not re.search(r'\d', text):
+        return False
+    return re.fullmatch(r'[\d\s.,;:+\-/%()]+', text) is not None
+
+
+def _automatic_translation_field(value: Any) -> bool:
+    text = _translation_text_only(value)
+    return bool(text) and not _is_numeric_only_translation_field(value)
+
+
+def _translation_items(fields: Dict[str, str]) -> Tuple[List[Dict[str, str]], Dict[str, str]]:
+    """Cria IDs opacos para impedir que o LLM renomeie ou realoque campos."""
+    items: List[Dict[str, str]] = []
+    field_id_to_name: Dict[str, str] = {}
+    for index, (field_name, content) in enumerate(fields.items()):
+        field_id = f"field_{index}"
+        field_id_to_name[field_id] = field_name
+        items.append({"field_id": field_id, "content": content})
+    return items, field_id_to_name
+
+
+def _parse_translation_response(parsed: Any, field_id_to_name: Dict[str, str]) -> Dict[str, str]:
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("translations"), list):
+        raise ValueError("Resposta não contém translations válido")
+
+    expected_ids = set(field_id_to_name)
+    seen_ids: set[str] = set()
+    translated: Dict[str, str] = {}
+    for item in parsed["translations"]:
+        if not isinstance(item, dict):
+            raise ValueError("Item de tradução inválido")
+        field_id = str(item.get("field_id") or "")
+        if field_id not in expected_ids:
+            raise ValueError(f"field_id inesperado: {field_id or '(vazio)'}")
+        if field_id in seen_ids:
+            raise ValueError(f"field_id duplicado: {field_id}")
+        if "translated_text" not in item:
+            raise ValueError(f"Tradução ausente para {field_id}")
+        seen_ids.add(field_id)
+        translated[field_id_to_name[field_id]] = str(item["translated_text"])
+
+    missing_ids = expected_ids - seen_ids
+    if missing_ids:
+        raise ValueError(f"Campos ausentes na tradução: {', '.join(sorted(missing_ids))}")
+    return translated
+
+
+async def _resolve_translation_card_ids(
+    client: httpx.AsyncClient,
+    card_ids: List[int],
+    deck_name: Optional[str],
+) -> List[int]:
+    resolved = list(card_ids or [])
+    if not resolved and deck_name:
+        deck_cards = await ankiconnect(
+            client, "findCards", {"query": f'deck:"{deck_name}"'}
+        )
+        resolved = list(deck_cards or [])
+    return resolved
+
+
+@router.post("/anki-translation-analysis")
+async def analyze_translation_fields(req: AnkiTranslationAnalysisRequest):
+    """Agrupa campos por tipo de nota e recomenda somente os que contêm texto."""
+    request_id = uuid.uuid4().hex[:12]
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            card_ids = await _resolve_translation_card_ids(
+                client, req.cardIds, req.deckName
+            )
+            if not card_ids:
+                return {
+                    "success": True,
+                    "requestId": request_id,
+                    "totalCards": 0,
+                    "totalNotes": 0,
+                    "noteTypes": [],
+                }
+
+            infos = list(await ankiconnect(client, "cardsInfo", {"cards": card_ids}) or [])
+            note_cards: Dict[int, Dict[str, Any]] = {}
+            for card in infos:
+                note_id = safe_int(card.get("noteId") or card.get("note"), default=None)
+                if note_id is not None and note_id not in note_cards:
+                    note_cards[note_id] = card
+
+            note_ids = list(note_cards)
+            notes = list(await ankiconnect(client, "notesInfo", {"notes": note_ids}) or [])
+            grouped: Dict[str, Dict[str, Any]] = {}
+
+            for note in notes:
+                note_id = safe_int(note.get("noteId"), default=None)
+                card = note_cards.get(note_id or -1, {})
+                model_name = str(note.get("modelName") or card.get("modelName") or "Desconhecido")
+                group = grouped.setdefault(model_name, {"noteCount": 0, "fields": {}})
+                group["noteCount"] += 1
+
+                _, ordered = _extract_notesinfo_fields(note)
+                for order, field_name, value in ordered:
+                    stats = group["fields"].setdefault(field_name, {
+                        "name": field_name,
+                        "order": order,
+                        "nonEmptyCount": 0,
+                        "numericOnlyCount": 0,
+                        "textCount": 0,
+                    })
+                    text_only = _translation_text_only(value)
+                    if text_only:
+                        stats["nonEmptyCount"] += 1
+                        if _is_numeric_only_translation_field(value):
+                            stats["numericOnlyCount"] += 1
+                        else:
+                            stats["textCount"] += 1
+
+            note_types: List[Dict[str, Any]] = []
+            for model_name, group in grouped.items():
+                fields = []
+                for stats in group["fields"].values():
+                    numeric_only = (
+                        stats["nonEmptyCount"] > 0
+                        and stats["numericOnlyCount"] == stats["nonEmptyCount"]
+                    )
+                    fields.append({
+                        **stats,
+                        "numericOnly": numeric_only,
+                        "recommended": stats["textCount"] > 0 and not numeric_only,
+                    })
+                fields.sort(key=lambda item: (item["order"], item["name"]))
+                note_types.append({
+                    "name": model_name,
+                    "noteCount": group["noteCount"],
+                    "fields": fields,
+                })
+
+            note_types.sort(key=lambda item: (-item["noteCount"], item["name"].lower()))
+            return {
+                "success": True,
+                "requestId": request_id,
+                "totalCards": len(card_ids),
+                "totalNotes": len(notes),
+                "noteTypes": note_types,
+            }
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "requestId": request_id, "error": str(exc)},
+        )
 
 
 def _detect_provider(
@@ -2043,11 +2224,11 @@ async def ollama_translate_fields(
     }
     target_lang_name = language_names.get(target_language.lower(), target_language)
 
+    source_items, field_id_to_name = _translation_items(source_fields)
     user = {
         "task": "translate_anki_note_fields",
-        "source_fields": source_fields,
+        "source_fields": source_items,
         "target_language": target_lang_name,
-        "target_field_names": list(source_fields.keys()),
         "retry_hint": retry_hint or "",
         "instructions": PROMPT_TRANSLATE,
     }
@@ -2106,20 +2287,20 @@ async def ollama_translate_fields(
     parsed = _try_extract_json(content)
     dbg["parsed"] = parsed
 
-    if not parsed or "translated_fields" not in parsed:
+    if not parsed or "translations" not in parsed:
         dbg["error"] = "SLM/Ollama retornou conteúdo não-JSON ou fora do schema esperado."
         dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
         path = _write_toon_file(f"translate_badjson_nid{source_note_id}", request_id, dbg)
         raise Exception(f"SLM/Ollama retornou JSON inválido/fora do schema. (Veja: {path})")
 
-    translated = parsed.get("translated_fields") or {}
-    if not isinstance(translated, dict):
-        dbg["error"] = "translated_fields não é um dict."
+    try:
+        out = _parse_translation_response(parsed, field_id_to_name)
+    except ValueError as exc:
+        dbg["error"] = str(exc)
         dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
         path = _write_toon_file(f"translate_badfields_nid{source_note_id}", request_id, dbg)
-        raise Exception(f"SLM/Ollama retornou translated_fields inválido. (Veja: {path})")
+        raise Exception(f"SLM/Ollama retornou campos inválidos. (Veja: {path})")
 
-    out = {str(k): str(v) for k, v in translated.items()}
     dbg["elapsedMs"] = int((time.monotonic() - t0) * 1000)
     dbg["translatedPreview"] = {k: (out.get(k, "")[:200]) for k in list(out.keys())[:4]}
     path = _write_toon_file(f"translate_ok_nid{source_note_id}", request_id, dbg)
@@ -2221,9 +2402,23 @@ async def translate_cards(req: AnkiTranslateRequest):
                     if nid is not None:
                         note_info_by_id[nid] = ni
 
+                # O tipo selecionado limita a operação; a tradução nunca converte o
+                # note type nem altera o direcionamento dos campos existentes.
+                selected_note_type = (req.noteType or "").strip()
+                if selected_note_type:
+                    by_note = {
+                        nid: card for nid, card in by_note.items()
+                        if str(
+                            (note_info_by_id.get(nid) or {}).get("modelName")
+                            or card.get("modelName")
+                            or ""
+                        ) == selected_note_type
+                    }
+                    note_ids = list(by_note)
+
                 # Emitir evento de início
                 total_notes = len(note_ids)
-                yield f"event: start\ndata: {json.dumps({'requestId': request_id, 'totalCards': len(card_ids), 'totalNotes': total_notes, 'provider': provider, 'model': model})}\n\n"
+                yield f"event: start\ndata: {json.dumps({'requestId': request_id, 'totalCards': len(card_ids), 'totalNotes': total_notes, 'provider': provider, 'model': model, 'noteType': selected_note_type or None})}\n\n"
 
                 # 3) traduzir e atualizar cada nota
                 results: List[Dict[str, Any]] = []
@@ -2241,19 +2436,19 @@ async def translate_cards(req: AnkiTranslateRequest):
                     ni = note_info_by_id.get(nid) or {}
 
                     src_fields_map, src_ordered = _extract_notesinfo_fields(ni)
+                    requested_fields = set(req.fieldNames or [])
 
-                    # Filtrar campos vazios ou que são apenas mídia
-                    fields_to_translate = {}
-                    for fname, fvalue in src_fields_map.items():
-                        # Pular campos vazios
-                        if not fvalue or not fvalue.strip():
+                    # Com seleção manual, respeitar exatamente o usuário. No modo
+                    # automático, excluir vazios, mídia pura e conteúdo numérico.
+                    fields_to_translate: Dict[str, str] = {}
+                    for _, fname, fvalue in src_ordered:
+                        if requested_fields and fname not in requested_fields:
                             continue
-                        # Pular campos que são apenas referências de mídia
-                        text_only = re.sub(r'\[sound:[^\]]+\]', '', fvalue)
-                        text_only = re.sub(r'<img[^>]+>', '', text_only)
-                        text_only = TAG_PAT.sub('', text_only).strip()
-                        if text_only:
-                            fields_to_translate[fname] = fvalue
+                        if not _translation_text_only(fvalue):
+                            continue
+                        if not requested_fields and not _automatic_translation_field(fvalue):
+                            continue
+                        fields_to_translate[fname] = fvalue
 
                     if not fields_to_translate:
                         # Nada para traduzir nesta nota
@@ -2285,11 +2480,12 @@ async def translate_cards(req: AnkiTranslateRequest):
                             "seguindo exatamente o schema solicitado. Não escreva nada fora do JSON."
                         )
 
+                        source_items, field_id_to_name = _translation_items(fields_to_translate)
                         user_content = {
                             "task": "translate_anki_note_fields",
-                            "source_fields": fields_to_translate,
+                            "note_type": str(ni.get("modelName") or c.get("modelName") or ""),
+                            "source_fields": source_items,
                             "target_language": target_lang_name,
-                            "target_field_names": list(fields_to_translate.keys()),
                             "retry_hint": "Tente novamente." if attempt > 1 else "",
                             "instructions": PROMPT_TRANSLATE,
                         }
@@ -2313,17 +2509,14 @@ async def translate_cards(req: AnkiTranslateRequest):
 
                             # Parse JSON da resposta
                             parsed = _try_extract_json(content)
-                            if not parsed or "translated_fields" not in parsed:
-                                raise Exception("Resposta não contém translated_fields válido")
-
-                            translated_fields = parsed.get("translated_fields") or {}
-                            if not isinstance(translated_fields, dict):
-                                raise Exception("translated_fields não é um dict")
+                            translated_fields = _parse_translation_response(
+                                parsed, field_id_to_name
+                            )
 
                             # Mesclar campos traduzidos com campos originais
                             final_fields = dict(src_fields_map)
                             for fname, tvalue in translated_fields.items():
-                                if fname in final_fields and tvalue and str(tvalue).strip():
+                                if fname in fields_to_translate and str(tvalue).strip():
                                     final_fields[fname] = str(tvalue)
 
                             # Atualizar nota no Anki
@@ -2338,6 +2531,8 @@ async def translate_cards(req: AnkiTranslateRequest):
                                 "noteId": nid,
                                 "cardId": card_id,
                                 "fieldsTranslated": len(translated_fields),
+                                "fieldNames": list(translated_fields),
+                                "noteType": str(ni.get("modelName") or c.get("modelName") or ""),
                                 "targetLanguage": target_language,
                                 "provider": provider,
                                 "model": model,
@@ -2383,6 +2578,8 @@ async def translate_cards(req: AnkiTranslateRequest):
                     "targetLanguage": target_language,
                     "provider": provider,
                     "model": model,
+                    "noteType": selected_note_type or None,
+                    "fieldNames": list(req.fieldNames or []),
                     "totalCards": len(req.cardIds),
                     "totalNotes": len(note_ids),
                     "translated": translated_count,
@@ -2413,6 +2610,8 @@ async def translate_cards(req: AnkiTranslateRequest):
 class DetectLanguageRequest(BaseModel):
     cardIds: List[int] = Field(default_factory=list)
     deckName: Optional[str] = None  # Se omitido, usa cardIds; se definido, busca todo deck
+    noteType: Optional[str] = None
+    fieldNames: List[str] = Field(default_factory=list)
 
 
 @router.post("/detect-card-languages")
@@ -2479,12 +2678,20 @@ async def detect_card_languages(req: DetectLanguageRequest):
             pt_count = 0
             needs_translation = 0
 
+            analyzed_notes = 0
+            selected_fields = set(req.fieldNames or [])
             for ni in notes_info:
-                # Concatenar campos para análise
-                fields = ni.get("fields", {})
+                if req.noteType and str(ni.get("modelName") or "") != req.noteType:
+                    continue
+
+                # Concatenar somente os valores reais dos campos escolhidos.
+                fields_map, _ = _extract_notesinfo_fields(ni)
                 text_content = " ".join(
-                    str(v).strip() for v in fields.values() if v
+                    value.strip()
+                    for name, value in fields_map.items()
+                    if value and (not selected_fields or name in selected_fields)
                 ).strip()
+                analyzed_notes += 1
 
                 if not text_content:
                     lang = "empty"
@@ -2513,12 +2720,12 @@ async def detect_card_languages(req: DetectLanguageRequest):
                     "success": True,
                     "requestId": request_id,
                     "totalCards": len(card_ids),
-                    "totalNotes": len(notes_info),
+                    "totalNotes": analyzed_notes,
                     "languages": language_counts,
                     "alreadyPortuguese": pt_count,
                     "needsTranslation": needs_translation,
                     "summary": {
-                        "pt_percentage": int((pt_count / len(notes_info) * 100)) if notes_info else 0,
+                        "pt_percentage": int((pt_count / analyzed_notes * 100)) if analyzed_notes else 0,
                         "message": f"{pt_count} em português, {needs_translation} precisam tradução",
                     },
                 }
