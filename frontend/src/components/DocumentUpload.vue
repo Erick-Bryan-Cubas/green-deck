@@ -19,7 +19,7 @@ import {
   extractPagesWithWebSocket
 } from '@/services/api.js'
 
-const emit = defineEmits(['extracted', 'error'])
+const emit = defineEmits(['extracted', 'error', 'study-pdf'])
 const { notify: notifyToast } = useAppToast()
 const { addNotification } = useAppNotifications()
 
@@ -643,6 +643,13 @@ function goBackToPages() {
   extractedResult.value = null
 }
 
+// Abre o PDF no leitor de estudo (sem extração — o texto é selecionado no próprio PDF)
+function studyPdf() {
+  if (!selectedFile.value || !isPdfFile.value) return
+  emit('study-pdf', selectedFile.value)
+  closeDialog()
+}
+
 function goBackToUpload() {
   currentStep.value = 'upload'
   pagesPreview.value = null
@@ -975,6 +982,16 @@ defineExpose({
             :disabled="isLoading"
           />
           <Button
+            v-if="hasFile && isPdfFile"
+            label="Estudar pelo PDF"
+            icon="pi pi-book"
+            severity="secondary"
+            outlined
+            :disabled="isLoading"
+            title="Abrir o PDF no leitor para selecionar e marcar trechos direto nele"
+            @click="studyPdf"
+          />
+          <Button
             v-if="hasFile"
             :label="isPdfFile ? 'Analisar Paginas' : 'Analisar Documento'"
             icon="pi pi-search"
@@ -1014,6 +1031,18 @@ defineExpose({
               </template>
             </SelectButton>
           </div>
+
+          <!-- Estudar direto pelo PDF (alternativa à extração) -->
+          <Button
+            v-if="isPdfFile && !isExtractingWithProgress"
+            label="Estudar pelo PDF"
+            icon="pi pi-book"
+            severity="secondary"
+            outlined
+            :disabled="isLoading"
+            title="Abrir o PDF no leitor para selecionar e marcar trechos direto nele"
+            @click="studyPdf"
+          />
 
           <!-- Cancel button during extraction -->
           <Button
