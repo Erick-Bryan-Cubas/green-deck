@@ -1,6 +1,6 @@
 <!-- frontend/src/pages/GeneratorPage.vue -->
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 
 // PrimeVue
 import Toolbar from 'primevue/toolbar'
@@ -25,6 +25,7 @@ import Divider from 'primevue/divider'
 
 // App components - with lazy loading for performance
 import LazyQuillEditor from '@/components/LazyQuillEditor.vue'
+import LazyPdfStudyViewer from '@/components/LazyPdfStudyViewer.vue'
 import AnkiStatus from '@/components/AnkiStatus.vue'
 import OllamaStatus from '@/components/OllamaStatus.vue'
 import SidebarMenu from '@/components/SidebarMenu.vue'
@@ -2489,6 +2490,30 @@ const lastGenerationWordCount = ref(0)
  * @returns {object} { source, content, shouldWarn, message }
  */
 function resolveGenerationContent() {
+  // 0. Modo de estudo por PDF: seleção no PDF → marcações no PDF → texto do editor
+  if (isPdfStudyActive.value) {
+    const pdfSel = (pdfSelectedText.value || '').trim()
+    if (pdfSel) {
+      return {
+        source: 'selection',
+        content: pdfSel,
+        shouldWarn: false,
+        message: null
+      }
+    }
+
+    const pdfHl = pdfViewerRef.value?.getHighlights?.()
+    if (pdfHl && pdfHl.count > 0 && pdfHl.combined) {
+      return {
+        source: 'highlight',
+        content: pdfHl.combined,
+        shouldWarn: false,
+        message: `Gerando a partir de ${pdfHl.count} marcação${pdfHl.count > 1 ? 'ões' : ''} do PDF`
+      }
+    }
+    // Sem seleção/marcação no PDF: cai para o fluxo normal do editor abaixo
+  }
+
   // 1. Check for mouse selection first
   const selection = (selectedText.value || '').trim()
   if (selection) {
@@ -2544,10 +2569,15 @@ function getSourceLabel() {
   switch (lastGenerationSource.value) {
     case 'selection':
       return 'Texto selecionado'
-    case 'highlight':
+    case 'highlight': {
+      if (isPdfStudyActive.value) {
+        const pdfHl = pdfViewerRef.value?.getHighlights?.()
+        if (pdfHl?.count) return `${pdfHl.count} marcação${pdfHl.count > 1 ? 'ões' : ''} do PDF`
+      }
       const hl = editorRef.value?.getHighlightedContent?.()
       const count = hl?.count || highlightPositions.value.length
       return `${count} marcação${count > 1 ? 'ões' : ''}`
+    }
     case 'full':
       return 'Texto completo'
     default:
@@ -3949,6 +3979,81 @@ function onDocumentError(error) {
 }
 
 // ============================================================
+// Estudo pelo PDF (leitor com seleção e marcação de texto)
+// ============================================================
+const pdfStudyFile = shallowRef(null)      // File do PDF em estudo (apenas em memória)
+const editorViewMode = ref('editor')       // 'editor' | 'pdf'
+const pdfViewerRef = ref(null)
+const pdfSelectedText = ref('')
+const pdfHighlightCount = ref(0)
+
+const pdfDocKey = computed(() =>
+  pdfStudyFile.value ? `${pdfStudyFile.value.name}::${pdfStudyFile.value.size}` : ''
+)
+const isPdfStudyActive = computed(() => editorViewMode.value === 'pdf' && !!pdfStudyFile.value)
+
+function onStudyPdf(file) {
+  if (immersiveReader.value) setReaderEnabled(false)
+  pdfStudyFile.value = file
+  editorViewMode.value = 'pdf'
+  selectedText.value = ''
+  pdfSelectedText.value = ''
+  notify(`📖 "${file.name}" aberto — selecione trechos no PDF para gerar cartões`, 'info', 5000)
+}
+
+function setEditorViewMode(mode) {
+  if (mode === 'pdf' && !pdfStudyFile.value) return
+  if (mode === 'pdf' && immersiveReader.value) setReaderEnabled(false)
+  editorViewMode.value = mode
+  // A seleção ativa pertence ao modo visível; evita gerar de uma seleção invisível
+  selectedText.value = mode === 'pdf' ? (pdfSelectedText.value || '') : ''
+}
+
+function closePdfStudy() {
+  pdfStudyFile.value = null
+  editorViewMode.value = 'editor'
+  pdfSelectedText.value = ''
+  pdfHighlightCount.value = 0
+  selectedText.value = ''
+}
+
+function onPdfSelectionChanged(text) {
+  pdfSelectedText.value = text || ''
+  if (editorViewMode.value === 'pdf') {
+    selectedText.value = pdfSelectedText.value
+  }
+}
+
+function onPdfHighlightsChanged(count) {
+  pdfHighlightCount.value = count || 0
+}
+
+// Geração disparada pelo leitor (toolbar de seleção ou painel de marcações):
+// a resolução de conteúdo em resolveGenerationContent() já prioriza o PDF
+function onPdfGenerate() {
+  openGenerateModal()
+}
+
+function onPdfAddToEditor(text) {
+  const t = (text || '').trim()
+  if (!t) return
+  const current = (editorRef.value?.getFullText?.() || '').trim()
+  if (!current) {
+    editorRef.value?.setContent(t)
+  } else {
+    // Anexa preservando a formatação existente do editor
+    const delta = editorRef.value?.getDelta?.()
+    if (delta && Array.isArray(delta.ops)) {
+      delta.ops.push({ insert: '\n\n' + t + '\n' })
+      editorRef.value?.setDelta(delta)
+    } else {
+      editorRef.value?.setContent(current + '\n\n' + t)
+    }
+  }
+  notify('Trecho enviado ao editor', 'success', 2500)
+}
+
+// ============================================================
 // Computeds úteis
 // ============================================================
 const hasSelection = computed(() => (selectedText.value || '').trim().length > 0)
@@ -3960,10 +4065,13 @@ const hasAnyOutput = computed(() => hasCards.value || hasQuestions.value)
 const canGenerate = computed(() => {
   // Has mouse selection
   if (hasSelection.value) return true
-  
+
+  // Marcações feitas no PDF em estudo
+  if (isPdfStudyActive.value && pdfHighlightCount.value > 0) return true
+
   // Has highlighted content
   if (hasHighlights.value) return true
-  
+
   // Has any text in editor
   const fullText = (lastFullText.value || '').trim()
   return fullText.length > 0
@@ -3972,6 +4080,9 @@ const canGenerate = computed(() => {
 // Label descritivo da fonte de geração para tooltip/feedback
 const generationSourceLabel = computed(() => {
   if (hasSelection.value) return 'Gerar a partir da seleção'
+  if (isPdfStudyActive.value && pdfHighlightCount.value > 0) {
+    return `Gerar a partir de ${pdfHighlightCount.value} marcação${pdfHighlightCount.value > 1 ? 'ões' : ''} do PDF`
+  }
   if (hasHighlights.value) return `Gerar a partir de ${highlightCount.value} marcação${highlightCount.value > 1 ? 'ões' : ''}`
   const fullText = (lastFullText.value || '').trim()
   if (fullText.length > 0) return 'Gerar a partir de todo o texto'
@@ -4239,6 +4350,7 @@ onBeforeUnmount(() => {
             <DocumentUpload
               @extracted="onDocumentExtracted"
               @error="onDocumentError"
+              @study-pdf="onStudyPdf"
             />
 
             <Button
@@ -4481,6 +4593,9 @@ onBeforeUnmount(() => {
               :has-highlights="hasHighlights"
               :highlight-label="currentHighlightLabel"
               :text-stats="textStats"
+              :pdf-available="!!pdfStudyFile"
+              :view-mode="editorViewMode"
+              @set-view-mode="setEditorViewMode"
               @set-reader="setReaderEnabled"
               @undo="editorUndo"
               @redo="editorRedo"
@@ -4575,6 +4690,7 @@ onBeforeUnmount(() => {
               </Transition>
 
               <div
+                v-show="editorViewMode !== 'pdf'"
                 ref="readerSurfaceRef"
                 class="editor-surface"
                 :class="{ 'reader-surface': immersiveReader }"
@@ -4622,6 +4738,22 @@ onBeforeUnmount(() => {
                   @close="showTopicLegend = false"
                 />
               </div>
+
+              <!-- Leitor de PDF para estudo (alternativa ao texto extraído).
+                   v-show preserva página/zoom/documento ao alternar Editor↔PDF -->
+              <LazyPdfStudyViewer
+                v-if="pdfStudyFile"
+                v-show="editorViewMode === 'pdf'"
+                ref="pdfViewerRef"
+                :key="pdfDocKey"
+                :file="pdfStudyFile"
+                :generating="generating"
+                @selection-changed="onPdfSelectionChanged"
+                @highlights-changed="onPdfHighlightsChanged"
+                @generate="onPdfGenerate"
+                @add-to-editor="onPdfAddToEditor"
+                @close="closePdfStudy"
+              />
 
               <!-- Indicador de página flutuante / Paginator para PDF -->
               <Transition name="fade">
