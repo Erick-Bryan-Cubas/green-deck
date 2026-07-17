@@ -42,6 +42,14 @@ defineProps({
   textStats: {
     type: Object,
     default: () => ({ words: 0, readingTimeLabel: '' })
+  },
+  pdfAvailable: {
+    type: Boolean,
+    default: false
+  },
+  viewMode: {
+    type: String,
+    default: 'editor' // 'editor' | 'pdf'
   }
 })
 
@@ -52,20 +60,21 @@ const emit = defineEmits([
   'toggle-search',
   'prev-highlight',
   'next-highlight',
-  'more'
+  'more',
+  'set-view-mode'
 ])
 </script>
 
 <template>
   <div class="panel-head">
     <div class="panel-title">
-      <i class="pi pi-pencil mr-2" />
-      Editor
+      <i :class="viewMode === 'pdf' ? 'pi pi-file-pdf mr-2' : 'pi pi-pencil mr-2'" />
+      {{ viewMode === 'pdf' ? 'Estudo PDF' : 'Editor' }}
 
       <!-- Indicador de salvamento -->
       <Transition name="fade">
         <Tag
-          v-if="saveStatus !== 'idle'"
+          v-if="viewMode !== 'pdf' && saveStatus !== 'idle'"
           :severity="saveStatusSeverity"
           class="pill save-status ml-2"
         >
@@ -75,8 +84,37 @@ const emit = defineEmits([
     </div>
 
     <div class="panel-actions">
+      <!-- Alternância Editor / PDF (quando há um PDF em estudo) -->
+      <div
+        v-if="pdfAvailable"
+        class="view-mode-toggle"
+        role="group"
+        aria-label="Modo de visualização"
+      >
+        <button
+          type="button"
+          class="view-mode-btn"
+          :class="{ 'is-active': viewMode === 'editor' }"
+          title="Editor de texto"
+          @click="emit('set-view-mode', 'editor')"
+        >
+          <i class="pi pi-pencil" />
+          <span>Editor</span>
+        </button>
+        <button
+          type="button"
+          class="view-mode-btn"
+          :class="{ 'is-active': viewMode === 'pdf' }"
+          title="Estudar pelo PDF"
+          @click="emit('set-view-mode', 'pdf')"
+        >
+          <i class="pi pi-file-pdf" />
+          <span>PDF</span>
+        </button>
+      </div>
+
       <!-- Modo Zen -->
-      <div class="editor-zen-group">
+      <div v-if="viewMode !== 'pdf'" class="editor-zen-group">
         <div class="editor-switch" title="Ativar Modo Zen">
           <span class="editor-switch-label">
             <i class="pi pi-bullseye" />
@@ -92,7 +130,7 @@ const emit = defineEmits([
       </div>
 
       <!-- Undo/Redo do Editor -->
-      <div class="editor-undo-redo">
+      <div v-if="viewMode !== 'pdf'" class="editor-undo-redo">
         <Button
           icon="pi pi-undo"
           severity="secondary"
@@ -117,6 +155,7 @@ const emit = defineEmits([
 
       <!-- Busca no texto -->
       <Button
+        v-if="viewMode !== 'pdf'"
         icon="pi pi-search"
         severity="secondary"
         :outlined="searchActive"
@@ -129,7 +168,7 @@ const emit = defineEmits([
       />
 
       <!-- Navegação de Highlights -->
-      <div v-if="hasHighlights" class="highlight-nav">
+      <div v-if="viewMode !== 'pdf' && hasHighlights" class="highlight-nav">
         <Button
           icon="pi pi-chevron-left"
           severity="secondary"
@@ -156,7 +195,7 @@ const emit = defineEmits([
       </div>
 
       <!-- Estatísticas de texto -->
-      <div class="text-stats">
+      <div v-if="viewMode !== 'pdf'" class="text-stats">
         <Tag severity="secondary" class="pill stats-pill">
           <i class="pi pi-align-left mr-1" /> {{ textStats.words }} palavras
         </Tag>
@@ -167,6 +206,7 @@ const emit = defineEmits([
 
       <!-- Mais opções (nº de linhas, exportar texto) -->
       <Button
+        v-if="viewMode !== 'pdf'"
         icon="pi pi-ellipsis-v"
         severity="secondary"
         text
@@ -253,6 +293,51 @@ const emit = defineEmits([
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Alternância Editor / PDF */
+.view-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface-100);
+  border: 1px solid var(--surface-200);
+}
+
+.view-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-color-secondary);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.view-mode-btn i {
+  font-size: var(--icon-sm);
+}
+
+.view-mode-btn:hover:not(.is-active) {
+  color: var(--text-color);
+}
+
+.view-mode-btn.is-active {
+  background: var(--surface-0);
+  color: var(--text-color);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+}
+
+.view-mode-btn.is-active .pi-file-pdf {
+  color: var(--red-400);
 }
 
 .editor-switch {
@@ -349,6 +434,9 @@ const emit = defineEmits([
 }
 
 @container editor-panel (max-width: 650px) {
+  .view-mode-btn span {
+    display: none;
+  }
   .editor-switch-label {
     font-size: 0;
     gap: 0;

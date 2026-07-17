@@ -425,6 +425,12 @@ defineExpose({
   top: 12px;
   bottom: 12px;
   width: 72px;
+  /* Blindagem: o pdf_viewer.css do PDF.js (carregado pelo Estudo PDF) define uma
+     regra global ".sidebar" com min-width:180px/max-width/padding-block que
+     vazaria para este menu. Estas declarações vencem por especificidade. */
+  min-width: 0;
+  max-width: none;
+  padding-block: 0;
   background: linear-gradient(180deg, var(--sidebar-bg-start) 0%, var(--sidebar-bg-end) 100%);
   backdrop-filter: blur(24px);
   border: 1px solid var(--sidebar-border);

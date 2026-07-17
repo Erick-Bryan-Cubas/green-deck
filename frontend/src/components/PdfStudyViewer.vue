@@ -1,0 +1,1466 @@
+<!-- frontend/src/components/PdfStudyViewer.vue -->
+<!-- Leitor de PDF para estudo: renderiza o PDF original (PDF.js via @tato30/vue-pdf)
+     com camada de texto selecionável. Seleção exibe toolbar flutuante para gerar
+     cartões, marcar trechos (4 cores), enviar ao editor ou copiar. Marcações e
+     posição de leitura persistem no localStorage por documento (nome + tamanho).
+     Recursos: busca no documento, ajuste à largura, página escura, Ctrl+scroll. -->
+<script>
+// Registra o worker real do PDF.js (empacotado pelo Vite) ANTES do vue-pdf rodar:
+// o fallback do vue-pdf é um worker em data-URI, que o Chromium bloqueia
+// ("Failed to fetch dynamically imported module: data:..."). workerPort tem
+// prioridade sobre workerSrc no PDF.js, então isso neutraliza o fallback.
+import { GlobalWorkerOptions } from 'pdfjs-dist'
+import PdfJsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker'
+
+if (!GlobalWorkerOptions.workerPort) {
+  GlobalWorkerOptions.workerPort = new PdfJsWorker()
+}
+</script>
+
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import Button from 'primevue/button'
+import Tag from 'primevue/tag'
+import { VuePDF, usePDF } from '@tato30/vue-pdf'
+import '@tato30/vue-pdf/style.css'
+
+const props = defineProps({
+  file: {
+    type: File,
+    required: true
+  },
+  // Bytes do PDF (lidos pelo wrapper). Passar dados em memória evita blob URLs,
+  // que a CSP do backend bloqueia em connect-src.
+  data: {
+    type: Uint8Array,
+    required: true
+  },
+  generating: {
+    type: Boolean,
+    default: false
+  }
+})
+
+const emit = defineEmits([
+  'selection-changed',
+  'highlights-changed',
+  'generate',
+  'add-to-editor',
+  'close'
+])
+
+// ============================================================
+// Identidade do documento + estado de leitura persistido
+// ============================================================
+const docKey = `${props.file.name}::${props.file.size}`
+const READING_LS_KEY = 'green-deck.pdf-reading.v1'
+
+let savedReading
+try {
+  savedReading = JSON.parse(localStorage.getItem(READING_LS_KEY) || '{}')[docKey] || null
+} catch {
+  savedReading = null
+}
+
+// ============================================================
+// Carregamento do PDF
+// ============================================================
+const loadError = ref('')
+
+// slice(): o PDF.js transfere o buffer para o worker (detach); a cópia preserva
+// os bytes originais no wrapper para um eventual remount
+const { pdf, pages } = usePDF(props.data.slice(), {
+  onError: (e) => {
+    loadError.value = e?.message || 'Falha ao carregar o PDF'
+  }
+})
+
+const isReady = computed(() => !loadError.value && pages.value > 0)
+
+// ============================================================
+// Navegação de páginas (retoma da última página lida)
+// ============================================================
+const currentPage = ref(savedReading?.page || 1)
+
+function goToPage(p) {
+  const total = pages.value || 1
+  currentPage.value = Math.min(Math.max(1, Math.round(p) || 1), total)
+}
+
+function onPageInput(event) {
+  goToPage(Number(event.target.value))
+  event.target.value = String(currentPage.value)
+}
+
+function onKeydown(event) {
+  if (event.target?.tagName === 'INPUT') return
+  switch (event.key) {
+    case 'ArrowRight':
+    case 'PageDown':
+      event.preventDefault()
+      goToPage(currentPage.value + 1)
+      break
+    case 'ArrowLeft':
+    case 'PageUp':
+      event.preventDefault()
+      goToPage(currentPage.value - 1)
+      break
+    case 'Home':
+      event.preventDefault()
+      goToPage(1)
+      break
+    case 'End':
+      event.preventDefault()
+      goToPage(pages.value)
+      break
+  }
+}
+
+watch(currentPage, () => {
+  clearSelectionState()
+  // Assume que a nova página tem texto até o textLayer dela carregar
+  pageHasText.value = true
+})
+
+// A página restaurada pode exceder o total (documento trocado de tamanho)
+watch(pages, (total) => {
+  if (total && currentPage.value > total) currentPage.value = total
+})
+
+// ============================================================
+// Zoom / ajuste à largura / página escura
+// ============================================================
+const scale = ref(savedReading?.scale || 1)
+const fitWidth = ref(savedReading?.fitWidth !== false)
+const pageDark = ref(!!savedReading?.pageDark)
+const baseViewport = shallowRef(null) // dimensões da página em scale = 1
+
+const scrollRef = ref(null)
+const pageWrapRef = ref(null)
+const viewerRootRef = ref(null)
+
+function onPageLoaded(viewport) {
+  if (viewport?.width && scale.value > 0) {
+    baseViewport.value = {
+      width: viewport.width / scale.value,
+      height: viewport.height / scale.value
+    }
+  }
+  if (fitWidth.value) applyFitWidth()
+}
+
+// Detecta página sem texto selecionável (PDF digitalizado sem OCR)
+const pageHasText = ref(true)
+
+function onTextLoaded() {
+  nextTick(() => {
+    const tl = pageWrapRef.value?.querySelector('.textLayer')
+    pageHasText.value = !!(tl && (tl.textContent || '').trim().length > 0)
+  })
+}
+
+function applyFitWidth() {
+  const base = baseViewport.value
+  const holder = scrollRef.value
+  // clientWidth 0 = viewer oculto (v-show) — não recalcular
+  if (!base?.width || !holder || !holder.clientWidth) return
+  const target = Math.min(Math.max((holder.clientWidth - 48) / base.width, 0.4), 4)
+  // Evita loop de rerender por diferenças mínimas
+  if (Math.abs(target - scale.value) > 0.02) {
+    scale.value = Math.round(target * 100) / 100
+  }
+}
+
+function zoomIn() {
+  fitWidth.value = false
+  scale.value = Math.min(4, Math.round((scale.value + 0.15) * 100) / 100)
+}
+
+function zoomOut() {
+  fitWidth.value = false
+  scale.value = Math.max(0.4, Math.round((scale.value - 0.15) * 100) / 100)
+}
+
+function toggleFitWidth() {
+  fitWidth.value = true
+  applyFitWidth()
+}
+
+// Ctrl + roda do mouse = zoom (como leitores de PDF nativos)
+function onWheel(event) {
+  if (!event.ctrlKey) return
+  event.preventDefault()
+  if (event.deltaY < 0) zoomIn()
+  else zoomOut()
+}
+
+let resizeObserver = null
+
+// Persiste posição de leitura, zoom e preferências por documento
+function persistReading() {
+  try {
+    const all = JSON.parse(localStorage.getItem(READING_LS_KEY) || '{}')
+    all[docKey] = {
+      page: currentPage.value,
+      scale: scale.value,
+      fitWidth: fitWidth.value,
+      pageDark: pageDark.value
+    }
+    localStorage.setItem(READING_LS_KEY, JSON.stringify(all))
+  } catch {
+    /* localStorage indisponível — sem persistência */
+  }
+}
+
+watch([currentPage, scale, fitWidth, pageDark], persistReading)
+
+// ============================================================
+// Busca no documento
+// ============================================================
+const searchOpen = ref(false)
+const searchQuery = ref('')
+const activeSearch = ref('') // termo confirmado (destacado nas páginas)
+const searchPages = ref([]) // páginas que contêm o termo
+const searchIdx = ref(-1)
+const searching = ref(false)
+const searchInputRef = ref(null)
+let searchToken = 0
+
+function toggleSearch() {
+  searchOpen.value = !searchOpen.value
+  if (searchOpen.value) {
+    nextTick(() => searchInputRef.value?.focus())
+  } else {
+    closeSearch()
+  }
+}
+
+async function runSearch() {
+  const term = searchQuery.value.trim()
+  // Enter com o mesmo termo já buscado = próxima ocorrência
+  if (term && term === activeSearch.value && searchPages.value.length) {
+    stepSearch(1)
+    return
+  }
+  activeSearch.value = term
+  searchPages.value = []
+  searchIdx.value = -1
+  if (!term || !pdf.value) return
+
+  const token = ++searchToken
+  searching.value = true
+  try {
+    const docProxy = await pdf.value.promise
+    const needle = term.toLowerCase()
+    const found = []
+    for (let p = 1; p <= docProxy.numPages; p++) {
+      if (token !== searchToken) return // nova busca iniciada — aborta esta
+      const page = await docProxy.getPage(p)
+      const tc = await page.getTextContent()
+      const text = tc.items.map((i) => i.str).join(' ').toLowerCase()
+      if (text.includes(needle)) found.push(p)
+    }
+    if (token !== searchToken) return
+    searchPages.value = found
+    if (found.length) {
+      searchIdx.value = 0
+      goToPage(found[0])
+    }
+  } catch {
+    /* falha na varredura — mantém estado vazio */
+  } finally {
+    if (token === searchToken) searching.value = false
+  }
+}
+
+function stepSearch(dir) {
+  const list = searchPages.value
+  if (!list.length) return
+  searchIdx.value = (searchIdx.value + dir + list.length) % list.length
+  goToPage(list[searchIdx.value])
+}
+
+function closeSearch() {
+  searchOpen.value = false
+  searchQuery.value = ''
+  activeSearch.value = ''
+  searchPages.value = []
+  searchIdx.value = -1
+  searchToken++
+  searching.value = false
+}
+
+const searchStatusLabel = computed(() => {
+  if (searching.value) return 'Buscando...'
+  if (!activeSearch.value) return ''
+  if (!searchPages.value.length) return 'Nada encontrado'
+  return `pág. ${searchIdx.value + 1} de ${searchPages.value.length} com ocorrências`
+})
+
+// ============================================================
+// Seleção de texto + toolbar flutuante
+// ============================================================
+const selectedText = ref('')
+const selToolbar = ref({ visible: false, x: 0, y: 0 })
+const copied = ref(false)
+// Snapshot da seleção no momento do mouseup: cliques na toolbar podem colapsar
+// a seleção viva do browser, então "Marcar" usa este snapshot
+const lastSelection = shallowRef(null) // { text, page, rects }
+
+function onTextSelection() {
+  // Aguarda o browser consolidar a seleção após o mouseup
+  nextTick(() => {
+    const sel = window.getSelection()
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      hideSelectionToolbar()
+      return
+    }
+    const range = sel.getRangeAt(0)
+    const wrap = pageWrapRef.value
+    if (!wrap || !wrap.contains(range.commonAncestorContainer)) {
+      hideSelectionToolbar()
+      return
+    }
+    const text = sel.toString().replace(/\s+/g, ' ').trim()
+    if (!text) {
+      hideSelectionToolbar()
+      return
+    }
+
+    selectedText.value = text
+    lastSelection.value = {
+      text,
+      page: currentPage.value,
+      rects: selectionRects(range)
+    }
+    emit('selection-changed', text)
+
+    const rects = range.getClientRects()
+    const last = rects[rects.length - 1]
+    const rootRect = viewerRootRef.value?.getBoundingClientRect()
+    if (!last || !rootRect) return
+
+    const x = Math.min(Math.max(last.left + last.width / 2 - rootRect.left, 150), rootRect.width - 150)
+    const y = Math.min(Math.max(last.bottom - rootRect.top + 10, 52), rootRect.height - 56)
+    selToolbar.value = { visible: true, x, y }
+  })
+}
+
+function hideSelectionToolbar() {
+  selToolbar.value = { ...selToolbar.value, visible: false }
+  if (selectedText.value) {
+    selectedText.value = ''
+    emit('selection-changed', '')
+  }
+}
+
+function clearSelectionState() {
+  try {
+    window.getSelection()?.removeAllRanges()
+  } catch {
+    /* seleção pode não existir */
+  }
+  lastSelection.value = null
+  hideSelectionToolbar()
+}
+
+function onGenerateFromSelection() {
+  if (!selectedText.value) return
+  emit('generate', { text: selectedText.value, source: 'selection' })
+}
+
+function onSendToEditor() {
+  if (!selectedText.value) return
+  emit('add-to-editor', selectedText.value)
+  clearSelectionState()
+}
+
+async function onCopySelection() {
+  if (!selectedText.value) return
+  try {
+    await navigator.clipboard.writeText(selectedText.value)
+    copied.value = true
+    setTimeout(() => {
+      copied.value = false
+    }, 1400)
+  } catch {
+    /* clipboard indisponível (http) — sem fallback */
+  }
+}
+
+// ============================================================
+// Marcações (highlights) — 4 cores, persistidas por documento
+// ============================================================
+const HIGHLIGHTS_LS_KEY = 'green-deck.pdf-highlights.v1'
+
+const HIGHLIGHT_COLORS = [
+  { key: 'yellow', label: 'amarelo', bg: 'rgba(255, 205, 60, 0.34)', solid: '#f59e0b' },
+  { key: 'green', label: 'verde', bg: 'rgba(74, 222, 128, 0.30)', solid: '#22c55e' },
+  { key: 'blue', label: 'azul', bg: 'rgba(96, 165, 250, 0.30)', solid: '#3b82f6' },
+  { key: 'pink', label: 'rosa', bg: 'rgba(244, 114, 182, 0.30)', solid: '#ec4899' }
+]
+
+function colorInfo(key) {
+  return HIGHLIGHT_COLORS.find((c) => c.key === key) || HIGHLIGHT_COLORS[0]
+}
+
+const highlights = ref([]) // { id, page, text, color, rects: [{x,y,w,h}] } — rects em scale 1
+const showHighlightsPanel = ref(false)
+
+const currentPageHighlights = computed(() =>
+  highlights.value.filter((h) => h.page === currentPage.value)
+)
+
+const sortedHighlights = computed(() =>
+  [...highlights.value].sort((a, b) => a.page - b.page)
+)
+
+function loadHighlights() {
+  try {
+    const all = JSON.parse(localStorage.getItem(HIGHLIGHTS_LS_KEY) || '{}')
+    highlights.value = Array.isArray(all[docKey]) ? all[docKey] : []
+  } catch {
+    highlights.value = []
+  }
+}
+
+function persistHighlights() {
+  try {
+    const all = JSON.parse(localStorage.getItem(HIGHLIGHTS_LS_KEY) || '{}')
+    if (highlights.value.length > 0) {
+      all[docKey] = highlights.value
+    } else {
+      delete all[docKey]
+    }
+    localStorage.setItem(HIGHLIGHTS_LS_KEY, JSON.stringify(all))
+  } catch {
+    /* localStorage cheio/indisponível — marcações seguem em memória */
+  }
+}
+
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+}
+
+function selectionRects(range) {
+  const wrapRect = pageWrapRef.value?.getBoundingClientRect()
+  if (!wrapRect) return []
+  const s = scale.value || 1
+  const out = []
+  const seen = new Set()
+  for (const r of range.getClientRects()) {
+    if (r.width < 2 || r.height < 2) continue
+    const rect = {
+      x: Math.round(((r.left - wrapRect.left) / s) * 100) / 100,
+      y: Math.round(((r.top - wrapRect.top) / s) * 100) / 100,
+      w: Math.round((r.width / s) * 100) / 100,
+      h: Math.round((r.height / s) * 100) / 100
+    }
+    const key = `${Math.round(rect.x)}:${Math.round(rect.y)}:${Math.round(rect.w)}:${Math.round(rect.h)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(rect)
+  }
+  // Remove retângulos que englobam outros (duplicação de linhas da camada de texto)
+  return out.filter(
+    (a) =>
+      !out.some(
+        (b) =>
+          b !== a &&
+          b.x >= a.x - 1 &&
+          b.y >= a.y - 1 &&
+          b.x + b.w <= a.x + a.w + 2 &&
+          b.y + b.h <= a.y + a.h + 2 &&
+          b.w * b.h < a.w * a.h * 0.9
+      )
+  )
+}
+
+function markSelection(colorKey = 'yellow') {
+  // Usa o snapshot: o clique no botão pode já ter colapsado a seleção viva
+  const snap = lastSelection.value
+  if (!snap || !snap.text || snap.rects.length === 0) return
+
+  highlights.value.push({
+    id: makeId(),
+    page: snap.page,
+    text: snap.text,
+    color: colorKey,
+    rects: snap.rects
+  })
+  clearSelectionState()
+}
+
+function removeHighlight(id) {
+  highlights.value = highlights.value.filter((h) => h.id !== id)
+}
+
+function clearAllHighlights() {
+  highlights.value = []
+}
+
+function jumpToHighlight(h) {
+  goToPage(h.page)
+}
+
+function generateFromHighlights() {
+  if (highlights.value.length === 0) return
+  clearSelectionState()
+  emit('generate', { text: getHighlights().combined, source: 'highlight' })
+}
+
+function getHighlights() {
+  const items = sortedHighlights.value
+  return {
+    count: items.length,
+    combined: items.map((h) => h.text).join('\n\n'),
+    items
+  }
+}
+
+watch(
+  highlights,
+  () => {
+    persistHighlights()
+    emit('highlights-changed', highlights.value.length)
+  },
+  { deep: true }
+)
+
+// ============================================================
+// Ciclo de vida
+// ============================================================
+onMounted(() => {
+  loadHighlights()
+  emit('highlights-changed', highlights.value.length)
+
+  if (scrollRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      if (fitWidth.value) applyFitWidth()
+    })
+    resizeObserver.observe(scrollRef.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+})
+
+defineExpose({
+  getSelectedText: () => selectedText.value,
+  getHighlights,
+  clearSelection: clearSelectionState,
+  goToPage
+})
+</script>
+
+<template>
+  <div ref="viewerRootRef" class="pdf-study-viewer">
+    <!-- Toolbar -->
+    <div class="pdf-toolbar">
+      <div class="pdf-toolbar-left" :title="file.name">
+        <i class="pi pi-file-pdf pdf-file-icon" />
+        <span class="pdf-file-name">{{ file.name }}</span>
+      </div>
+
+      <div class="pdf-toolbar-center">
+        <Button
+          icon="pi pi-angle-double-left"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          :disabled="currentPage <= 1"
+          title="Primeira página (Home)"
+          aria-label="Primeira página"
+          @click="goToPage(1)"
+        />
+        <Button
+          icon="pi pi-angle-left"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          :disabled="currentPage <= 1"
+          title="Página anterior (←)"
+          aria-label="Página anterior"
+          @click="goToPage(currentPage - 1)"
+        />
+        <span class="pdf-page-indicator">
+          <input
+            class="pdf-page-input"
+            type="text"
+            inputmode="numeric"
+            :value="currentPage"
+            aria-label="Página atual"
+            @change="onPageInput"
+            @keydown.enter="onPageInput"
+          />
+          <span class="pdf-page-total">/ {{ pages || '–' }}</span>
+        </span>
+        <Button
+          icon="pi pi-angle-right"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          :disabled="currentPage >= pages"
+          title="Próxima página (→)"
+          aria-label="Próxima página"
+          @click="goToPage(currentPage + 1)"
+        />
+        <Button
+          icon="pi pi-angle-double-right"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          :disabled="currentPage >= pages"
+          title="Última página (End)"
+          aria-label="Última página"
+          @click="goToPage(pages)"
+        />
+      </div>
+
+      <div class="pdf-toolbar-right">
+        <Button
+          icon="pi pi-search"
+          severity="secondary"
+          :text="!searchOpen"
+          :outlined="searchOpen"
+          rounded
+          size="small"
+          title="Buscar no documento"
+          aria-label="Buscar no documento"
+          @click="toggleSearch"
+        />
+
+        <span class="pdf-toolbar-sep" aria-hidden="true"></span>
+
+        <Button
+          icon="pi pi-search-minus"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          title="Diminuir zoom (Ctrl + roda do mouse)"
+          aria-label="Diminuir zoom"
+          @click="zoomOut"
+        />
+        <span class="pdf-zoom-label">{{ Math.round(scale * 100) }}%</span>
+        <Button
+          icon="pi pi-search-plus"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          title="Aumentar zoom (Ctrl + roda do mouse)"
+          aria-label="Aumentar zoom"
+          @click="zoomIn"
+        />
+        <Button
+          icon="pi pi-arrows-h"
+          severity="secondary"
+          :text="!fitWidth"
+          :outlined="fitWidth"
+          rounded
+          size="small"
+          title="Ajustar à largura"
+          aria-label="Ajustar à largura"
+          @click="toggleFitWidth"
+        />
+        <Button
+          :icon="pageDark ? 'pi pi-sun' : 'pi pi-moon'"
+          severity="secondary"
+          :text="!pageDark"
+          :outlined="pageDark"
+          rounded
+          size="small"
+          :title="pageDark ? 'Página clara (original)' : 'Página escura (conforto noturno)'"
+          aria-label="Alternar página escura"
+          @click="pageDark = !pageDark"
+        />
+
+        <span class="pdf-toolbar-sep" aria-hidden="true"></span>
+
+        <span class="pdf-hl-btn-wrap">
+          <Button
+            icon="pi pi-bookmark"
+            severity="secondary"
+            :text="!showHighlightsPanel"
+            :outlined="showHighlightsPanel"
+            rounded
+            size="small"
+            title="Marcações"
+            aria-label="Marcações"
+            @click="showHighlightsPanel = !showHighlightsPanel"
+          />
+          <span v-if="highlights.length" class="pdf-hl-badge">{{ highlights.length }}</span>
+        </span>
+
+        <Button
+          icon="pi pi-times"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          title="Fechar PDF e voltar ao editor"
+          aria-label="Fechar PDF"
+          @click="emit('close')"
+        />
+      </div>
+    </div>
+
+    <!-- Barra de busca -->
+    <Transition name="pdf-slide">
+      <div v-if="searchOpen" class="pdf-searchbar">
+        <i class="pi pi-search pdf-searchbar-icon" />
+        <input
+          ref="searchInputRef"
+          v-model="searchQuery"
+          class="pdf-search-input"
+          type="text"
+          placeholder="Buscar no documento... (Enter)"
+          @keydown.enter="runSearch"
+          @keydown.esc="toggleSearch"
+        />
+        <span v-if="searchStatusLabel" class="pdf-search-count">{{ searchStatusLabel }}</span>
+        <Button
+          icon="pi pi-chevron-up"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          :disabled="!searchPages.length"
+          title="Página anterior com ocorrências"
+          aria-label="Ocorrência anterior"
+          @click="stepSearch(-1)"
+        />
+        <Button
+          icon="pi pi-chevron-down"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          :disabled="!searchPages.length"
+          title="Próxima página com ocorrências"
+          aria-label="Próxima ocorrência"
+          @click="stepSearch(1)"
+        />
+        <Button
+          icon="pi pi-times"
+          severity="secondary"
+          text
+          rounded
+          size="small"
+          title="Fechar busca (Esc)"
+          aria-label="Fechar busca"
+          @click="toggleSearch"
+        />
+      </div>
+    </Transition>
+
+    <!-- Área principal -->
+    <div class="pdf-main">
+      <!-- Página digitalizada sem camada de texto: nada para selecionar -->
+      <Transition name="pdf-fade-plain">
+        <div v-if="isReady && !pageHasText" class="pdf-no-text-hint">
+          <i class="pi pi-info-circle" />
+          <span>
+            Esta página não tem texto selecionável (PDF digitalizado).
+            Use "Extrair Texto" no diálogo de documento para aplicar OCR.
+          </span>
+        </div>
+      </Transition>
+
+      <div
+        ref="scrollRef"
+        class="pdf-scroll"
+        tabindex="0"
+        @keydown="onKeydown"
+        @mouseup="onTextSelection"
+        @wheel="onWheel"
+        @scroll="selToolbar.visible = false"
+      >
+        <div v-if="loadError" class="pdf-status pdf-error">
+          <i class="pi pi-exclamation-circle" />
+          <span>{{ loadError }}</span>
+        </div>
+
+        <div v-else-if="!isReady" class="pdf-status">
+          <i class="pi pi-spin pi-spinner" />
+          <span>Carregando PDF...</span>
+        </div>
+
+        <div
+          v-show="isReady"
+          ref="pageWrapRef"
+          class="pdf-page-wrap"
+          :class="{ 'page-dark': pageDark }"
+        >
+          <VuePDF
+            :pdf="pdf"
+            :page="currentPage"
+            :scale="scale"
+            text-layer
+            :highlight-text="activeSearch || null"
+            :highlight-options="{ completeWords: false, ignoreCase: true }"
+            @loaded="onPageLoaded"
+            @text-loaded="onTextLoaded"
+          />
+          <!-- Camada de marcações da página atual -->
+          <div class="pdf-highlight-layer" aria-hidden="true">
+            <template v-for="h in currentPageHighlights" :key="h.id">
+              <div
+                v-for="(r, i) in h.rects"
+                :key="h.id + '-' + i"
+                class="pdf-highlight-rect"
+                :style="{
+                  left: r.x * scale + 'px',
+                  top: r.y * scale + 'px',
+                  width: r.w * scale + 'px',
+                  height: r.h * scale + 'px',
+                  background: colorInfo(h.color).bg
+                }"
+              ></div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- Painel de marcações -->
+      <Transition name="pdf-panel">
+        <aside v-if="showHighlightsPanel" class="pdf-highlights-panel">
+          <div class="pdf-hl-head">
+            <span class="pdf-hl-title">
+              <i class="pi pi-bookmark" />
+              Marcações
+            </span>
+            <Button
+              v-if="highlights.length"
+              icon="pi pi-trash"
+              severity="secondary"
+              text
+              rounded
+              size="small"
+              title="Limpar todas as marcações"
+              aria-label="Limpar todas"
+              @click="clearAllHighlights"
+            />
+          </div>
+
+          <div v-if="!highlights.length" class="pdf-hl-empty">
+            Selecione um trecho no PDF e toque numa das <strong>cores</strong> do balão
+            para guardá-lo aqui.
+          </div>
+
+          <div v-else class="pdf-hl-list">
+            <div
+              v-for="h in sortedHighlights"
+              :key="h.id"
+              class="pdf-hl-item"
+              role="button"
+              tabindex="0"
+              :style="{ borderLeftColor: colorInfo(h.color).solid }"
+              :title="'Ir para a página ' + h.page"
+              @click="jumpToHighlight(h)"
+              @keydown.enter="jumpToHighlight(h)"
+            >
+              <div class="pdf-hl-item-head">
+                <Tag class="pdf-hl-page-tag" severity="secondary">p. {{ h.page }}</Tag>
+                <Button
+                  icon="pi pi-times"
+                  severity="secondary"
+                  text
+                  rounded
+                  size="small"
+                  title="Remover marcação"
+                  aria-label="Remover marcação"
+                  @click.stop="removeHighlight(h.id)"
+                />
+              </div>
+              <p class="pdf-hl-text">{{ h.text.length > 160 ? h.text.slice(0, 160) + '…' : h.text }}</p>
+            </div>
+          </div>
+
+          <div v-if="highlights.length" class="pdf-hl-footer">
+            <Button
+              icon="pi pi-bolt"
+              :label="`Gerar dos marcados (${highlights.length})`"
+              size="small"
+              :disabled="generating"
+              @click="generateFromHighlights"
+            />
+          </div>
+        </aside>
+      </Transition>
+    </div>
+
+    <!-- Toolbar flutuante de seleção -->
+    <!-- mousedown.prevent: sem isso o clique colapsa a seleção do browser
+         antes do handler do botão rodar -->
+    <Transition name="pdf-fade">
+      <div
+        v-if="selToolbar.visible"
+        class="pdf-sel-toolbar"
+        :style="{ left: selToolbar.x + 'px', top: selToolbar.y + 'px' }"
+        @mousedown.prevent
+        @mouseup.stop
+      >
+        <button
+          type="button"
+          class="pdf-sel-btn is-primary"
+          :disabled="generating"
+          title="Gerar cartões a partir da seleção"
+          @click="onGenerateFromSelection"
+        >
+          <i class="pi pi-bolt" />
+          <span>Gerar cartões</span>
+        </button>
+
+        <span class="pdf-sel-colors" role="group" aria-label="Marcar com cor">
+          <button
+            v-for="c in HIGHLIGHT_COLORS"
+            :key="c.key"
+            type="button"
+            class="pdf-color-dot"
+            :style="{ background: c.solid }"
+            :title="'Marcar em ' + c.label"
+            :aria-label="'Marcar em ' + c.label"
+            @click="markSelection(c.key)"
+          ></button>
+        </span>
+
+        <button
+          type="button"
+          class="pdf-sel-btn"
+          title="Adicionar o trecho ao editor de texto"
+          @click="onSendToEditor"
+        >
+          <i class="pi pi-file-edit" />
+          <span>Editor</span>
+        </button>
+        <button
+          type="button"
+          class="pdf-sel-btn is-icon"
+          :title="copied ? 'Copiado!' : 'Copiar seleção'"
+          @click="onCopySelection"
+        >
+          <i :class="copied ? 'pi pi-check' : 'pi pi-copy'" />
+        </button>
+      </div>
+    </Transition>
+  </div>
+</template>
+
+<style scoped>
+.pdf-study-viewer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--app-card);
+}
+
+/* ---------- Toolbar ---------- */
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--panel-head-border);
+  background: var(--panel-head-bg);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.pdf-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.pdf-file-icon {
+  color: var(--color-danger);
+  font-size: var(--icon-md, 15px);
+  flex-shrink: 0;
+}
+
+.pdf-file-name {
+  font-size: var(--fs-xs, 12px);
+  font-weight: 600;
+  color: var(--app-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pdf-toolbar-center,
+.pdf-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.pdf-page-indicator {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0 2px;
+}
+
+.pdf-page-input {
+  width: 38px;
+  padding: 2px 4px;
+  text-align: center;
+  font-size: var(--fs-xs, 12px);
+  font-weight: 600;
+  color: var(--app-text);
+  background: var(--sidebar-icon-bg, rgba(148, 163, 184, 0.12));
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.pdf-page-input:focus {
+  border-color: var(--color-primary);
+}
+
+.pdf-page-total {
+  font-size: var(--fs-xs, 12px);
+  color: var(--app-text-muted);
+  white-space: nowrap;
+}
+
+.pdf-zoom-label {
+  min-width: 40px;
+  text-align: center;
+  font-size: var(--fs-2xs, 11px);
+  font-weight: 600;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pdf-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--app-border);
+  margin: 0 4px;
+}
+
+.pdf-hl-btn-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.pdf-hl-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--color-warning);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+/* ---------- Barra de busca ---------- */
+.pdf-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--panel-head-border);
+  background: var(--panel-head-bg);
+  flex: 0 0 auto;
+}
+
+.pdf-searchbar-icon {
+  color: var(--app-text-muted);
+  font-size: var(--icon-sm, 13px);
+  flex-shrink: 0;
+}
+
+.pdf-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: var(--fs-xs, 12px);
+  color: var(--app-text);
+  background: var(--sidebar-icon-bg, rgba(148, 163, 184, 0.12));
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  outline: none;
+}
+
+.pdf-search-input:focus {
+  border-color: var(--color-primary);
+}
+
+.pdf-search-input::placeholder {
+  color: var(--app-text-muted);
+}
+
+.pdf-search-count {
+  font-size: var(--fs-2xs, 11px);
+  color: var(--app-text-muted);
+  white-space: nowrap;
+}
+
+/* ---------- Área do PDF ---------- */
+.pdf-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.pdf-no-text-hint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(92%, 560px);
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--sidebar-popup-bg-start), var(--sidebar-popup-bg-end));
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  color: var(--sidebar-popup-text);
+  font-size: var(--fs-2xs, 11px);
+  line-height: 1.4;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+
+.pdf-no-text-hint i {
+  color: var(--color-warning);
+  font-size: var(--icon-md, 15px);
+  flex-shrink: 0;
+}
+
+.pdf-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px;
+  outline: none;
+}
+
+.pdf-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm, 13px);
+}
+
+.pdf-status i {
+  font-size: var(--icon-lg, 18px);
+}
+
+.pdf-error {
+  color: var(--color-danger);
+}
+
+.pdf-page-wrap {
+  position: relative;
+  width: max-content;
+  margin: 0 auto;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+  background: #fff;
+}
+
+/* Página escura: inverte o canvas para leitura noturna (texto claro, fundo escuro) */
+.pdf-page-wrap.page-dark {
+  background: #16181f;
+}
+
+.pdf-page-wrap.page-dark :deep(canvas) {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+
+/* Camada de texto do PDF.js: cor de seleção mais visível */
+.pdf-page-wrap :deep(.textLayer) ::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+/* ---------- Marcações sobre a página ---------- */
+.pdf-highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.pdf-highlight-rect {
+  position: absolute;
+  border-radius: 2px;
+}
+
+/* ---------- Painel de marcações ---------- */
+.pdf-highlights-panel {
+  display: flex;
+  flex-direction: column;
+  width: 250px;
+  flex: 0 0 auto;
+  min-height: 0;
+  border-left: 1px solid var(--app-border);
+  background: var(--app-bg-soft);
+}
+
+.pdf-hl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--app-border);
+  flex: 0 0 auto;
+}
+
+.pdf-hl-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs, 12px);
+  font-weight: 700;
+  color: var(--app-text);
+}
+
+.pdf-hl-title i {
+  color: var(--color-warning);
+  font-size: var(--icon-sm, 13px);
+}
+
+.pdf-hl-empty {
+  padding: 14px 12px;
+  font-size: var(--fs-xs, 12px);
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
+
+.pdf-hl-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pdf-hl-item {
+  padding: 6px 8px;
+  border: 1px solid var(--app-border);
+  border-left: 3px solid #f59e0b;
+  border-radius: 8px;
+  background: var(--app-card);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pdf-hl-item:hover {
+  background: var(--app-hover);
+}
+
+.pdf-hl-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.pdf-hl-page-tag {
+  font-size: var(--fs-2xs, 11px);
+  padding: 1px 6px;
+}
+
+.pdf-hl-text {
+  margin: 4px 0 0;
+  font-size: var(--fs-2xs, 11px);
+  line-height: 1.45;
+  color: var(--app-text-muted);
+  word-break: break-word;
+}
+
+.pdf-hl-footer {
+  padding: 8px 10px;
+  border-top: 1px solid var(--app-border);
+  flex: 0 0 auto;
+}
+
+.pdf-hl-footer :deep(.p-button) {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---------- Toolbar flutuante de seleção ---------- */
+.pdf-sel-toolbar {
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: linear-gradient(180deg, var(--sidebar-popup-bg-start), var(--sidebar-popup-bg-end));
+  border: 1px solid var(--sidebar-popup-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.pdf-sel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font-size: var(--fs-2xs, 11px);
+  font-weight: 600;
+  color: var(--sidebar-popup-text);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pdf-sel-btn i {
+  font-size: var(--icon-sm, 13px);
+}
+
+.pdf-sel-btn:hover:not(:disabled) {
+  background: var(--sidebar-popup-hover);
+}
+
+.pdf-sel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pdf-sel-btn.is-primary {
+  color: #fff;
+  background: #28ca73;
+}
+
+.pdf-sel-btn.is-primary:hover:not(:disabled) {
+  background: #22b866;
+}
+
+.pdf-sel-btn.is-icon {
+  padding: 5px 7px;
+}
+
+.pdf-sel-colors {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+}
+
+.pdf-color-dot {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pdf-color-dot:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+}
+
+/* ---------- Transições ---------- */
+.pdf-fade-enter-active,
+.pdf-fade-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.pdf-fade-enter-from,
+.pdf-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+}
+
+.pdf-fade-plain-enter-active,
+.pdf-fade-plain-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.pdf-fade-plain-enter-from,
+.pdf-fade-plain-leave-to {
+  opacity: 0;
+}
+
+.pdf-slide-enter-active,
+.pdf-slide-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.pdf-slide-enter-from,
+.pdf-slide-leave-to {
+  opacity: 0;
+}
+
+.pdf-panel-enter-active,
+.pdf-panel-leave-active {
+  transition: width 0.18s ease, opacity 0.18s ease;
+  overflow: hidden;
+}
+
+.pdf-panel-enter-from,
+.pdf-panel-leave-to {
+  width: 0;
+  opacity: 0;
+}
+
+/* ---------- Responsivo (dentro do painel do editor) ---------- */
+@container editor-panel (max-width: 700px) {
+  .pdf-file-name {
+    display: none;
+  }
+
+  .pdf-sel-btn span {
+    display: none;
+  }
+}
+
+@container editor-panel (max-width: 540px) {
+  .pdf-highlights-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .pdf-zoom-label {
+    display: none;
+  }
+}
+</style>
