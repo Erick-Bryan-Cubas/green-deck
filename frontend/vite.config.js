@@ -16,6 +16,11 @@ export default defineConfig(({ command }) => ({
   optimizeDeps: {
     include: ['pdfjs-dist']
   },
+  // O worker do PDF.js (pdf.worker.min.mjs?worker) é um módulo ES — o formato
+  // 'iife' padrão falharia ao empacotá-lo
+  worker: {
+    format: 'es'
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
