@@ -34,6 +34,7 @@ import ApiKeysDialog from '@/components/modals/ApiKeysDialog.vue'
 import ModelSelectionDialog from '@/components/modals/ModelSelectionDialog.vue'
 import PromptSettingsDialog from '@/components/modals/PromptSettingsDialog.vue'
 import { useSidebar } from '@/composables/useSidebar'
+import { useServicesStatus } from '@/composables/useStatusWebSocket'
 import { useApiKeysDialog } from '@/composables/useApiKeysDialog'
 import { useModelSelectionDialog } from '@/composables/useModelSelectionDialog'
 import { usePromptSettingsDialog } from '@/composables/usePromptSettingsDialog'
@@ -72,9 +73,16 @@ function handleOpenLogsEvent() {
   logsVisible.value = true
 }
 
+// Uma tradução em lote registra uma linha por nota falhada/pulada, então o
+// array cresceria sem limite ao longo da sessão. Mantemos só as mais recentes.
+const MAX_LOGS = 500
+
 function addLog(message, type = 'info') {
   const timestamp = new Date().toLocaleTimeString()
   logs.value.push({ timestamp, message, type })
+  if (logs.value.length > MAX_LOGS) {
+    logs.value.splice(0, logs.value.length - MAX_LOGS)
+  }
 }
 function clearLogs() {
   logs.value = []
@@ -209,15 +217,27 @@ function cardPlainText(html) {
   }
 }
 
-// A resposta repete a pergunta antes do <hr id=answer>; só interessa o que vem depois.
-function answerPlainText(row) {
-  const raw = String(row?.answer || '')
-  const split = raw.split(/<hr[^>]*id=["']?answer["']?[^>]*>/i)
-  return cardPlainText(split.length > 1 ? split[1] : raw)
-}
+// Parsear HTML é caro e a tabela lê estes textos a cada render (e o comparador
+// de ordenação, O(n log n) vezes). Memorizamos por linha: o WeakMap não segura
+// referência, então as entradas somem junto com os itens quando a página troca.
+const cardTextCache = new WeakMap()
+const EMPTY_CARD_TEXT = Object.freeze({ front: '', back: '' })
 
-function cardFrontText(row) {
-  return cardPlainText(row?.question)
+function cardText(row) {
+  if (!row || typeof row !== 'object') return EMPTY_CARD_TEXT
+  const cached = cardTextCache.get(row)
+  if (cached) return cached
+
+  // A resposta repete a pergunta antes do <hr id=answer>; só interessa o que vem depois.
+  const rawAnswer = String(row.answer || '')
+  const answerParts = rawAnswer.split(/<hr[^>]*id=["']?answer["']?[^>]*>/i)
+
+  const value = {
+    front: cardPlainText(row.question),
+    back: cardPlainText(answerParts.length > 1 ? answerParts[1] : rawAnswer)
+  }
+  cardTextCache.set(row, value)
+  return value
 }
 
 // Deck vem como "Pai::Filho::Neto" — na tabela mostramos a folha e o caminho no título.
@@ -243,6 +263,40 @@ async function readJsonSafe(resp) {
   } catch (e) {
     return { __jsonParseError: true, __message: e?.message || String(e) }
   }
+}
+
+// FastAPI devolve erro de validação como {"detail": [...]} e erros da app como
+// {"error": "..."} — normalizamos as duas formas numa mensagem legível.
+function apiErrorText(data) {
+  if (typeof data?.error === 'string' && data.error) return data.error
+  const detail = data?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((d) => `${(d?.loc || []).filter((p) => p !== 'query').join('.')}: ${d?.msg || 'inválido'}`)
+      .join('; ')
+  }
+  return 'erro desconhecido'
+}
+
+// Contrato único de leitura: status HTTP, resposta não-JSON e {success:false}
+// são todos falha. Antes só o último era verificado nas rotas de leitura, então
+// um 422 do FastAPI passava como sucesso e virava "0 resultados" silencioso.
+async function readApiResult(resp, label) {
+  const data = await readJsonSafe(resp)
+  if (data?.__nonJson) {
+    throw new Error(`${label}: resposta não-JSON (ct=${data.__contentType}) "${data.__head}"`)
+  }
+  if (data?.__jsonParseError) {
+    throw new Error(`${label}: JSON inválido (${data.__message})`)
+  }
+  if (!resp.ok) {
+    throw new Error(`${label}: HTTP ${resp.status} — ${apiErrorText(data)}`)
+  }
+  if (data?.success === false) {
+    throw new Error(`${label}: ${apiErrorText(data)}`)
+  }
+  return data
 }
 
 function ms(n) {
@@ -275,46 +329,23 @@ function summarizeResults(results = []) {
 // ----------------------
 // Service status (Anki / Ollama)
 // ----------------------
-const ankiHealth = ref({ ok: null, error: '', ankiConnectVersion: null })
+// Derivado do WebSocket que já alimenta AnkiStatus/OllamaStatus no cabeçalho.
+// Antes esta página fazia polling de /api/health/* a cada 6s em paralelo ao
+// mesmo dado — ~20 requisições por minuto, indefinidamente.
+const { anki: ankiWsStatus, ollama: ollamaWsStatus, refresh: refreshServicesStatus } = useServicesStatus()
 
-// backend novo retorna required.{easy_or_neutral,hard_technical}
-const ollamaHealth = ref({
-  ok: null,
-  error: '',
-  timeoutS: null,
-  modelsCount: null,
-  required: null
-})
+// `ok === null` significa "ainda verificando" — a UI distingue esse estado.
+const ankiHealth = computed(() => ({
+  ok: ankiWsStatus.value.checking ? null : ankiWsStatus.value.connected,
+  error: ankiWsStatus.value.connected ? '' : 'AnkiConnect indisponível — verifique se o Anki está aberto',
+  ankiConnectVersion: ankiWsStatus.value.version ?? null
+}))
 
-let healthTimer = null
-
-async function fetchHealth() {
-  // Anki
-  try {
-    const r = await fetch('/api/health/anki')
-    const data = await readJsonSafe(r)
-    if (data?.__nonJson) throw new Error(`non-JSON: ${data.__head}`)
-    ankiHealth.value = { ok: !!data.ok, error: data.error || '', ankiConnectVersion: data.ankiConnectVersion ?? null }
-  } catch (e) {
-    ankiHealth.value = { ok: false, error: e?.message || String(e), ankiConnectVersion: null }
-  }
-
-  // Ollama
-  try {
-    const r = await fetch('/api/health/ollama')
-    const data = await readJsonSafe(r)
-    if (data?.__nonJson) throw new Error(`non-JSON: ${data.__head}`)
-    ollamaHealth.value = {
-      ok: !!data.ok,
-      error: data.error || '',
-      timeoutS: data.timeoutS ?? null,
-      modelsCount: data.modelsCount ?? null,
-      required: data.required ?? null
-    }
-  } catch (e) {
-    ollamaHealth.value = { ok: false, error: e?.message || String(e), timeoutS: null, modelsCount: null, required: null }
-  }
-}
+const ollamaHealth = computed(() => ({
+  ok: ollamaWsStatus.value.loading ? null : ollamaWsStatus.value.connected,
+  error: ollamaWsStatus.value.connected ? '' : 'Ollama indisponível',
+  modelsCount: ollamaWsStatus.value.models?.length ?? 0
+}))
 
 const ankiStatusTitle = computed(() => {
   if (ankiHealth.value.ok) return `AnkiConnect OK (version=${ankiHealth.value.ankiConnectVersion})`
@@ -498,7 +529,10 @@ const items = ref([])
 const total = ref(0)
 const first = ref(0)
 const rows = ref(50)
-const rowsPerPageOptions = [25, 50, 100, 200]
+// Espelha o teto de /api/anki-cards (Query(..., le=200)). Pedir mais que isso
+// é rejeitado com 422 pelo FastAPI antes de chegar no handler.
+const MAX_API_LIMIT = 200
+const rowsPerPageOptions = [25, 50, 100, MAX_API_LIMIT]
 
 // Ordenação local (aplicada aos dados carregados)
 const sortField = ref(null)
@@ -522,8 +556,8 @@ const sortedItems = computed(() => {
 
   return [...items.value].sort((a, b) => {
     // A coluna "Frente" ordena pelo texto renderizado, não pelo HTML cru
-    let valA = field === 'question' ? cardFrontText(a) : a[field]
-    let valB = field === 'question' ? cardFrontText(b) : b[field]
+    let valA = field === 'question' ? cardText(a).front : a[field]
+    let valB = field === 'question' ? cardText(b).front : b[field]
 
     // Handle null/undefined
     if (valA == null && valB == null) return 0
@@ -579,25 +613,33 @@ async function selectAllCards() {
   addLog(`Selecionando todos os ${total.value} cartões...`, 'info')
 
   try {
-    // Buscar todos os cards da query atual (sem limite de paginação)
+    // /api/anki-cards limita cada página a MAX_API_LIMIT. Pedir o total de uma vez
+    // devolvia HTTP 422 acima desse teto, que a checagem antiga lia como sucesso
+    // com zero itens. Buscamos em blocos e respeitamos o contrato do backend.
     const built = queryBuilt.value
-    const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=0&limit=${total.value}`
-    const r = await fetch(url)
-    const data = await readJsonSafe(r)
+    const collected = []
 
-    if (data?.__nonJson || data?.success === false) {
-      notify('Erro ao buscar todos os cartões.', 'error', 5000)
-      return
+    for (let offset = 0; offset < total.value; offset += MAX_API_LIMIT) {
+      const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=${offset}&limit=${MAX_API_LIMIT}`
+      const data = await readApiResult(await fetch(url), 'Selecionar todos')
+      const batch = Array.isArray(data?.items) ? data.items : []
+      if (!batch.length) break
+      collected.push(...batch)
     }
 
-    const allItems = Array.isArray(data?.items) ? data.items : []
-    selected.value = allItems
+    selected.value = collected
 
-    addLog(`Selecionados: ${allItems.length} cartões`, 'success')
-    notify(`${allItems.length} cartões selecionados.`, 'success', 3000)
+    if (collected.length < total.value) {
+      addLog(`Selecionados: ${collected.length} de ${total.value} (a coleção mudou durante a busca?)`, 'warn')
+      notify(`${collected.length} de ${total.value} cartões selecionados.`, 'warn', 5000)
+    } else {
+      addLog(`Selecionados: ${collected.length} cartões`, 'success')
+      notify(`${collected.length} cartões selecionados.`, 'success', 3000)
+    }
   } catch (e) {
-    addLog(`Erro ao selecionar todos: ${e?.message}`, 'error')
-    notify(e?.message || 'Erro ao selecionar cartões', 'error', 5000)
+    selected.value = []
+    addLog(`Erro ao selecionar todos: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || 'Erro ao selecionar cartões', 'error', 6000)
   } finally {
     selectingAll.value = false
   }
@@ -614,27 +656,12 @@ function clearSelection() {
 async function fetchDecks() {
   addLog('Fetching decks...', 'info')
   try {
-    const r = await fetch('/api/anki-decks')
-    const data = await readJsonSafe(r)
-
-    if (data?.__nonJson) {
-      addLog(`Decks: non-JSON response (ct=${data.__contentType}) head="${data.__head}"`, 'error')
-      notify('API /anki-decks não retornou JSON.', 'error', 8000)
-      decks.value = []
-      return
-    }
-    if (!data?.success) {
-      addLog(`Decks error: ${data?.error || 'unknown'}`, 'warn')
-      notify(data?.error || 'Falha ao buscar decks', 'warn', 6000)
-      decks.value = []
-      return
-    }
-
+    const data = await readApiResult(await fetch('/api/anki-decks'), 'Decks')
     decks.value = Array.isArray(data.decks) ? data.decks : []
     addLog(`Decks loaded: ${decks.value.length}`, 'success')
   } catch (e) {
-    addLog(`Decks fetch exception: ${e?.message || String(e)}`, 'error')
-    notify(e?.message || String(e), 'warn', 6000)
+    addLog(`Decks: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || 'Falha ao buscar decks', 'warn', 6000)
     decks.value = []
   }
 }
@@ -642,42 +669,24 @@ async function fetchDecks() {
 async function fetchNoteTypeFilter() {
   addLog('Fetching note types for filter...', 'info')
   try {
-    const r = await fetch('/api/anki-models')
-    const data = await readJsonSafe(r)
-
-    if (data?.__nonJson) {
-      addLog(`Note types: non-JSON response head="${data.__head}"`, 'error')
-      noteTypeFilterList.value = []
-      return
-    }
-    if (!data?.success) {
-      addLog(`Note types error: ${data?.error || 'unknown'}`, 'warn')
-      noteTypeFilterList.value = []
-      return
-    }
-
+    const data = await readApiResult(await fetch('/api/anki-models'), 'Note types')
     // data.models é um objeto { modelName: [fields...], ... }
     const modelNames = Object.keys(data.models || {}).sort()
     noteTypeFilterList.value = modelNames
     addLog(`Note types loaded: ${modelNames.length}`, 'success')
   } catch (e) {
-    addLog(`Note types fetch exception: ${e?.message || String(e)}`, 'error')
+    addLog(`Note types: ${e?.message || String(e)}`, 'error')
     noteTypeFilterList.value = []
   }
 }
 
 async function fetchTagsFilter() {
   try {
-    const r = await fetch('/api/anki-tags')
-    const data = await readJsonSafe(r)
-    if (data?.__nonJson || data?.success === false) {
-      addLog(`Tags: falha ao carregar (${data?.error || 'resposta inválida'})`, 'warn')
-      return
-    }
+    const data = await readApiResult(await fetch('/api/anki-tags'), 'Tags')
     allTags.value = Array.isArray(data?.tags) ? [...data.tags].sort() : []
     addLog(`Tags carregadas: ${allTags.value.length}`, 'success')
   } catch (e) {
-    addLog(`Tags fetch exception: ${e?.message || String(e)}`, 'error')
+    addLog(`Tags: ${e?.message || String(e)}`, 'warn')
     allTags.value = []
   }
 }
@@ -692,30 +701,7 @@ async function fetchCards() {
 
   try {
     const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=${offset}&limit=${limit}`
-    const r = await fetch(url)
-    const data = await readJsonSafe(r)
-
-    if (data?.__nonJson) {
-      addLog(`Cartões: resposta não-JSON (ct=${data.__contentType}) head="${data.__head}"`, 'error')
-      notify('API /anki-cards não retornou JSON.', 'error', 8500)
-      items.value = []
-      total.value = 0
-      return
-    }
-    if (data?.__jsonParseError) {
-      addLog(`Cartões: erro ao parsear JSON: ${data.__message}`, 'error')
-      notify('Falha ao ler JSON do backend.', 'error', 7000)
-      items.value = []
-      total.value = 0
-      return
-    }
-    if (data?.success === false) {
-      addLog(`Cartões: erro: ${data?.error || 'unknown'}`, 'error')
-      notify(data?.error || 'Falha ao buscar cartões', 'error', 7000)
-      items.value = []
-      total.value = 0
-      return
-    }
+    const data = await readApiResult(await fetch(url), 'Cartões')
 
     const list = Array.isArray(data?.items) ? data.items : []
     const tot = Number.isFinite(Number(data?.total)) ? Number(data.total) : list.length
@@ -724,8 +710,8 @@ async function fetchCards() {
     total.value = tot
     addLog(`Cartões carregados: ${list.length} / total=${tot}`, 'success')
   } catch (e) {
-    addLog(`Exceção ao buscar cartões: ${e?.message || String(e)}`, 'error')
-    notify(e?.message || String(e), 'error', 7000)
+    addLog(`Cartões: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || 'Falha ao buscar cartões', 'error', 7000)
     items.value = []
     total.value = 0
   } finally {
@@ -738,6 +724,15 @@ let debounce = null
 watch([deck, noteType, status, tags, text, advancedQuery], () => {
   if (initializing.value) return  // Skip during URL param setup
   persistFilters()
+
+  // A seleção pertence ao conjunto de resultados anterior. Sem limpar, a barra
+  // de ações em lote continuaria agindo sobre cartões que saíram da busca —
+  // e exibindo coisas como "50 de 3 selecionados".
+  if (selected.value.length) {
+    selected.value = []
+    addLog('Seleção limpa: os filtros mudaram', 'info')
+  }
+
   first.value = 0
   if (debounce) clearTimeout(debounce)
   debounce = setTimeout(fetchCards, 450)
@@ -1080,36 +1075,15 @@ async function openEditDialog(row) {
   editTagsOriginal.value = []
 
   try {
-    // Fetch note info and all tags in parallel
-    const [noteResp, tagsResp] = await Promise.all([
-      fetch(`/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`),
-      fetch('/api/anki-tags')
-    ])
+    // As tags da coleção já foram carregadas para o filtro; só buscamos de novo
+    // se aquela chamada tiver falhado.
+    if (!allTags.value.length) await fetchTagsFilter()
+    editAllTags.value = allTags.value
 
-    // Process tags response
-    if (tagsResp.ok) {
-      const tagsData = await tagsResp.json()
-      editAllTags.value = tagsData.tags || []
-    }
-
-    const data = await readJsonSafe(noteResp)
-
-    if (data?.__nonJson) {
-      addLog(`Note info: non-JSON head="${data.__head}"`, 'error')
-      notify('API /anki-note-info não retornou JSON.', 'error', 9000)
-      return
-    }
-    if (data?.__jsonParseError) {
-      addLog(`Note info: JSON parse error: ${data.__message}`, 'error')
-      notify('Falha ao ler JSON do backend.', 'error', 9000)
-      return
-    }
-    if (noteResp.status >= 400 || data?.success === false) {
-      const msg = data?.error || `Falha ao buscar note info (HTTP ${noteResp.status}).`
-      addLog(`Note info error: ${msg}`, 'error')
-      notify(msg, 'error', 9000)
-      return
-    }
+    const data = await readApiResult(
+      await fetch(`/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`),
+      'Note info'
+    )
 
     const note = data?.note || {}
     const fieldsOrdered = Array.isArray(note?.fieldsOrdered) ? note.fieldsOrdered : []
@@ -1554,7 +1528,7 @@ async function confirmTranslate() {
   const startedAt = performance.now()
 
   try {
-    await fetchHealth()
+    refreshServicesStatus()
     addLog(
       `Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'}`,
       ankiHealth.value.ok ? 'info' : 'warn'
@@ -1914,7 +1888,7 @@ async function confirmRecreate() {
   const startedAt = performance.now()
 
   try {
-    await fetchHealth()
+    refreshServicesStatus()
     const provider = recreateModelProvider.value
 
     addLog(
@@ -2045,8 +2019,6 @@ async function confirmRecreate() {
 // Lifecycle
 // ----------------------
 onMounted(async () => {
-  await fetchHealth()
-  healthTimer = setInterval(fetchHealth, 6000)
   window.addEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 
   // Restaura filtros salvos da última visita (localStorage) antes de aplicar
@@ -2087,7 +2059,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (healthTimer) clearInterval(healthTimer)
   window.removeEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 })
 </script>
@@ -2377,9 +2348,9 @@ onUnmounted(() => {
           <!-- Conteúdo do cartão: o dado já vem em cada linha, é o que distingue as notas -->
           <Column header="Cartão" sortable sortField="question" style="min-width: 24rem">
             <template #body="{ data }">
-              <div class="card-cell" :title="cardFrontText(data)">
-                <span class="card-front">{{ cardFrontText(data) || '—' }}</span>
-                <span class="card-back">{{ answerPlainText(data) }}</span>
+              <div class="card-cell" :title="cardText(data).front">
+                <span class="card-front">{{ cardText(data).front || '—' }}</span>
+                <span class="card-back">{{ cardText(data).back }}</span>
               </div>
             </template>
           </Column>
