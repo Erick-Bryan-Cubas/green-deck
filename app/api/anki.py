@@ -1468,6 +1468,55 @@ async def anki_note_suspend(req: AnkiNoteSuspendRequest):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+class AnkiBulkSuspendRequest(BaseModel):
+    cardIds: List[int] = Field(default_factory=list)
+    suspend: bool = True
+
+
+@router.post("/anki-bulk-suspend")
+async def anki_bulk_suspend(req: AnkiBulkSuspendRequest):
+    """
+    Suspende/desuspende em lote. Mantém a semântica de /anki-note-suspend: a ação
+    vale para TODOS os cards das notas referenciadas pelos cardIds recebidos.
+    """
+    if not req.cardIds:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Nenhum card selecionado."})
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            cards_info = await ankiconnect(client, "cardsInfo", {"cards": req.cardIds})
+            cards_info = list(cards_info or [])
+
+            note_ids = sorted({int(c["note"]) for c in cards_info if c.get("note")})
+            if not note_ids:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "error": "Nenhuma nota encontrada para os cards enviados."},
+                )
+
+            # `nid:` aceita lista separada por vírgula; fatiamos para não montar
+            # uma query gigante quando a seleção é grande.
+            target_cards: List[int] = []
+            for i in range(0, len(note_ids), 200):
+                chunk = note_ids[i : i + 200]
+                found = await ankiconnect(client, "findCards", {"query": "nid:" + ",".join(str(n) for n in chunk)})
+                target_cards.extend(int(c) for c in (found or []))
+
+            if not target_cards:
+                return {"success": True, "totalNotes": len(note_ids), "totalCards": 0, "action": "noop"}
+
+            action = "suspend" if req.suspend else "unsuspend"
+            await ankiconnect(client, action, {"cards": target_cards})
+            return {
+                "success": True,
+                "totalNotes": len(note_ids),
+                "totalCards": len(target_cards),
+                "action": action,
+            }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
 @router.get("/anki-note-info")
 async def anki_note_info(noteId: int = Query(..., ge=1)):
     """

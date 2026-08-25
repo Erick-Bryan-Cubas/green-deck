@@ -15,6 +15,11 @@ import DatePicker from 'primevue/datepicker'
 import MultiSelect from 'primevue/multiselect'
 import Dialog from 'primevue/dialog'
 import Divider from 'primevue/divider'
+import Tabs from 'primevue/tabs'
+import TabList from 'primevue/tablist'
+import Tab from 'primevue/tab'
+import TabPanels from 'primevue/tabpanels'
+import TabPanel from 'primevue/tabpanel'
 
 // App components - with lazy loading for performance
 import SidebarMenu from '@/components/SidebarMenu.vue'
@@ -33,8 +38,10 @@ import { useModelSelectionDialog } from '@/composables/useModelSelectionDialog'
 import { usePromptSettingsDialog } from '@/composables/usePromptSettingsDialog'
 import { useAppNotifications } from '@/composables/useAppNotifications'
 import { useAppToast } from '@/composables/useAppToast'
+import { useTheme } from '@/composables/useTheme'
 
 const router = useRouter()
+const { isDark } = useTheme()
 const { addNotification } = useAppNotifications()
 const { notify: notifyToast } = useAppToast()
 
@@ -42,16 +49,53 @@ const { notify: notifyToast } = useAppToast()
 const { dateRange, selectedDecks, hasActiveFilters, queryString, clearFilters } = useDashboardFilters()
 const filtersExpanded = ref(true)
 
-// Deck options for filter (populated from topDecks)
+// Aba ativa — persistida para não voltar à "Visão geral" a cada visita
+const TAB_STORAGE_KEY = 'green-deck.dashboard-tab'
+const TAB_IDS = ['overview', 'performance', 'collection', 'maturity']
+const activeTab = ref('overview')
+
+try {
+  const saved = localStorage.getItem(TAB_STORAGE_KEY)
+  if (saved && TAB_IDS.includes(saved)) activeTab.value = saved
+} catch {
+  // localStorage indisponível — segue no padrão
+}
+
+watch(activeTab, (value) => {
+  try {
+    localStorage.setItem(TAB_STORAGE_KEY, value)
+  } catch {
+    // ignora: preferência de aba não é crítica
+  }
+})
+
+// Lista de decks para o filtro. Antes vinha de `topDecks`, que é (a) limitado
+// aos 12 maiores e (b) já filtrado por `selectedDecks` — então a lista encolhia
+// conforme você filtrava e nunca mostrava a coleção inteira.
+const allDeckNames = ref([])
 const deckOptions = computed(() =>
-  topDecks.value.map(d => ({ label: d.deckName, value: d.deckName }))
+  allDeckNames.value.map((name) => ({ label: name, value: name }))
 )
 
-// Watch filters to refetch data
-watch([dateRange, selectedDecks], () => {
-  if (!loading.value) {
-    fetchDashboard()
+async function fetchDeckOptions() {
+  try {
+    const res = await fetch('/api/anki-decks')
+    const data = await readJsonSafe(res)
+    if (data?.__nonJson || !res.ok || data?.success === false) return
+    allDeckNames.value = Array.isArray(data.decks) ? [...data.decks].sort() : []
+  } catch {
+    allDeckNames.value = []
   }
+}
+
+// Refetch com debounce: alternar vários decks disparava uma reconstrução
+// completa por clique. O guard anterior (`if (!loading)`) descartava a mudança
+// quando havia busca em andamento, deixando a tela fora de sincronia com os
+// filtros — agora a busca mais recente sempre vence.
+let filterDebounce = null
+watch([dateRange, selectedDecks], () => {
+  if (filterDebounce) clearTimeout(filterDebounce)
+  filterDebounce = setTimeout(fetchDashboard, 350)
 }, { deep: true })
 
 // Sidebar ref
@@ -149,6 +193,15 @@ function format2(v) {
   if (!Number.isFinite(n)) return '—'
   return n.toFixed(2).replace('.', ',')
 }
+// Deck vem como "Pai::Filho::Neto" — nas tabelas mostramos só a folha
+function deckLeaf(name) {
+  const parts = String(name || '').split('::')
+  return parts[parts.length - 1] || String(name || '')
+}
+
+// Espelha DASHBOARD_LEECH_MIN_LAPSES no backend (default do Anki para leech)
+const leechMinLapses = 8
+
 function formatStudyTime(totalMinutes) {
   const n = Number(totalMinutes)
   if (!Number.isFinite(n) || n <= 0) return '0 min'
@@ -162,6 +215,14 @@ function formatStudyTime(totalMinutes) {
 const loading = ref(true)
 const errorMsg = ref('')
 
+// Só a primeira carga mostra esqueleto. Depois disso os gráficos permanecem
+// montados e apenas recebem dados novos — trocar entre Skeleton e LazyChart
+// destruía e reconstruía os seis gráficos (e seus IntersectionObserver) a cada
+// atualização de filtro.
+const hasLoadedOnce = ref(false)
+const showSkeletons = computed(() => loading.value && !hasLoadedOnce.value)
+const isRefreshing = computed(() => loading.value && hasLoadedOnce.value)
+
 // payloads do backend
 const summary = ref(null) // { totalCards, totalDecks, statusBreakdown, segmentsMeta, reviewKpis }
 const reviewsByDay = ref([]) // [{day, reviews}]
@@ -169,6 +230,16 @@ const studyTimeByDay = ref([]) // [{day, minutes}]
 const successRateByDay = ref([]) // [{day, rate, correct, total}]
 const topDecks = ref([]) // [{deckName, count}]
 const segments = ref([]) // [{segment, count, avgInterval, avgEase, avgLapses, avgReps}]
+
+// --- novas análises ---
+const answerButtons = ref([])       // [{button, count, pct}]
+const reviewsByHour = ref([])       // [{hour, reviews}]
+const reviewsByWeekday = ref([])    // [{weekday, reviews}]
+const retentionByInterval = ref([]) // [{bucket, total, correct, rate}]
+const intervalDistribution = ref([])// [{bucket, count}]
+const easeDistribution = ref([])    // [{bucket, count}]
+const dueForecast = ref([])         // [{dayOffset, count}]
+const leeches = ref([])             // [{cardId, deckName, lapses, reps, interval, ease, question}]
 
 // ---------- KPIs ----------
 const kpiTotalCards = computed(() => summary.value?.totalCards ?? 0)
@@ -230,6 +301,65 @@ const statusTotal = computed(() => statusItems.value.reduce((s, x) => s + (x.cou
 
 // ---------- Charts ----------
 
+// Chart.js não lê CSS custom properties, então as cores de eixo/tooltip precisam
+// ser resolvidas aqui. Como isto é computed sobre `isDark`, os gráficos se
+// reajustam sozinhos na troca de tema — antes os eixos usavam o padrão escuro
+// do Chart.js e ficavam ilegíveis no tema claro.
+const chartTheme = computed(() => {
+  const dark = isDark.value
+  return {
+    tick: dark ? 'rgba(226, 232, 240, 0.65)' : 'rgba(15, 23, 42, 0.6)',
+    grid: dark ? 'rgba(148, 163, 184, 0.12)' : 'rgba(15, 23, 42, 0.08)',
+    tooltipBg: dark ? 'rgba(15, 23, 42, 0.95)' : 'rgba(255, 255, 255, 0.97)',
+    tooltipText: dark ? '#e5e7eb' : '#0f172a',
+    tooltipBorder: dark ? 'rgba(148, 163, 184, 0.25)' : 'rgba(15, 23, 42, 0.12)'
+  }
+})
+
+function themedTooltip(extra = {}) {
+  const t = chartTheme.value
+  return {
+    backgroundColor: t.tooltipBg,
+    titleColor: t.tooltipText,
+    bodyColor: t.tooltipText,
+    borderColor: t.tooltipBorder,
+    borderWidth: 1,
+    padding: 10,
+    cornerRadius: 10,
+    displayColors: false,
+    ...extra
+  }
+}
+
+// Eixos e tooltip compartilhados pelos gráficos de linha
+function lineScaffold(extraY = {}) {
+  const t = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      // Série única: a legenda só repetia o título do card
+      legend: { display: false },
+      tooltip: themedTooltip({ mode: 'index', intersect: false })
+    },
+    scales: {
+      x: {
+        ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8, color: t.tick, font: { size: 11 } },
+        border: { display: false },
+        grid: { display: false }
+      },
+      y: {
+        beginAtZero: true,
+        ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 } },
+        border: { display: false },
+        grid: { color: t.grid },
+        ...extraY
+      }
+    }
+  }
+}
+
 // Reviews por dia (substitui "Cards criados")
 const reviewsLineData = computed(() => {
   const labels = reviewsByDay.value.map((x) => x.day)
@@ -252,9 +382,7 @@ const reviewsLineData = computed(() => {
 })
 
 const reviewsLineOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index', intersect: false },
+  ...lineScaffold(),
   onClick: (event, elements) => {
     if (elements.length > 0) {
       const dataIndex = elements[0].index
@@ -264,24 +392,6 @@ const reviewsLineOptions = computed(() => ({
   },
   onHover: (event, elements) => {
     event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
-  },
-  plugins: {
-    legend: {
-      display: true,
-      labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true }
-    },
-    tooltip: { mode: 'index', intersect: false }
-  },
-  scales: {
-    x: {
-      ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
-      grid: { display: false }
-    },
-    y: {
-      beginAtZero: true,
-      ticks: { maxTicksLimit: 6 },
-      grid: { drawBorder: false }
-    }
   }
 }))
 
@@ -306,24 +416,19 @@ const studyTimeLineData = computed(() => {
   }
 })
 
-const studyTimeOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index', intersect: false },
-  plugins: {
-    legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
-    tooltip: {
-      mode: 'index', intersect: false,
-      callbacks: {
-        label: (ctx) => `${ctx.parsed.y.toFixed(1)} min`
+const studyTimeOptions = computed(() => {
+  const base = lineScaffold()
+  return {
+    ...base,
+    plugins: {
+      ...base.plugins,
+      tooltip: {
+        ...base.plugins.tooltip,
+        callbacks: { label: (ctx) => formatStudyTime(ctx.parsed.y) }
       }
     }
-  },
-  scales: {
-    x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
-    y: { beginAtZero: true, ticks: { maxTicksLimit: 6 }, grid: { drawBorder: false } }
   }
-}))
+})
 
 // Taxa de acerto ao longo do tempo
 const successRateLineData = computed(() => {
@@ -346,32 +451,28 @@ const successRateLineData = computed(() => {
   }
 })
 
-const successRateOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index', intersect: false },
-  plugins: {
-    legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
-    tooltip: {
-      mode: 'index', intersect: false,
-      callbacks: {
-        label: (ctx) => {
-          const dayData = successRateByDay.value[ctx.dataIndex]
-          return `${ctx.parsed.y.toFixed(1)}% (${dayData?.correct ?? 0}/${dayData?.total ?? 0})`
+const successRateOptions = computed(() => {
+  const t = chartTheme.value
+  const base = lineScaffold({
+    max: 100,
+    ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 }, callback: (v) => `${v}%` }
+  })
+  return {
+    ...base,
+    plugins: {
+      ...base.plugins,
+      tooltip: {
+        ...base.plugins.tooltip,
+        callbacks: {
+          label: (ctx) => {
+            const dayData = successRateByDay.value[ctx.dataIndex]
+            return `${ctx.parsed.y.toFixed(1)}% (${dayData?.correct ?? 0}/${dayData?.total ?? 0})`
+          }
         }
       }
     }
-  },
-  scales: {
-    x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false } },
-    y: {
-      beginAtZero: true,
-      max: 100,
-      ticks: { maxTicksLimit: 6, callback: (v) => `${v}%` },
-      grid: { drawBorder: false }
-    }
   }
-}))
+})
 
 // Doughnut: Tipos/Status do Anki
 const statusDoughnutData = computed(() => {
@@ -380,35 +481,39 @@ const statusDoughnutData = computed(() => {
   return { labels, datasets: [{ label: 'Tipos', data, borderWidth: 0, hoverOffset: 6 }] }
 })
 
-const doughnutOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  cutout: '72%',
-  onClick: (event, elements) => {
-    if (elements.length > 0) {
-      const dataIndex = elements[0].index
-      const status = statusItems.value[dataIndex]
-      if (status) navigateToBrowserWithStatus(status.status)
-    }
-  },
-  onHover: (event, elements) => {
-    event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
-  },
-  plugins: {
-    legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
-    tooltip: {
-      callbacks: {
-        label: (ctx) => {
-          const label = ctx.label || '—'
-          const val = ctx.parsed || 0
-          const total = statusTotal.value || 0
-          const pct = total ? ((100 * val) / total).toFixed(1).replace('.', ',') : '0,0'
-          return `${label}: ${formatInt(val)} (${pct}%) — Clique para filtrar`
-        }
+const doughnutOptions = computed(() => {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: '72%',
+    onClick: (event, elements) => {
+      if (elements.length > 0) {
+        const dataIndex = elements[0].index
+        const status = statusItems.value[dataIndex]
+        if (status) navigateToBrowserWithStatus(status.status)
       }
+    },
+    onHover: (event, elements) => {
+      event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
+    },
+    plugins: {
+      // A lista abaixo do gráfico (.mini-legend) já traz rótulo, contagem e %,
+      // então a legenda nativa era uma segunda legenda mais pobre.
+      legend: { display: false },
+      tooltip: themedTooltip({
+        callbacks: {
+          label: (ctx) => {
+            const label = ctx.label || '—'
+            const val = ctx.parsed || 0
+            const total = statusTotal.value || 0
+            const pct = total ? ((100 * val) / total).toFixed(1).replace('.', ',') : '0,0'
+            return `${label}: ${formatInt(val)} (${pct}%) — clique para filtrar`
+          }
+        }
+      })
     }
   }
-}))
+})
 
 // Barras: Total por deck (melhor legibilidade = horizontal)
 const deckBarData = computed(() => {
@@ -418,33 +523,53 @@ const deckBarData = computed(() => {
   return { labels, datasets: [{ label: 'Cartões por deck (Top 12)', data, borderRadius: 10 }] }
 })
 
-const deckBarOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  indexAxis: 'y',
-  onClick: (event, elements) => {
-    if (elements.length > 0) {
-      const dataIndex = elements[0].index
-      const deck = topDecks.value[dataIndex]
-      if (deck) openDeckDetail(deck)
-    }
-  },
-  onHover: (event, elements) => {
-    event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
-  },
-  plugins: {
-    legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } },
-    tooltip: {
-      callbacks: {
-        label: (ctx) => `${formatInt(ctx.parsed.x)} cartões — Clique para detalhes`
+const deckBarOptions = computed(() => {
+  const t = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    indexAxis: 'y',
+    onClick: (event, elements) => {
+      if (elements.length > 0) {
+        const dataIndex = elements[0].index
+        const deck = topDecks.value[dataIndex]
+        if (deck) openDeckDetail(deck)
+      }
+    },
+    onHover: (event, elements) => {
+      event.native.target.style.cursor = elements.length ? 'pointer' : 'default'
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: themedTooltip({
+        callbacks: { label: (ctx) => `${formatInt(ctx.parsed.x)} cartões — clique para detalhes` }
+      })
+    },
+    scales: {
+      x: {
+        beginAtZero: true,
+        ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 } },
+        border: { display: false },
+        grid: { color: t.grid }
+      },
+      y: {
+        // Nomes de deck são longos ("Pai::Filho::Neto") e estouravam o eixo
+        ticks: {
+          autoSkip: false,
+          color: t.tick,
+          font: { size: 11 },
+          callback(value) {
+            const raw = String(this.getLabelForValue(value) ?? '')
+            const leaf = raw.split('::').pop() || raw
+            return leaf.length > 22 ? `${leaf.slice(0, 21)}…` : leaf
+          }
+        },
+        border: { display: false },
+        grid: { display: false }
       }
     }
-  },
-  scales: {
-    x: { beginAtZero: true, ticks: { maxTicksLimit: 6 }, grid: { drawBorder: false } },
-    y: { ticks: { autoSkip: false }, grid: { display: false } }
   }
-}))
+})
 
 // Barras: Segmentos (KMeans)
 const segmentsBarData = computed(() => {
@@ -454,17 +579,28 @@ const segmentsBarData = computed(() => {
   return { labels, datasets: [{ label: 'Distribuição por segmento', data, borderRadius: 10 }] }
 })
 
-const segmentsBarOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { display: true, labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } }
-  },
-  scales: {
-    x: { grid: { display: false } },
-    y: { beginAtZero: true, ticks: { maxTicksLimit: 6 }, grid: { drawBorder: false } }
+const segmentsBarOptions = computed(() => {
+  const t = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: themedTooltip({
+        callbacks: { label: (ctx) => `${formatInt(ctx.parsed.y)} cartões` }
+      })
+    },
+    scales: {
+      x: { ticks: { color: t.tick, font: { size: 11 } }, border: { display: false }, grid: { display: false } },
+      y: {
+        beginAtZero: true,
+        ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 } },
+        border: { display: false },
+        grid: { color: t.grid }
+      }
+    }
   }
-}))
+})
 
 const segmentsMetaText = computed(() => {
   const m = summary.value?.segmentsMeta
@@ -474,71 +610,270 @@ const segmentsMetaText = computed(() => {
   return `K=${k} · amostra=${sampled}`
 })
 
+// ---------- Novas análises ----------
+
+// Cores dos botões seguem o significado da resposta, não uma paleta arbitrária:
+// errar é vermelho, acertar com folga é verde.
+const ANSWER_COLORS = {
+  Again: '#EF4444',
+  Hard: '#F59E0B',
+  Good: '#10B981',
+  Easy: '#3B82F6'
+}
+
+const answerButtonsData = computed(() => ({
+  labels: answerButtons.value.map((x) => x.button),
+  datasets: [{
+    data: answerButtons.value.map((x) => Number(x.count || 0)),
+    backgroundColor: answerButtons.value.map((x) => ANSWER_COLORS[x.button] || '#64748B'),
+    borderWidth: 0,
+    borderRadius: 8
+  }]
+}))
+
+const answerButtonsOptions = computed(() => {
+  const t = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: themedTooltip({
+        callbacks: {
+          label: (ctx) => {
+            const row = answerButtons.value[ctx.dataIndex]
+            return `${formatInt(row?.count)} respostas (${format2(row?.pct)}%)`
+          }
+        }
+      })
+    },
+    scales: {
+      x: { ticks: { color: t.tick, font: { size: 11 } }, border: { display: false }, grid: { display: false } },
+      y: {
+        beginAtZero: true,
+        ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 } },
+        border: { display: false },
+        grid: { color: t.grid }
+      }
+    }
+  }
+})
+
+const reviewsByHourData = computed(() => ({
+  labels: reviewsByHour.value.map((x) => `${String(x.hour).padStart(2, '0')}h`),
+  datasets: [{
+    data: reviewsByHour.value.map((x) => Number(x.reviews || 0)),
+    backgroundColor: '#6366F1',
+    borderRadius: 6,
+    borderWidth: 0
+  }]
+}))
+
+const reviewsByWeekdayData = computed(() => ({
+  labels: reviewsByWeekday.value.map((x) => x.weekday),
+  datasets: [{
+    data: reviewsByWeekday.value.map((x) => Number(x.reviews || 0)),
+    backgroundColor: '#8B5CF6',
+    borderRadius: 8,
+    borderWidth: 0
+  }]
+}))
+
+// Barras simples com eixo Y de contagem — reaproveitado por hora/dia da semana
+function countBarOptions(unitLabel = 'reviews') {
+  const t = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: themedTooltip({
+        callbacks: { label: (ctx) => `${formatInt(ctx.parsed.y)} ${unitLabel}` }
+      })
+    },
+    scales: {
+      x: {
+        ticks: { color: t.tick, font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+        border: { display: false },
+        grid: { display: false }
+      },
+      y: {
+        beginAtZero: true,
+        ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 } },
+        border: { display: false },
+        grid: { color: t.grid }
+      }
+    }
+  }
+}
+
+const reviewsByHourOptions = computed(() => countBarOptions('reviews'))
+const reviewsByWeekdayOptions = computed(() => countBarOptions('reviews'))
+
+const retentionData = computed(() => ({
+  labels: retentionByInterval.value.map((x) => x.bucket),
+  datasets: [{
+    data: retentionByInterval.value.map((x) => Number(x.rate || 0)),
+    backgroundColor: '#10B981',
+    borderRadius: 8,
+    borderWidth: 0
+  }]
+}))
+
+const retentionOptions = computed(() => {
+  const t = chartTheme.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: themedTooltip({
+        callbacks: {
+          label: (ctx) => {
+            const row = retentionByInterval.value[ctx.dataIndex]
+            return `${format2(row?.rate)}% de acerto (${formatInt(row?.correct)}/${formatInt(row?.total)})`
+          }
+        }
+      })
+    },
+    scales: {
+      x: { ticks: { color: t.tick, font: { size: 11 } }, border: { display: false }, grid: { display: false } },
+      y: {
+        beginAtZero: true,
+        max: 100,
+        ticks: { maxTicksLimit: 5, color: t.tick, font: { size: 11 }, callback: (v) => `${v}%` },
+        border: { display: false },
+        grid: { color: t.grid }
+      }
+    }
+  }
+})
+
+const intervalDistData = computed(() => ({
+  labels: intervalDistribution.value.map((x) => x.bucket),
+  datasets: [{
+    data: intervalDistribution.value.map((x) => Number(x.count || 0)),
+    backgroundColor: '#6366F1',
+    borderRadius: 8,
+    borderWidth: 0
+  }]
+}))
+
+const easeDistData = computed(() => ({
+  labels: easeDistribution.value.map((x) => x.bucket),
+  datasets: [{
+    data: easeDistribution.value.map((x) => Number(x.count || 0)),
+    backgroundColor: '#F59E0B',
+    borderRadius: 8,
+    borderWidth: 0
+  }]
+}))
+
+const cardCountBarOptions = computed(() => countBarOptions('cartões'))
+
+// Previsão de carga: rótulo em "hoje / amanhã / +N d" é mais legível que a data
+const forecastData = computed(() => ({
+  labels: dueForecast.value.map((x) => {
+    if (x.dayOffset === 0) return 'hoje'
+    if (x.dayOffset === 1) return 'amanhã'
+    return `+${x.dayOffset}d`
+  }),
+  datasets: [{
+    data: dueForecast.value.map((x) => Number(x.count || 0)),
+    backgroundColor: '#0EA5E9',
+    borderRadius: 5,
+    borderWidth: 0
+  }]
+}))
+
+const forecastOptions = computed(() => countBarOptions('cartões a vencer'))
+
+const forecastTotal = computed(() =>
+  dueForecast.value.reduce((sum, x) => sum + Number(x.count || 0), 0)
+)
+const forecastPeak = computed(() =>
+  dueForecast.value.reduce((max, x) => Math.max(max, Number(x.count || 0)), 0)
+)
+
+// Resumo textual dos hábitos: qual a hora e o dia mais produtivos
+const peakHour = computed(() => {
+  if (!reviewsByHour.value.length) return null
+  return reviewsByHour.value.reduce((best, x) => (x.reviews > (best?.reviews ?? -1) ? x : best), null)
+})
+const peakWeekday = computed(() => {
+  if (!reviewsByWeekday.value.length) return null
+  return reviewsByWeekday.value.reduce((best, x) => (x.reviews > (best?.reviews ?? -1) ? x : best), null)
+})
+
+function openLeechInBrowser(row) {
+  router.push({ path: '/browser', query: { filter: `cid:${row.cardId}` } })
+}
+
 // --- fetch ---
+// Uma requisição só: /api/dashboard/all devolve o payload inteiro. Antes eram
+// seis chamadas paralelas e cada uma reconstruía/retornava o mesmo conjunto
+// completo — cinco cópias eram baixadas e descartadas.
+let inFlight = null
+let requestSeq = 0
+
+function itemsOf(block) {
+  return Array.isArray(block?.items) ? block.items : []
+}
+
 async function fetchDashboard() {
+  // Cancela a busca anterior: sem isso, respostas antigas podiam chegar depois
+  // das novas e sobrescrever a tela com dados de outro filtro.
+  inFlight?.abort()
+  const controller = new AbortController()
+  inFlight = controller
+  const seq = ++requestSeq
+
   loading.value = true
   errorMsg.value = ''
 
-  // Build query string from filters
   const qs = queryString.value
-  const qsTopDecks = qs ? `?limit=12&${qs.slice(1)}` : '?limit=12'
+  const url = `/api/dashboard/all${qs ? `${qs}&` : '?'}top_decks_limit=12`
 
   try {
-    // Parallel fetch for better performance
-    const [summaryRes, reviewsByDayRes, studyTimeByDayRes, successRateByDayRes, topDecksRes, segmentsRes] = await Promise.all([
-      fetch(`/api/dashboard/summary${qs}`),
-      fetch(`/api/dashboard/reviews-by-day${qs}`),
-      fetch(`/api/dashboard/study-time-by-day${qs}`),
-      fetch(`/api/dashboard/success-rate-by-day${qs}`),
-      fetch(`/api/dashboard/top-decks${qsTopDecks}`),
-      fetch(`/api/dashboard/segments${qs}`)
-    ])
+    const res = await fetch(url, { signal: controller.signal })
+    const data = await readJsonSafe(res)
 
-    // Parse all responses
-    const [summaryData, reviewsByDayData, studyTimeByDayData, successRateByDayData, topDecksData, segmentsData] = await Promise.all([
-      readJsonSafe(summaryRes),
-      readJsonSafe(reviewsByDayRes),
-      readJsonSafe(studyTimeByDayRes),
-      readJsonSafe(successRateByDayRes),
-      readJsonSafe(topDecksRes),
-      readJsonSafe(segmentsRes)
-    ])
+    if (data?.__nonJson) throw new Error(`dashboard: resposta não-JSON — ${data.__head}`)
+    if (data?.__jsonParseError) throw new Error(`dashboard: JSON inválido — ${data.__message}`)
+    if (!res.ok || data?.success === false) {
+      throw new Error(data?.error || data?.detail || `dashboard: HTTP ${res.status}`)
+    }
 
-    // Validate and assign summary
-    if (summaryData?.__nonJson) throw new Error(`summary non-JSON: ${summaryData.__head}`)
-    if (summaryRes.status >= 400 || summaryData?.success === false) throw new Error(summaryData?.error || `summary HTTP ${summaryRes.status}`)
-    summary.value = summaryData
+    // Descarta respostas que já não são a mais recente
+    if (seq !== requestSeq) return
 
-    // Validate and assign reviewsByDay
-    if (reviewsByDayData?.__nonJson) throw new Error(`reviews-by-day non-JSON: ${reviewsByDayData.__head}`)
-    if (reviewsByDayRes.status >= 400 || reviewsByDayData?.success === false) throw new Error(reviewsByDayData?.error || `reviews-by-day HTTP ${reviewsByDayRes.status}`)
-    reviewsByDay.value = Array.isArray(reviewsByDayData?.items) ? reviewsByDayData.items : []
+    summary.value = data.summary ?? null
+    reviewsByDay.value = itemsOf(data.reviews_by_day)
+    studyTimeByDay.value = itemsOf(data.study_time_by_day)
+    successRateByDay.value = itemsOf(data.success_rate_by_day)
+    topDecks.value = itemsOf(data.top_decks)
+    segments.value = itemsOf(data.segments)
 
-    // Validate and assign studyTimeByDay
-    if (studyTimeByDayData?.__nonJson) throw new Error(`study-time-by-day non-JSON: ${studyTimeByDayData.__head}`)
-    if (studyTimeByDayRes.status >= 400 || studyTimeByDayData?.success === false) throw new Error(studyTimeByDayData?.error || `study-time-by-day HTTP ${studyTimeByDayRes.status}`)
-    studyTimeByDay.value = Array.isArray(studyTimeByDayData?.items) ? studyTimeByDayData.items : []
+    answerButtons.value = itemsOf(data.answer_buttons)
+    reviewsByHour.value = itemsOf(data.reviews_by_hour)
+    reviewsByWeekday.value = itemsOf(data.reviews_by_weekday)
+    retentionByInterval.value = itemsOf(data.retention_by_interval)
+    intervalDistribution.value = itemsOf(data.interval_distribution)
+    easeDistribution.value = itemsOf(data.ease_distribution)
+    dueForecast.value = itemsOf(data.due_forecast)
+    leeches.value = itemsOf(data.leeches)
 
-    // Validate and assign successRateByDay
-    if (successRateByDayData?.__nonJson) throw new Error(`success-rate-by-day non-JSON: ${successRateByDayData.__head}`)
-    if (successRateByDayRes.status >= 400 || successRateByDayData?.success === false) throw new Error(successRateByDayData?.error || `success-rate-by-day HTTP ${successRateByDayRes.status}`)
-    successRateByDay.value = Array.isArray(successRateByDayData?.items) ? successRateByDayData.items : []
-
-    // Validate and assign topDecks
-    if (topDecksData?.__nonJson) throw new Error(`top-decks non-JSON: ${topDecksData.__head}`)
-    if (topDecksRes.status >= 400 || topDecksData?.success === false) throw new Error(topDecksData?.error || `top-decks HTTP ${topDecksRes.status}`)
-    topDecks.value = Array.isArray(topDecksData?.items) ? topDecksData.items : []
-
-    // Validate and assign segments
-    if (segmentsData?.__nonJson) throw new Error(`segments non-JSON: ${segmentsData.__head}`)
-    if (segmentsRes.status >= 400 || segmentsData?.success === false) throw new Error(segmentsData?.error || `segments HTTP ${segmentsRes.status}`)
-    segments.value = Array.isArray(segmentsData?.items) ? segmentsData.items : []
-
+    hasLoadedOnce.value = true
   } catch (e) {
+    if (e?.name === 'AbortError') return  // substituída por uma busca mais nova
+    if (seq !== requestSeq) return
     errorMsg.value = e?.message || String(e)
     notify(errorMsg.value, 'error', 7000)
   } finally {
-    loading.value = false
+    if (seq === requestSeq) {
+      loading.value = false
+      inFlight = null
+    }
   }
 }
 
@@ -558,6 +893,11 @@ function handleKeyboard(e) {
     e.preventDefault()
     filtersExpanded.value = !filtersExpanded.value
   }
+  // 1-4 = troca de aba
+  if (['1', '2', '3', '4'].includes(e.key) && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault()
+    activeTab.value = TAB_IDS[Number(e.key) - 1]
+  }
   // Escape = Close any open dialog
   if (e.key === 'Escape') {
     deckDetailVisible.value = false
@@ -566,11 +906,14 @@ function handleKeyboard(e) {
 }
 
 onMounted(() => {
+  fetchDeckOptions()
   fetchDashboard()
   document.addEventListener('keydown', handleKeyboard)
 })
 
 onUnmounted(() => {
+  if (filterDebounce) clearTimeout(filterDebounce)
+  inFlight?.abort()
   document.removeEventListener('keydown', handleKeyboard)
 })
 </script>
@@ -645,7 +988,7 @@ onUnmounted(() => {
           </div>
           <div class="filter-hint muted">
             <i class="pi pi-info-circle" />
-            Atalhos: <kbd>R</kbd> atualizar · <kbd>F</kbd> filtros · <kbd>Esc</kbd> fechar dialogs
+            Atalhos: <kbd>R</kbd> atualizar · <kbd>F</kbd> filtros · <kbd>1</kbd>–<kbd>4</kbd> abas · <kbd>Esc</kbd> fechar dialogs
           </div>
         </div>
       </Transition>
@@ -678,7 +1021,7 @@ onUnmounted(() => {
               <div class="kpi-txt">
                 <div class="kpi-lbl muted">Total de reviews</div>
                 <div class="kpi-val">
-                  <Skeleton v-if="loading" width="9rem" height="1.7rem" />
+                  <Skeleton v-if="showSkeletons" width="9rem" height="1.7rem" />
                   <span v-else>{{ formatInt(animatedTotalReviews) }}</span>
                 </div>
               </div>
@@ -693,7 +1036,7 @@ onUnmounted(() => {
               <div class="kpi-txt">
                 <div class="kpi-lbl muted">Média reviews/dia</div>
                 <div class="kpi-val">
-                  <Skeleton v-if="loading" width="9rem" height="1.7rem" />
+                  <Skeleton v-if="showSkeletons" width="9rem" height="1.7rem" />
                   <span v-else>{{ format2(animatedAvgReviews) }}</span>
                 </div>
               </div>
@@ -708,7 +1051,7 @@ onUnmounted(() => {
               <div class="kpi-txt">
                 <div class="kpi-lbl muted">Tempo total de estudo</div>
                 <div class="kpi-val">
-                  <Skeleton v-if="loading" width="9rem" height="1.7rem" />
+                  <Skeleton v-if="showSkeletons" width="9rem" height="1.7rem" />
                   <span v-else>{{ formatStudyTime(animatedStudyTime) }}</span>
                 </div>
               </div>
@@ -723,7 +1066,7 @@ onUnmounted(() => {
               <div class="kpi-txt">
                 <div class="kpi-lbl muted">Taxa de acerto</div>
                 <div class="kpi-val">
-                  <Skeleton v-if="loading" width="9rem" height="1.7rem" />
+                  <Skeleton v-if="showSkeletons" width="9rem" height="1.7rem" />
                   <span v-else>{{ format2(animatedSuccessRate) }}%</span>
                 </div>
               </div>
@@ -732,196 +1075,368 @@ onUnmounted(() => {
         </Card>
       </div>
 
-      <!-- Charts row 1 -->
-      <div class="grid">
-        <div class="card-surface chart-card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Reviews por dia</div>
-              <div class="card-sub muted">Histórico de revisões</div>
-            </div>
-            <Tag class="pill" severity="secondary">Linha</Tag>
-          </div>
-
-          <div class="chart-wrap">
-            <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="line" :data="reviewsLineData" :options="reviewsLineOptions" height="300px" />
-          </div>
-        </div>
-
-        <div class="card-surface chart-card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Tipos de cartões (Anki)</div>
-              <div class="card-sub muted">Novos · Aprendendo · Revisão · Due · Suspensos</div>
-            </div>
-            <Tag class="pill" severity="secondary">{{ formatInt(statusTotal) }}</Tag>
-          </div>
-
-          <div class="chart-wrap">
-            <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="doughnut" :data="statusDoughnutData" :options="doughnutOptions" height="300px" />
-          </div>
-
-          <div v-if="!loading" class="mini-legend">
-            <div v-for="it in statusItems" :key="it.status" class="mini-row">
-              <div class="mini-left">
-                <span class="mini-dot"></span>
-                <span class="mini-label">{{ it.status }}</span>
-              </div>
-              <div class="mini-right">
-                <span class="mini-count">{{ formatInt(it.count) }}</span>
-                <span class="mini-pct muted">{{ it.pct.toFixed(1).replace('.', ',') }}%</span>
+      <Tabs v-model:value="activeTab" lazy class="dash-tabs">
+        <TabList>
+          <Tab value="overview"><i class="pi pi-home mr-2" />Visão geral</Tab>
+          <Tab value="performance"><i class="pi pi-chart-line mr-2" />Desempenho</Tab>
+          <Tab value="collection"><i class="pi pi-database mr-2" />Coleção</Tab>
+          <Tab value="maturity"><i class="pi pi-sparkles mr-2" />Maturidade</Tab>
+        </TabList>
+        <TabPanels>
+          <TabPanel value="overview">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Reviews por dia</div>
+                <div class="card-sub muted">Histórico de revisões</div>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
 
-      <!-- Charts row 2: Tempo de estudo + Taxa de acerto -->
-      <div class="grid">
-        <div class="card-surface chart-card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Tempo de estudo</div>
-              <div class="card-sub muted">Minutos por dia</div>
+            <div class="chart-wrap is-clickable" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="line" :data="reviewsLineData" :options="reviewsLineOptions" height="300px" />
             </div>
-            <Tag class="pill" severity="secondary">Linha</Tag>
           </div>
 
-          <div class="chart-wrap">
-            <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="line" :data="studyTimeLineData" :options="studyTimeOptions" height="300px" />
-          </div>
-        </div>
-
-        <div class="card-surface chart-card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Taxa de acerto</div>
-              <div class="card-sub muted">% de acertos ao longo do tempo</div>
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Tipos de cartões (Anki)</div>
+                <div class="card-sub muted">Novos · Aprendendo · Revisão · Due · Suspensos</div>
+              </div>
+              <Tag class="pill" severity="secondary">{{ formatInt(statusTotal) }}</Tag>
             </div>
-            <Tag class="pill" severity="secondary">Linha</Tag>
-          </div>
 
-          <div class="chart-wrap">
-            <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="line" :data="successRateLineData" :options="successRateOptions" height="300px" />
-          </div>
-        </div>
-      </div>
-
-      <!-- Charts row 3: Decks + Segmentos -->
-      <div class="grid">
-        <div class="card-surface chart-card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Total por deck</div>
-              <div class="card-sub muted">Ranking (Top 12) — melhor legibilidade em modo horizontal</div>
+            <div class="chart-wrap is-clickable" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="doughnut" :data="statusDoughnutData" :options="doughnutOptions" height="300px" />
             </div>
-            <Tag class="pill" severity="secondary">Barras</Tag>
-          </div>
 
-          <div class="chart-wrap">
-            <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="bar" :data="deckBarData" :options="deckBarOptions" height="300px" />
-          </div>
-        </div>
-
-        <div class="card-surface chart-card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Segmentos de maturidade</div>
-              <div class="card-sub muted">KMeans (scikit-learn) — agrupamento por comportamento</div>
+            <div v-if="!showSkeletons" class="mini-legend">
+              <div v-for="it in statusItems" :key="it.status" class="mini-row">
+                <div class="mini-left">
+                  <span class="mini-dot"></span>
+                  <span class="mini-label">{{ it.status }}</span>
+                </div>
+                <div class="mini-right">
+                  <span class="mini-count">{{ formatInt(it.count) }}</span>
+                  <span class="mini-pct muted">{{ it.pct.toFixed(1).replace('.', ',') }}%</span>
+                </div>
+              </div>
             </div>
-            <Tag class="pill" severity="secondary">{{ segmentsMetaText || '—' }}</Tag>
           </div>
 
-          <div class="chart-wrap">
-            <Skeleton v-if="loading" width="100%" height="290px" />
-            <LazyChart v-else type="bar" :data="segmentsBarData" :options="segmentsBarOptions" height="300px" />
+          <div class="grid grid-single">
+            <div class="card-surface chart-card">
+              <div class="card-head">
+                <div>
+                  <div class="card-title">Previsão de carga</div>
+                  <div class="card-sub muted">Cartões a vencer nos próximos 30 dias</div>
+                </div>
+                <div class="card-head-tags">
+                  <Tag class="pill" severity="secondary">{{ formatInt(forecastTotal) }} no total</Tag>
+                  <Tag class="pill" :severity="forecastPeak > 200 ? 'warn' : 'secondary'">
+                    pico {{ formatInt(forecastPeak) }}/dia
+                  </Tag>
+                </div>
+              </div>
+              <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+                <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+                <LazyChart v-else type="bar" :data="forecastData" :options="forecastOptions" height="300px" />
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+          </TabPanel>
 
-      <!-- Tables -->
-      <div class="grid">
+          <TabPanel value="performance">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Tempo de estudo</div>
+                <div class="card-sub muted">Minutos por dia</div>
+              </div>
+            </div>
+
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="line" :data="studyTimeLineData" :options="studyTimeOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Taxa de acerto</div>
+                <div class="card-sub muted">% de acertos ao longo do tempo</div>
+              </div>
+            </div>
+
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="line" :data="successRateLineData" :options="successRateOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="grid">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Botões de resposta</div>
+                <div class="card-sub muted">Distribuição entre Again · Hard · Good · Easy</div>
+              </div>
+            </div>
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="answerButtonsData" :options="answerButtonsOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Retenção por intervalo</div>
+                <div class="card-sub muted">% de acerto conforme o intervalo anterior do cartão</div>
+              </div>
+            </div>
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="retentionData" :options="retentionOptions" height="300px" />
+            </div>
+          </div>
+          </div>
+
+          <div class="grid">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Reviews por hora</div>
+                <div class="card-sub muted">Quando você estuda (horário local)</div>
+              </div>
+              <Tag class="pill" severity="secondary">{{ peakHour ? `pico ${String(peakHour.hour).padStart(2, "0")}h` : "—" }}</Tag>
+            </div>
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="reviewsByHourData" :options="reviewsByHourOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Reviews por dia da semana</div>
+                <div class="card-sub muted">Distribuição semanal do esforço</div>
+              </div>
+              <Tag class="pill" severity="secondary">{{ peakWeekday ? `pico ${peakWeekday.weekday}` : "—" }}</Tag>
+            </div>
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="reviewsByWeekdayData" :options="reviewsByWeekdayOptions" height="300px" />
+            </div>
+          </div>
+          </div>
+          </TabPanel>
+
+          <TabPanel value="collection">
+          <div class="grid">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Distribuição de intervalos</div>
+                <div class="card-sub muted">Quantos cartões em cada faixa de intervalo</div>
+              </div>
+            </div>
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="intervalDistData" :options="cardCountBarOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Distribuição de ease</div>
+                <div class="card-sub muted">Facilidade acumulada dos cartões</div>
+              </div>
+            </div>
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="easeDistData" :options="cardCountBarOptions" height="300px" />
+            </div>
+          </div>
+          </div>
+
+          <div class="grid">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Total por deck</div>
+                <div class="card-sub muted">Ranking (Top 12) — melhor legibilidade em modo horizontal</div>
+              </div>
+            </div>
+
+            <div class="chart-wrap is-clickable" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="deckBarData" :options="deckBarOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="card-surface table-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Top decks</div>
+                <div class="card-sub muted">Concentração por deck</div>
+              </div>
+              <Tag class="pill" severity="secondary">{{ topDecks.length }}</Tag>
+            </div>
+
+            <DataTable
+              :value="topDecks"
+              stripedRows
+              rowHover
+              class="modern-dt"
+              :loading="loading"
+              :paginator="topDecks.length > 8"
+              :rows="8"
+              :rowsPerPageOptions="[8, 12, 20]"
+              responsiveLayout="scroll"
+            >
+              <Column field="deckName" header="Deck" sortable />
+              <Column field="count" header="Cartões" sortable style="width: 9rem">
+                <template #body="{ data }">{{ formatInt(data.count) }}</template>
+              </Column>
+            </DataTable>
+          </div>
+          </div>
+          </TabPanel>
+
+          <TabPanel value="maturity">
+          <div class="grid">
+          <div class="card-surface chart-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Segmentos de maturidade</div>
+                <div class="card-sub muted">KMeans (scikit-learn) — agrupamento por comportamento</div>
+              </div>
+              <Tag class="pill" severity="secondary">{{ segmentsMetaText || '—' }}</Tag>
+            </div>
+
+            <div class="chart-wrap" :class="{ 'is-refreshing': isRefreshing }">
+              <Skeleton v-if="showSkeletons" width="100%" height="290px" />
+              <LazyChart v-else type="bar" :data="segmentsBarData" :options="segmentsBarOptions" height="300px" />
+            </div>
+          </div>
+
+          <div class="card-surface table-card">
+            <div class="card-head">
+              <div>
+                <div class="card-title">Segmentos (KMeans)</div>
+                <div class="card-sub muted">Médias por grupo (intervalo · ease · lapses · reps)</div>
+              </div>
+              <Tag class="pill" severity="secondary">{{ segments.length }}</Tag>
+            </div>
+
+            <div v-if="!loading && !segments.length" class="empty muted">
+              <div class="empty-ico"><i class="pi pi-info-circle"></i></div>
+              <div>
+                Sem dados suficientes para segmentar (ou coleção pequena).
+                <div class="muted tiny">Dica: reduza o K (env DASHBOARD_SEGMENTS_K) ou aumente o sample no backend.</div>
+              </div>
+            </div>
+
+            <DataTable
+              v-else
+              :value="segments"
+              stripedRows
+              rowHover
+              class="modern-dt"
+              :loading="loading"
+              responsiveLayout="scroll"
+            >
+              <Column field="segment" header="Segmento" sortable />
+              <Column field="count" header="Qtd" sortable style="width: 6rem">
+                <template #body="{ data }">{{ formatInt(data.count) }}</template>
+              </Column>
+
+              <Column field="avgInterval" header="Intervalo méd. (d)" sortable style="width: 12rem">
+                <template #body="{ data }">{{ Number(data.avgInterval || 0).toFixed(1).replace('.', ',') }}</template>
+              </Column>
+
+              <Column field="avgEase" header="Ease méd." sortable style="width: 9rem">
+                <template #body="{ data }">{{ Number(data.avgEase || 0).toFixed(2).replace('.', ',') }}</template>
+              </Column>
+
+              <Column field="avgLapses" header="Lapses méd." sortable style="width: 10rem">
+                <template #body="{ data }">{{ Number(data.avgLapses || 0).toFixed(2).replace('.', ',') }}</template>
+              </Column>
+
+              <Column field="avgReps" header="Reps méd." sortable style="width: 9rem">
+                <template #body="{ data }">{{ Number(data.avgReps || 0).toFixed(2).replace('.', ',') }}</template>
+              </Column>
+            </DataTable>
+          </div>
+          </div>
+
+            <div class="grid grid-single">
         <div class="card-surface table-card">
           <div class="card-head">
             <div>
-              <div class="card-title">Top decks</div>
-              <div class="card-sub muted">Concentração por deck</div>
+              <div class="card-title">Cartões problemáticos</div>
+              <div class="card-sub muted">
+                Mais de {{ leechMinLapses }} lapsos — candidatos a reformular ou suspender
+              </div>
             </div>
-            <Tag class="pill" severity="secondary">{{ topDecks.length }}</Tag>
+            <Tag class="pill" :severity="leeches.length ? 'warn' : 'secondary'">
+              {{ formatInt(summary?.leechCount ?? 0) }}
+            </Tag>
           </div>
 
-          <DataTable
-            :value="topDecks"
-            stripedRows
-            rowHover
-            class="modern-dt"
-            :loading="loading"
-            :paginator="topDecks.length > 8"
-            :rows="8"
-            :rowsPerPageOptions="[8, 12, 20]"
-            responsiveLayout="scroll"
-          >
-            <Column field="deckName" header="Deck" sortable />
-            <Column field="count" header="Cartões" sortable style="width: 9rem">
-              <template #body="{ data }">{{ formatInt(data.count) }}</template>
-            </Column>
-          </DataTable>
-        </div>
-
-        <div class="card-surface table-card">
-          <div class="card-head">
+          <div v-if="!showSkeletons && !leeches.length" class="empty muted">
+            <div class="empty-ico"><i class="pi pi-check-circle"></i></div>
             <div>
-              <div class="card-title">Segmentos (KMeans)</div>
-              <div class="card-sub muted">Médias por grupo (intervalo · ease · lapses · reps)</div>
-            </div>
-            <Tag class="pill" severity="secondary">{{ segments.length }}</Tag>
-          </div>
-
-          <div v-if="!loading && !segments.length" class="empty muted">
-            <div class="empty-ico"><i class="pi pi-info-circle"></i></div>
-            <div>
-              Sem dados suficientes para segmentar (ou coleção pequena).
-              <div class="muted tiny">Dica: reduza o K (env DASHBOARD_SEGMENTS_K) ou aumente o sample no backend.</div>
+              Nenhum cartão problemático nos filtros atuais.
+              <div class="muted tiny">Bom sinal: nenhum cartão acumulou lapsos demais.</div>
             </div>
           </div>
 
           <DataTable
             v-else
-            :value="segments"
+            :value="leeches"
             stripedRows
             rowHover
             class="modern-dt"
             :loading="loading"
+            :paginator="leeches.length > 10"
+            :rows="10"
             responsiveLayout="scroll"
+            @rowClick="openLeechInBrowser($event.data)"
           >
-            <Column field="segment" header="Segmento" sortable />
-            <Column field="count" header="Qtd" sortable style="width: 6rem">
-              <template #body="{ data }">{{ formatInt(data.count) }}</template>
+            <Column field="question" header="Cartão" sortable>
+              <template #body="{ data }">
+                <span class="leech-q" :title="data.question">{{ data.question || '—' }}</span>
+              </template>
             </Column>
-
-            <Column field="avgInterval" header="Intervalo méd. (d)" sortable style="width: 12rem">
-              <template #body="{ data }">{{ Number(data.avgInterval || 0).toFixed(1).replace('.', ',') }}</template>
+            <Column field="deckName" header="Deck" sortable style="width: 14rem">
+              <template #body="{ data }">
+                <span class="leech-deck" :title="data.deckName">{{ deckLeaf(data.deckName) }}</span>
+              </template>
             </Column>
-
-            <Column field="avgEase" header="Ease méd." sortable style="width: 9rem">
-              <template #body="{ data }">{{ Number(data.avgEase || 0).toFixed(2).replace('.', ',') }}</template>
+            <Column field="lapses" header="Lapsos" sortable style="width: 7rem">
+              <template #body="{ data }">
+                <span class="leech-lapses">{{ formatInt(data.lapses) }}</span>
+              </template>
             </Column>
-
-            <Column field="avgLapses" header="Lapses méd." sortable style="width: 10rem">
-              <template #body="{ data }">{{ Number(data.avgLapses || 0).toFixed(2).replace('.', ',') }}</template>
+            <Column field="reps" header="Reps" sortable style="width: 6rem">
+              <template #body="{ data }">{{ formatInt(data.reps) }}</template>
             </Column>
-
-            <Column field="avgReps" header="Reps méd." sortable style="width: 9rem">
-              <template #body="{ data }">{{ Number(data.avgReps || 0).toFixed(2).replace('.', ',') }}</template>
+            <Column field="ease" header="Ease" sortable style="width: 6rem">
+              <template #body="{ data }">{{ format2(data.ease) }}</template>
             </Column>
           </DataTable>
         </div>
       </div>
+          </TabPanel>
+        </TabPanels>
+      </Tabs>
 
       <div class="footer-space" />
     </div>
@@ -1255,15 +1770,19 @@ onUnmounted(() => {
   margin-bottom: 10px;
 }
 
+/* Pesos acima de 900 são recortados para 900 pelo navegador — usar 950/1000 em
+   tudo achatava a hierarquia. Título forte, subtítulo discreto. */
 .card-title {
-  font-weight: 950;
+  font-weight: 800;
+  font-size: 15px;
   letter-spacing: -0.25px;
-  line-height: 1.1;
+  line-height: 1.15;
 }
 
 .card-sub {
-  margin-top: 4px;
+  margin-top: 3px;
   font-size: 12px;
+  opacity: 0.7;
 }
 
 /* KPIs */
@@ -1294,17 +1813,8 @@ onUnmounted(() => {
   position: relative;
 }
 
-.kpi::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--app-text) 8%, transparent), transparent 45%);
-  opacity: 0.6;
-  pointer-events: none;
-}
-
 .kpi :deep(.p-card-body) {
-  padding: 14px;
+  padding: 16px;
 }
 
 .kpi-top {
@@ -1314,33 +1824,47 @@ onUnmounted(() => {
 }
 
 .kpi-ico {
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   background: var(--ghost-bg-strong);
   border: 1px solid var(--ghost-border);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-text) 6%, transparent);
 }
 
 .kpi-ico i {
-  font-size: 18px;
-  opacity: 0.95;
+  font-size: 17px;
 }
 
+/* O ícone herda o acento do card, para faixa e ícone contarem a mesma história */
+.kpi-accent-1 .kpi-ico i { color: var(--color-primary); }
+.kpi-accent-2 .kpi-ico i { color: var(--color-success); }
+.kpi-accent-3 .kpi-ico i { color: var(--color-pink); }
+.kpi-accent-4 .kpi-ico i { color: var(--color-warning); }
+
+.kpi-accent-1 .kpi-ico { background: color-mix(in srgb, var(--color-primary) 12%, transparent); }
+.kpi-accent-2 .kpi-ico { background: color-mix(in srgb, var(--color-success) 12%, transparent); }
+.kpi-accent-3 .kpi-ico { background: color-mix(in srgb, var(--color-pink) 12%, transparent); }
+.kpi-accent-4 .kpi-ico { background: color-mix(in srgb, var(--color-warning) 12%, transparent); }
+
 .kpi-lbl {
-  font-weight: 900;
-  font-size: 12px;
-  opacity: 0.75;
+  font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  opacity: 0.6;
 }
 
 .kpi-val {
-  margin-top: 4px;
-  font-size: 20px;
-  font-weight: 1000;
-  letter-spacing: -0.4px;
+  margin-top: 5px;
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.8px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* KPI accent strip */
@@ -1357,6 +1881,49 @@ onUnmounted(() => {
 .kpi-accent-3::after { background: color-mix(in srgb, var(--color-pink) 85%, transparent); }
 .kpi-accent-4::after { background: color-mix(in srgb, var(--color-warning) 90%, transparent); }
 
+/* =========================
+   Abas
+========================= */
+.dash-tabs {
+  margin-top: 12px;
+}
+
+.dash-tabs :deep(.p-tablist-tab-list) {
+  background: transparent;
+  border-bottom: 1px solid var(--app-border);
+  gap: 4px;
+}
+
+.dash-tabs :deep(.p-tab) {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.dash-tabs :deep(.p-tab:hover) {
+  color: var(--app-text);
+}
+
+.dash-tabs :deep(.p-tab[data-p-active='true']) {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+.dash-tabs :deep(.p-tabpanels) {
+  background: transparent;
+  padding: 0;
+}
+
+/* A primeira grade de cada aba não precisa do respiro que separa linhas irmãs */
+.dash-tabs :deep(.p-tabpanel) > .grid:first-child {
+  margin-top: 14px;
+}
+
 /* Grid blocks */
 .grid {
   margin-top: 12px;
@@ -1365,10 +1932,47 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-/* ✅ Em telas grandes, abre mais o layout */
+/* Linha de card único (ex.: previsão de carga, leeches) */
+.grid-single {
+  grid-template-columns: 1fr;
+}
+
+.card-head-tags {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Tabela de cartões problemáticos */
+.leech-q {
+  display: block;
+  max-width: 52ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leech-deck {
+  display: block;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+.leech-lapses {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-warning);
+}
+
+/* Em telas grandes só a primeira linha é assimétrica (série temporal larga +
+   rosca estreita). Antes o 1.25/0.75 valia para TODAS as linhas, deixando
+   torto até onde os dois cards são pares — dois gráficos de linha, duas
+   tabelas. */
 @media (min-width: 1400px) {
-  .grid {
-    grid-template-columns: 1.25fr 0.75fr; /* dá mais espaço pros gráficos “largos” */
+  .grid-wide-first {
+    grid-template-columns: 1.35fr 0.65fr;
   }
 }
 
@@ -1380,6 +1984,39 @@ onUnmounted(() => {
 
 .chart-card {
   min-height: 380px;
+}
+
+/* Os gráficos ficam montados durante a atualização (não são mais destruídos),
+   então o estado de carregamento precisa aparecer sobre eles. */
+.chart-wrap.is-refreshing {
+  position: relative;
+  pointer-events: none;
+}
+/* Esmaece o gráfico, não o wrapper — senão o spinner abaixo some junto */
+.chart-wrap.is-refreshing > * {
+  opacity: 0.45;
+  transition: opacity 0.2s ease;
+}
+/* Usa ::before para não disputar o ::after com a dica de clique */
+.chart-wrap.is-refreshing::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: 10px;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  border-top-color: var(--color-primary);
+  animation: chart-spin 0.7s linear infinite;
+}
+@keyframes chart-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chart-wrap.is-refreshing::before { animation: none; }
 }
 
 .table-card {
@@ -1686,23 +2323,28 @@ onUnmounted(() => {
   position: relative;
 }
 
-/* Clickable indicator */
-.chart-wrap::after {
+/* Dica de clique — só nos gráficos que realmente respondem ao clique.
+   Antes valia para .chart-wrap inteiro, prometendo interação também em
+   "Tempo de estudo", "Taxa de acerto" e "Segmentos", que não têm onClick. */
+.chart-wrap.is-clickable::after {
   content: 'Clique para detalhes';
   position: absolute;
   bottom: 10px;
   right: 10px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.6);
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--ghost-bg-strong);
+  border: 1px solid var(--ghost-border);
+  color: var(--app-text);
   font-size: 11px;
+  font-weight: 600;
   opacity: 0;
   transition: opacity 0.2s ease;
   pointer-events: none;
 }
 
-.chart-wrap:hover::after {
-  opacity: 0.8;
+.chart-wrap.is-clickable:hover::after {
+  opacity: 0.9;
 }
 
 /* =========================

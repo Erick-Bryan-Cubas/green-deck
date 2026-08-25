@@ -1,6 +1,6 @@
 <!-- frontend/src/pages/BrowserPage.vue -->
 <script setup>
-/* global performance, TextDecoder */
+/* global performance, TextDecoder, DOMParser */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -34,6 +34,7 @@ import ApiKeysDialog from '@/components/modals/ApiKeysDialog.vue'
 import ModelSelectionDialog from '@/components/modals/ModelSelectionDialog.vue'
 import PromptSettingsDialog from '@/components/modals/PromptSettingsDialog.vue'
 import { useSidebar } from '@/composables/useSidebar'
+import { useServicesStatus } from '@/composables/useStatusWebSocket'
 import { useApiKeysDialog } from '@/composables/useApiKeysDialog'
 import { useModelSelectionDialog } from '@/composables/useModelSelectionDialog'
 import { usePromptSettingsDialog } from '@/composables/usePromptSettingsDialog'
@@ -72,9 +73,16 @@ function handleOpenLogsEvent() {
   logsVisible.value = true
 }
 
+// Uma tradução em lote registra uma linha por nota falhada/pulada, então o
+// array cresceria sem limite ao longo da sessão. Mantemos só as mais recentes.
+const MAX_LOGS = 500
+
 function addLog(message, type = 'info') {
   const timestamp = new Date().toLocaleTimeString()
   logs.value.push({ timestamp, message, type })
+  if (logs.value.length > MAX_LOGS) {
+    logs.value.splice(0, logs.value.length - MAX_LOGS)
+  }
 }
 function clearLogs() {
   logs.value = []
@@ -194,6 +202,54 @@ function isSuspendedRow(row) {
   return Number(row?.queue) === -1
 }
 
+// O Anki devolve question/answer já renderizados em HTML (com <style> do template).
+// Para a tabela queremos só o texto legível. DOMParser não executa scripts nem
+// carrega recursos externos, então é seguro para conteúdo vindo da coleção.
+function cardPlainText(html) {
+  const raw = String(html || '')
+  if (!raw) return ''
+  try {
+    const doc = new DOMParser().parseFromString(raw, 'text/html')
+    doc.querySelectorAll('style, script').forEach((el) => el.remove())
+    return (doc.body?.textContent || '').replace(/\s+/g, ' ').trim()
+  } catch {
+    return raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  }
+}
+
+// Parsear HTML é caro e a tabela lê estes textos a cada render (e o comparador
+// de ordenação, O(n log n) vezes). Memorizamos por linha: o WeakMap não segura
+// referência, então as entradas somem junto com os itens quando a página troca.
+const cardTextCache = new WeakMap()
+const EMPTY_CARD_TEXT = Object.freeze({ front: '', back: '' })
+
+function cardText(row) {
+  if (!row || typeof row !== 'object') return EMPTY_CARD_TEXT
+  const cached = cardTextCache.get(row)
+  if (cached) return cached
+
+  // A resposta repete a pergunta antes do <hr id=answer>; só interessa o que vem depois.
+  const rawAnswer = String(row.answer || '')
+  const answerParts = rawAnswer.split(/<hr[^>]*id=["']?answer["']?[^>]*>/i)
+
+  const value = {
+    front: cardPlainText(row.question),
+    back: cardPlainText(answerParts.length > 1 ? answerParts[1] : rawAnswer)
+  }
+  cardTextCache.set(row, value)
+  return value
+}
+
+// Deck vem como "Pai::Filho::Neto" — na tabela mostramos a folha e o caminho no título.
+function deckLeaf(name) {
+  const parts = String(name || '').split('::')
+  return parts[parts.length - 1] || String(name || '')
+}
+function deckParentPath(name) {
+  const parts = String(name || '').split('::')
+  return parts.length > 1 ? parts.slice(0, -1).join(' › ') : ''
+}
+
 // Lê JSON de forma segura e detecta “200 mas HTML”
 async function readJsonSafe(resp) {
   const ct = (resp.headers.get('content-type') || '').toLowerCase()
@@ -207,6 +263,40 @@ async function readJsonSafe(resp) {
   } catch (e) {
     return { __jsonParseError: true, __message: e?.message || String(e) }
   }
+}
+
+// FastAPI devolve erro de validação como {"detail": [...]} e erros da app como
+// {"error": "..."} — normalizamos as duas formas numa mensagem legível.
+function apiErrorText(data) {
+  if (typeof data?.error === 'string' && data.error) return data.error
+  const detail = data?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((d) => `${(d?.loc || []).filter((p) => p !== 'query').join('.')}: ${d?.msg || 'inválido'}`)
+      .join('; ')
+  }
+  return 'erro desconhecido'
+}
+
+// Contrato único de leitura: status HTTP, resposta não-JSON e {success:false}
+// são todos falha. Antes só o último era verificado nas rotas de leitura, então
+// um 422 do FastAPI passava como sucesso e virava "0 resultados" silencioso.
+async function readApiResult(resp, label) {
+  const data = await readJsonSafe(resp)
+  if (data?.__nonJson) {
+    throw new Error(`${label}: resposta não-JSON (ct=${data.__contentType}) "${data.__head}"`)
+  }
+  if (data?.__jsonParseError) {
+    throw new Error(`${label}: JSON inválido (${data.__message})`)
+  }
+  if (!resp.ok) {
+    throw new Error(`${label}: HTTP ${resp.status} — ${apiErrorText(data)}`)
+  }
+  if (data?.success === false) {
+    throw new Error(`${label}: ${apiErrorText(data)}`)
+  }
+  return data
 }
 
 function ms(n) {
@@ -239,46 +329,23 @@ function summarizeResults(results = []) {
 // ----------------------
 // Service status (Anki / Ollama)
 // ----------------------
-const ankiHealth = ref({ ok: null, error: '', ankiConnectVersion: null })
+// Derivado do WebSocket que já alimenta AnkiStatus/OllamaStatus no cabeçalho.
+// Antes esta página fazia polling de /api/health/* a cada 6s em paralelo ao
+// mesmo dado — ~20 requisições por minuto, indefinidamente.
+const { anki: ankiWsStatus, ollama: ollamaWsStatus, refresh: refreshServicesStatus } = useServicesStatus()
 
-// backend novo retorna required.{easy_or_neutral,hard_technical}
-const ollamaHealth = ref({
-  ok: null,
-  error: '',
-  timeoutS: null,
-  modelsCount: null,
-  required: null
-})
+// `ok === null` significa "ainda verificando" — a UI distingue esse estado.
+const ankiHealth = computed(() => ({
+  ok: ankiWsStatus.value.checking ? null : ankiWsStatus.value.connected,
+  error: ankiWsStatus.value.connected ? '' : 'AnkiConnect indisponível — verifique se o Anki está aberto',
+  ankiConnectVersion: ankiWsStatus.value.version ?? null
+}))
 
-let healthTimer = null
-
-async function fetchHealth() {
-  // Anki
-  try {
-    const r = await fetch('/api/health/anki')
-    const data = await readJsonSafe(r)
-    if (data?.__nonJson) throw new Error(`non-JSON: ${data.__head}`)
-    ankiHealth.value = { ok: !!data.ok, error: data.error || '', ankiConnectVersion: data.ankiConnectVersion ?? null }
-  } catch (e) {
-    ankiHealth.value = { ok: false, error: e?.message || String(e), ankiConnectVersion: null }
-  }
-
-  // Ollama
-  try {
-    const r = await fetch('/api/health/ollama')
-    const data = await readJsonSafe(r)
-    if (data?.__nonJson) throw new Error(`non-JSON: ${data.__head}`)
-    ollamaHealth.value = {
-      ok: !!data.ok,
-      error: data.error || '',
-      timeoutS: data.timeoutS ?? null,
-      modelsCount: data.modelsCount ?? null,
-      required: data.required ?? null
-    }
-  } catch (e) {
-    ollamaHealth.value = { ok: false, error: e?.message || String(e), timeoutS: null, modelsCount: null, required: null }
-  }
-}
+const ollamaHealth = computed(() => ({
+  ok: ollamaWsStatus.value.loading ? null : ollamaWsStatus.value.connected,
+  error: ollamaWsStatus.value.connected ? '' : 'Ollama indisponível',
+  modelsCount: ollamaWsStatus.value.models?.length ?? 0
+}))
 
 const ankiStatusTitle = computed(() => {
   if (ankiHealth.value.ok) return `AnkiConnect OK (version=${ankiHealth.value.ankiConnectVersion})`
@@ -296,6 +363,8 @@ const noteTypeFilterList = ref([])  // Lista de note types do Anki para o filtro
 const status = ref('is:review')
 const text = ref('')
 const advancedQuery = ref('')
+const tags = ref([])           // Filtro de tags (AND entre as escolhidas)
+const allTags = ref([])        // Tags existentes na coleção
 
 const statusOptions = [
   { label: 'Aprendidos (Review)', value: 'is:review' },
@@ -379,6 +448,8 @@ const noteTypeSelectOptions = computed(() => [
   ...noteTypeFilterList.value.map((n) => ({ label: n, value: n }))
 ])
 
+const tagSelectOptions = computed(() => allTags.value.map((t) => ({ label: t, value: t })))
+
 const queryBuilt = computed(() => {
   const adv = advancedQuery.value.trim()
   if (adv) return adv
@@ -387,6 +458,7 @@ const queryBuilt = computed(() => {
   if (deck.value) parts.push(`deck:"${deckQuerySafe(deck.value)}"`)
   if (noteType.value) parts.push(`note:"${deckQuerySafe(noteType.value)}"`)
   if (status.value) parts.push(status.value)
+  for (const t of tags.value) parts.push(`tag:"${deckQuerySafe(t)}"`)
   if (text.value.trim()) parts.push(text.value.trim())
 
   return parts.length ? parts.join(' ') : 'is:review'
@@ -398,23 +470,23 @@ const queryBuilt = computed(() => {
 const advancedQueryActive = computed(() => advancedQuery.value.trim().length > 0)
 
 const DEFAULT_STATUS = 'is:review'
-const hasActiveFilters = computed(() =>
-  !!deck.value || !!noteType.value || !!text.value.trim() || !!advancedQuery.value.trim() || status.value !== DEFAULT_STATUS
-)
 const activeFilterCount = computed(() => {
   let n = 0
   if (deck.value) n++
   if (noteType.value) n++
   if (status.value !== DEFAULT_STATUS) n++
+  if (tags.value.length) n++
   if (text.value.trim()) n++
   if (advancedQuery.value.trim()) n++
   return n
 })
+const hasActiveFilters = computed(() => activeFilterCount.value > 0)
 
 function clearFilters() {
   deck.value = ''
   noteType.value = ''
   status.value = DEFAULT_STATUS
+  tags.value = []
   text.value = ''
   advancedQuery.value = ''
 }
@@ -439,6 +511,7 @@ function persistFilters() {
       deck: deck.value,
       noteType: noteType.value,
       status: status.value,
+      tags: tags.value,
       text: text.value,
       advancedQuery: advancedQuery.value
     }))
@@ -456,10 +529,21 @@ const items = ref([])
 const total = ref(0)
 const first = ref(0)
 const rows = ref(50)
+// Espelha o teto de /api/anki-cards (Query(..., le=200)). Pedir mais que isso
+// é rejeitado com 422 pelo FastAPI antes de chegar no handler.
+const MAX_API_LIMIT = 200
+const rowsPerPageOptions = [25, 50, 100, MAX_API_LIMIT]
 
 // Ordenação local (aplicada aos dados carregados)
 const sortField = ref(null)
 const sortOrder = ref(null)
+
+// A ordenação é client-side (findCards do Anki não ordena), portanto só reordena
+// a página já carregada. Quando há mais resultados que a página, avisamos — sem
+// isso o usuário lê "maior intervalo" achando que vale para a busca inteira.
+const sortIsPartial = computed(() =>
+  !!sortField.value && sortOrder.value !== null && total.value > items.value.length
+)
 
 // Dados ordenados (ordenação client-side pois API do Anki não suporta sort)
 const sortedItems = computed(() => {
@@ -471,8 +555,9 @@ const sortedItems = computed(() => {
   const order = sortOrder.value // 1 = asc, -1 = desc
 
   return [...items.value].sort((a, b) => {
-    let valA = a[field]
-    let valB = b[field]
+    // A coluna "Frente" ordena pelo texto renderizado, não pelo HTML cru
+    let valA = field === 'question' ? cardText(a).front : a[field]
+    let valB = field === 'question' ? cardText(b).front : b[field]
 
     // Handle null/undefined
     if (valA == null && valB == null) return 0
@@ -528,25 +613,33 @@ async function selectAllCards() {
   addLog(`Selecionando todos os ${total.value} cartões...`, 'info')
 
   try {
-    // Buscar todos os cards da query atual (sem limite de paginação)
+    // /api/anki-cards limita cada página a MAX_API_LIMIT. Pedir o total de uma vez
+    // devolvia HTTP 422 acima desse teto, que a checagem antiga lia como sucesso
+    // com zero itens. Buscamos em blocos e respeitamos o contrato do backend.
     const built = queryBuilt.value
-    const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=0&limit=${total.value}`
-    const r = await fetch(url)
-    const data = await readJsonSafe(r)
+    const collected = []
 
-    if (data?.__nonJson || data?.success === false) {
-      notify('Erro ao buscar todos os cartões.', 'error', 5000)
-      return
+    for (let offset = 0; offset < total.value; offset += MAX_API_LIMIT) {
+      const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=${offset}&limit=${MAX_API_LIMIT}`
+      const data = await readApiResult(await fetch(url), 'Selecionar todos')
+      const batch = Array.isArray(data?.items) ? data.items : []
+      if (!batch.length) break
+      collected.push(...batch)
     }
 
-    const allItems = Array.isArray(data?.items) ? data.items : []
-    selected.value = allItems
+    selected.value = collected
 
-    addLog(`Selecionados: ${allItems.length} cartões`, 'success')
-    notify(`${allItems.length} cartões selecionados.`, 'success', 3000)
+    if (collected.length < total.value) {
+      addLog(`Selecionados: ${collected.length} de ${total.value} (a coleção mudou durante a busca?)`, 'warn')
+      notify(`${collected.length} de ${total.value} cartões selecionados.`, 'warn', 5000)
+    } else {
+      addLog(`Selecionados: ${collected.length} cartões`, 'success')
+      notify(`${collected.length} cartões selecionados.`, 'success', 3000)
+    }
   } catch (e) {
-    addLog(`Erro ao selecionar todos: ${e?.message}`, 'error')
-    notify(e?.message || 'Erro ao selecionar cartões', 'error', 5000)
+    selected.value = []
+    addLog(`Erro ao selecionar todos: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || 'Erro ao selecionar cartões', 'error', 6000)
   } finally {
     selectingAll.value = false
   }
@@ -563,27 +656,12 @@ function clearSelection() {
 async function fetchDecks() {
   addLog('Fetching decks...', 'info')
   try {
-    const r = await fetch('/api/anki-decks')
-    const data = await readJsonSafe(r)
-
-    if (data?.__nonJson) {
-      addLog(`Decks: non-JSON response (ct=${data.__contentType}) head="${data.__head}"`, 'error')
-      notify('API /anki-decks não retornou JSON.', 'error', 8000)
-      decks.value = []
-      return
-    }
-    if (!data?.success) {
-      addLog(`Decks error: ${data?.error || 'unknown'}`, 'warn')
-      notify(data?.error || 'Falha ao buscar decks', 'warn', 6000)
-      decks.value = []
-      return
-    }
-
+    const data = await readApiResult(await fetch('/api/anki-decks'), 'Decks')
     decks.value = Array.isArray(data.decks) ? data.decks : []
     addLog(`Decks loaded: ${decks.value.length}`, 'success')
   } catch (e) {
-    addLog(`Decks fetch exception: ${e?.message || String(e)}`, 'error')
-    notify(e?.message || String(e), 'warn', 6000)
+    addLog(`Decks: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || 'Falha ao buscar decks', 'warn', 6000)
     decks.value = []
   }
 }
@@ -591,27 +669,25 @@ async function fetchDecks() {
 async function fetchNoteTypeFilter() {
   addLog('Fetching note types for filter...', 'info')
   try {
-    const r = await fetch('/api/anki-models')
-    const data = await readJsonSafe(r)
-
-    if (data?.__nonJson) {
-      addLog(`Note types: non-JSON response head="${data.__head}"`, 'error')
-      noteTypeFilterList.value = []
-      return
-    }
-    if (!data?.success) {
-      addLog(`Note types error: ${data?.error || 'unknown'}`, 'warn')
-      noteTypeFilterList.value = []
-      return
-    }
-
+    const data = await readApiResult(await fetch('/api/anki-models'), 'Note types')
     // data.models é um objeto { modelName: [fields...], ... }
     const modelNames = Object.keys(data.models || {}).sort()
     noteTypeFilterList.value = modelNames
     addLog(`Note types loaded: ${modelNames.length}`, 'success')
   } catch (e) {
-    addLog(`Note types fetch exception: ${e?.message || String(e)}`, 'error')
+    addLog(`Note types: ${e?.message || String(e)}`, 'error')
     noteTypeFilterList.value = []
+  }
+}
+
+async function fetchTagsFilter() {
+  try {
+    const data = await readApiResult(await fetch('/api/anki-tags'), 'Tags')
+    allTags.value = Array.isArray(data?.tags) ? [...data.tags].sort() : []
+    addLog(`Tags carregadas: ${allTags.value.length}`, 'success')
+  } catch (e) {
+    addLog(`Tags: ${e?.message || String(e)}`, 'warn')
+    allTags.value = []
   }
 }
 
@@ -625,30 +701,7 @@ async function fetchCards() {
 
   try {
     const url = `/api/anki-cards?query=${encodeURIComponent(built)}&offset=${offset}&limit=${limit}`
-    const r = await fetch(url)
-    const data = await readJsonSafe(r)
-
-    if (data?.__nonJson) {
-      addLog(`Cartões: resposta não-JSON (ct=${data.__contentType}) head="${data.__head}"`, 'error')
-      notify('API /anki-cards não retornou JSON.', 'error', 8500)
-      items.value = []
-      total.value = 0
-      return
-    }
-    if (data?.__jsonParseError) {
-      addLog(`Cartões: erro ao parsear JSON: ${data.__message}`, 'error')
-      notify('Falha ao ler JSON do backend.', 'error', 7000)
-      items.value = []
-      total.value = 0
-      return
-    }
-    if (data?.success === false) {
-      addLog(`Cartões: erro: ${data?.error || 'unknown'}`, 'error')
-      notify(data?.error || 'Falha ao buscar cartões', 'error', 7000)
-      items.value = []
-      total.value = 0
-      return
-    }
+    const data = await readApiResult(await fetch(url), 'Cartões')
 
     const list = Array.isArray(data?.items) ? data.items : []
     const tot = Number.isFinite(Number(data?.total)) ? Number(data.total) : list.length
@@ -657,8 +710,8 @@ async function fetchCards() {
     total.value = tot
     addLog(`Cartões carregados: ${list.length} / total=${tot}`, 'success')
   } catch (e) {
-    addLog(`Exceção ao buscar cartões: ${e?.message || String(e)}`, 'error')
-    notify(e?.message || String(e), 'error', 7000)
+    addLog(`Cartões: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || 'Falha ao buscar cartões', 'error', 7000)
     items.value = []
     total.value = 0
   } finally {
@@ -668,13 +721,22 @@ async function fetchCards() {
 
 // Debounce filtros (skip during initialization to avoid flash)
 let debounce = null
-watch([deck, noteType, status, text, advancedQuery], () => {
+watch([deck, noteType, status, tags, text, advancedQuery], () => {
   if (initializing.value) return  // Skip during URL param setup
   persistFilters()
+
+  // A seleção pertence ao conjunto de resultados anterior. Sem limpar, a barra
+  // de ações em lote continuaria agindo sobre cartões que saíram da busca —
+  // e exibindo coisas como "50 de 3 selecionados".
+  if (selected.value.length) {
+    selected.value = []
+    addLog('Seleção limpa: os filtros mudaram', 'info')
+  }
+
   first.value = 0
   if (debounce) clearTimeout(debounce)
   debounce = setTimeout(fetchCards, 450)
-})
+}, { deep: true })
 
 function onPage(e) {
   first.value = e.first
@@ -682,10 +744,10 @@ function onPage(e) {
   fetchCards()
 }
 
-// Refresh completo: decks + cards + note types
+// Refresh completo: decks + cards + note types + tags
 async function refreshAll() {
   addLog('Refreshing all data...', 'info')
-  await Promise.all([fetchDecks(), fetchNoteTypeFilter(), fetchCards()])
+  await Promise.all([fetchDecks(), fetchNoteTypeFilter(), fetchTagsFilter(), fetchCards()])
   notify('Dados atualizados', 'success', 2500)
 }
 
@@ -763,6 +825,85 @@ async function confirmNoteAction() {
     notify(e?.message || String(e), 'error', 9000)
   } finally {
     noteActionLoading.value = false
+  }
+}
+
+// -------- Suspender / desuspender em lote --------
+const bulkSuspendVisible = ref(false)
+const bulkSuspendLoading = ref(false)
+const bulkSuspendType = ref('suspend') // 'suspend' | 'unsuspend'
+
+const bulkSuspendTitle = computed(() =>
+  bulkSuspendType.value === 'unsuspend' ? 'Desuspender em lote' : 'Suspender em lote'
+)
+
+// A ação vale para a nota inteira, então o que importa é o número de notas únicas
+const selectedNoteIdsCount = computed(() => {
+  const ids = new Set()
+  for (const card of selected.value || []) {
+    const nid = noteIdOf(card)
+    if (nid !== null) ids.add(nid)
+  }
+  return ids.size
+})
+
+function openBulkSuspend(type) {
+  if (!selected.value?.length) {
+    notify('Selecione cartões primeiro.', 'warn', 4000)
+    return
+  }
+  bulkSuspendType.value = type
+  bulkSuspendVisible.value = true
+}
+
+async function confirmBulkSuspend() {
+  const suspend = bulkSuspendType.value === 'suspend'
+  const cardIds = selected.value.map((c) => c.cardId).filter((id) => id != null)
+  if (!cardIds.length) return
+
+  bulkSuspendLoading.value = true
+  const startedAt = performance.now()
+
+  try {
+    addLog(`Bulk ${suspend ? 'suspend' : 'unsuspend'}: ${cardIds.length} cartões selecionados`, 'info')
+
+    const r = await fetch('/api/anki-bulk-suspend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cardIds, suspend })
+    })
+    const data = await readJsonSafe(r)
+    const elapsed = Math.round(performance.now() - startedAt)
+
+    if (data?.__nonJson || data?.__jsonParseError) {
+      addLog('Bulk suspend: resposta inválida do backend', 'error')
+      notify('API /anki-bulk-suspend não retornou JSON.', 'error', 9000)
+      return
+    }
+    if (r.status >= 400 || data?.success === false) {
+      const msg = data?.error || `Falha ao ${suspend ? 'suspender' : 'desuspender'} (HTTP ${r.status}).`
+      addLog(`Bulk suspend error: ${msg}`, 'error')
+      notify(msg, 'error', 9000)
+      return
+    }
+
+    const totalNotes = Number(data?.totalNotes || 0)
+    const totalCards = Number(data?.totalCards || 0)
+    addLog(`Bulk OK: notas=${totalNotes} cartões=${totalCards} elapsed=${elapsed}ms`, 'success')
+    notify(
+      `${suspend ? 'Suspensos' : 'Desuspensos'}: ${totalCards} cartões em ${totalNotes} notas.`,
+      'success',
+      6000
+    )
+
+    bulkSuspendVisible.value = false
+    selected.value = []
+    await fetchCards()
+  } catch (e) {
+    addLog(`Bulk suspend exception: ${e?.message || String(e)}`, 'error')
+    notify(e?.message || String(e), 'error', 9000)
+  } finally {
+    bulkSuspendLoading.value = false
   }
 }
 
@@ -934,36 +1075,15 @@ async function openEditDialog(row) {
   editTagsOriginal.value = []
 
   try {
-    // Fetch note info and all tags in parallel
-    const [noteResp, tagsResp] = await Promise.all([
-      fetch(`/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`),
-      fetch('/api/anki-tags')
-    ])
+    // As tags da coleção já foram carregadas para o filtro; só buscamos de novo
+    // se aquela chamada tiver falhado.
+    if (!allTags.value.length) await fetchTagsFilter()
+    editAllTags.value = allTags.value
 
-    // Process tags response
-    if (tagsResp.ok) {
-      const tagsData = await tagsResp.json()
-      editAllTags.value = tagsData.tags || []
-    }
-
-    const data = await readJsonSafe(noteResp)
-
-    if (data?.__nonJson) {
-      addLog(`Note info: non-JSON head="${data.__head}"`, 'error')
-      notify('API /anki-note-info não retornou JSON.', 'error', 9000)
-      return
-    }
-    if (data?.__jsonParseError) {
-      addLog(`Note info: JSON parse error: ${data.__message}`, 'error')
-      notify('Falha ao ler JSON do backend.', 'error', 9000)
-      return
-    }
-    if (noteResp.status >= 400 || data?.success === false) {
-      const msg = data?.error || `Falha ao buscar note info (HTTP ${noteResp.status}).`
-      addLog(`Note info error: ${msg}`, 'error')
-      notify(msg, 'error', 9000)
-      return
-    }
+    const data = await readApiResult(
+      await fetch(`/api/anki-note-info?noteId=${encodeURIComponent(String(nid))}`),
+      'Note info'
+    )
 
     const note = data?.note || {}
     const fieldsOrdered = Array.isArray(note?.fieldsOrdered) ? note.fieldsOrdered : []
@@ -1408,7 +1528,7 @@ async function confirmTranslate() {
   const startedAt = performance.now()
 
   try {
-    await fetchHealth()
+    refreshServicesStatus()
     addLog(
       `Health: Anki=${ankiHealth.value.ok ? 'ON' : 'OFF'}`,
       ankiHealth.value.ok ? 'info' : 'warn'
@@ -1768,7 +1888,7 @@ async function confirmRecreate() {
   const startedAt = performance.now()
 
   try {
-    await fetchHealth()
+    refreshServicesStatus()
     const provider = recreateModelProvider.value
 
     addLog(
@@ -1899,8 +2019,6 @@ async function confirmRecreate() {
 // Lifecycle
 // ----------------------
 onMounted(async () => {
-  await fetchHealth()
-  healthTimer = setInterval(fetchHealth, 6000)
   window.addEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 
   // Restaura filtros salvos da última visita (localStorage) antes de aplicar
@@ -1910,6 +2028,7 @@ onMounted(async () => {
     if (typeof saved.deck === 'string') deck.value = saved.deck
     if (typeof saved.noteType === 'string') noteType.value = saved.noteType
     if (typeof saved.status === 'string') status.value = saved.status
+    if (Array.isArray(saved.tags)) tags.value = saved.tags.filter((t) => typeof t === 'string')
     if (typeof saved.text === 'string') text.value = saved.text
     if (typeof saved.advancedQuery === 'string') advancedQuery.value = saved.advancedQuery
     addLog('Filtros restaurados da última sessão', 'info')
@@ -1932,7 +2051,7 @@ onMounted(async () => {
     persistFilters()
   }
 
-  await Promise.all([fetchDecks(), fetchNoteTypeFilter()])
+  await Promise.all([fetchDecks(), fetchNoteTypeFilter(), fetchTagsFilter()])
   await fetchCards()
 
   // Enable watch for filter changes after initial load
@@ -1940,7 +2059,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (healthTimer) clearInterval(healthTimer)
   window.removeEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 })
 </script>
@@ -2044,6 +2162,23 @@ onUnmounted(() => {
               <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-14" :disabled="initializing || advancedQueryActive" />
             </div>
             <div class="filter-field">
+              <label class="filter-label"><i class="pi pi-tags"></i>Tags</label>
+              <MultiSelect
+                v-model="tags"
+                :options="tagSelectOptions"
+                optionLabel="label"
+                optionValue="value"
+                filter
+                showClear
+                display="chip"
+                :maxSelectedLabels="2"
+                selectedItemsLabel="{0} tags"
+                class="w-18"
+                placeholder="Todas as tags"
+                :disabled="initializing || advancedQueryActive"
+              />
+            </div>
+            <div class="filter-field">
               <label class="filter-label"><i class="pi pi-align-left"></i>Texto</label>
               <IconField class="w-18">
                 <InputIcon class="pi pi-search" />
@@ -2109,50 +2244,39 @@ onUnmounted(() => {
         </div>
       </Popover>
 
-      <div class="recreate-bar card-surface">
-        <div class="recreate-left">
-          <Select
-            v-model="recreateTargetDeck"
-            :options="deckTargetOptions"
-            optionLabel="label"
-            optionValue="value"
-            filter
-            class="w-22"
-            placeholder="Deck destino"
-          />
-        </div>
-
-        <div class="recreate-right">
-          <div class="selection-controls">
+      <!-- Barra de ações em lote — só aparece quando há seleção -->
+      <Transition name="slide-fade">
+        <div v-if="selected.length > 0" class="bulk-bar card-surface">
+          <div class="bulk-left">
+            <span class="bulk-count">
+              <i class="pi pi-check-square"></i>
+              <b>{{ selected.length }}</b>
+              <span class="muted">de {{ total }} selecionados</span>
+              <span v-if="selectedNoteIdsCount !== selected.length" class="muted bulk-notes">
+                • {{ selectedNoteIdsCount }} notas
+              </span>
+            </span>
             <Button
-              :icon="selected.length === total ? 'pi pi-times' : 'pi pi-check-square'"
-              :label="selected.length === total ? 'Limpar' : `Selecionar Todos (${total})`"
-              severity="secondary"
-              text
-              :loading="selectingAll"
-              :disabled="loading || total === 0"
-              @click="selectAllCards"
-              class="select-all-btn"
-            />
-            <Button
-              v-if="selected.length > 0 && selected.length !== total"
               icon="pi pi-times"
+              label="Limpar"
               severity="secondary"
               text
+              size="small"
               @click="clearSelection"
               title="Limpar seleção"
-              class="clear-btn"
             />
           </div>
-          <Button icon="pi pi-arrow-right-arrow-left" label="Migrar Campo" :disabled="!selected.length" @click="openMigrateDialog" severity="secondary" outlined />
-          <Button icon="pi pi-language" label="Traduzir" :disabled="!selected.length" @click="openTranslateDialog" severity="info" />
-          <Button icon="pi pi-sparkles" label="Gerar com LLM" :disabled="!selected.length" @click="openRecreateDialog" severity="help" />
-          <Tag severity="info" class="pill selection-tag" :class="{ 'has-selection': selected.length > 0 }">
-            <i class="pi pi-check-square mr-2" />
-            {{ selected.length }} / {{ total }}
-          </Tag>
+
+          <div class="bulk-right">
+            <Button icon="pi pi-ban" label="Suspender" severity="secondary" outlined size="small" @click="openBulkSuspend('suspend')" />
+            <Button icon="pi pi-check" label="Dessuspender" severity="secondary" outlined size="small" @click="openBulkSuspend('unsuspend')" />
+            <span class="bulk-sep" aria-hidden="true"></span>
+            <Button icon="pi pi-arrow-right-arrow-left" label="Migrar Campo" severity="secondary" outlined size="small" @click="openMigrateDialog" />
+            <Button icon="pi pi-language" label="Traduzir" severity="secondary" outlined size="small" @click="openTranslateDialog" />
+            <Button icon="pi pi-sparkles" label="Gerar com LLM" size="small" @click="openRecreateDialog" />
+          </div>
         </div>
-      </div>
+      </Transition>
 
       <div class="table-card card-surface">
         <DataTable
@@ -2165,62 +2289,135 @@ onUnmounted(() => {
           :rows="rows"
           :first="first"
           :totalRecords="total"
+          :rowsPerPageOptions="rowsPerPageOptions"
+          currentPageReportTemplate="{first}–{last} de {totalRecords}"
+          paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
           lazy
           stripedRows
           rowHover
           removableSort
+          scrollable
+          scrollHeight="58vh"
           :sortField="sortField"
           :sortOrder="sortOrder"
           @page="onPage"
           @sort="onSort"
           class="dt modern-dt"
-          tableStyle="min-width: 70rem"
+          tableStyle="min-width: 64rem"
           @rowDblclick="openPreview($event.data)"
         >
           <template #header>
             <div class="dt-header">
               <div class="dt-title">
-                <span class="title">Anki Browser</span>
-                <span class="subtitle">Duplo clique para preview • Geração com LLM</span>
+                <span class="dt-title-icon"><i class="pi pi-table"></i></span>
+                <span class="dt-title-text">
+                  <span class="title">Cartões</span>
+                  <span class="subtitle">Duplo clique abre a prévia • Selecione linhas para ações em lote</span>
+                </span>
               </div>
               <div class="dt-actions">
-                <Button icon="pi pi-refresh" rounded raised @click="refreshAll" title="Atualizar tudo (decks + cartões)" />
+                <Tag v-if="sortIsPartial" severity="warn" class="pill sort-scope-tag">
+                  <i class="pi pi-exclamation-triangle mr-1" />
+                  Ordenando só os {{ items.length }} desta página
+                </Tag>
+                <Button
+                  :icon="selected.length === total && total > 0 ? 'pi pi-times' : 'pi pi-check-square'"
+                  :label="selected.length === total && total > 0 ? 'Limpar seleção' : `Selecionar todos (${total})`"
+                  severity="secondary"
+                  outlined
+                  size="small"
+                  :loading="selectingAll"
+                  :disabled="loading || total === 0"
+                  @click="selectAllCards"
+                />
+                <Button icon="pi pi-refresh" rounded text @click="refreshAll" title="Atualizar tudo (decks + cartões)" />
               </div>
             </div>
           </template>
 
+          <template #empty>
+            <div class="dt-empty">
+              <i class="pi pi-inbox"></i>
+              <span class="dt-empty-title">Nenhum cartão encontrado</span>
+              <span class="dt-empty-sub">Ajuste os filtros de busca acima ou limpe-os para ver mais resultados.</span>
+            </div>
+          </template>
+
           <Column selectionMode="multiple" headerStyle="width:3rem" />
-          <Column field="deckName" header="Deck" sortable style="min-width: 14rem" />
-          <Column field="modelName" header="Modelo" sortable style="min-width: 14rem" />
 
-          <Column header="Status" sortable sortField="queue" style="width: 14rem">
+          <!-- Conteúdo do cartão: o dado já vem em cada linha, é o que distingue as notas -->
+          <Column header="Cartão" sortable sortField="question" style="min-width: 24rem">
             <template #body="{ data }">
-              <Tag :value="queueLabel(data.queue)" :severity="queueSeverity(data.queue)" class="pill" />
+              <div class="card-cell" :title="cardText(data).front">
+                <span class="card-front">{{ cardText(data).front || '—' }}</span>
+                <span class="card-back">{{ cardText(data).back }}</span>
+              </div>
             </template>
           </Column>
 
-          <Column field="interval" header="Int (d)" sortable style="width: 7rem" />
-          <Column header="Ease" sortable sortField="factor" style="width: 7rem">
+          <Column field="deckName" header="Deck" sortable style="min-width: 12rem">
             <template #body="{ data }">
-              {{ Math.round((Number(data.factor) || 0) / 10) }}%
+              <div class="deck-cell" :title="data.deckName">
+                <span class="deck-leaf">{{ deckLeaf(data.deckName) }}</span>
+                <span v-if="deckParentPath(data.deckName)" class="deck-path">{{ deckParentPath(data.deckName) }}</span>
+              </div>
             </template>
           </Column>
-          <Column field="reps" header="Reps" sortable style="width: 6rem" />
-          <Column field="lapses" header="Lapses" sortable style="width: 7rem" />
 
-          <Column header="Flags" style="width: 7rem">
+          <Column field="modelName" header="Modelo" sortable style="min-width: 9rem">
+            <template #body="{ data }">
+              <span class="model-cell" :title="data.modelName">{{ data.modelName }}</span>
+            </template>
+          </Column>
+
+          <Column header="Status" sortable sortField="queue" style="width: 9rem">
+            <template #body="{ data }">
+              <Tag :value="queueLabel(data.queue)" :severity="queueSeverity(data.queue)" class="pill status-pill" />
+            </template>
+          </Column>
+
+          <Column header="Int." sortable sortField="interval" style="width: 6rem">
+            <template #body="{ data }">
+              <span class="num-cell">{{ Number(data.interval) || 0 }}<span class="num-unit">d</span></span>
+            </template>
+          </Column>
+          <Column header="Ease" sortable sortField="factor" style="width: 6rem">
+            <template #body="{ data }">
+              <span class="num-cell">{{ Math.round((Number(data.factor) || 0) / 10) }}<span class="num-unit">%</span></span>
+            </template>
+          </Column>
+          <Column header="Reps" sortable sortField="reps" style="width: 5.5rem">
+            <template #body="{ data }">
+              <span class="num-cell">{{ Number(data.reps) || 0 }}</span>
+            </template>
+          </Column>
+          <Column header="Lapses" sortable sortField="lapses" style="width: 6rem">
+            <template #body="{ data }">
+              <span class="num-cell" :class="{ 'num-alert': Number(data.lapses) > 3 }">{{ Number(data.lapses) || 0 }}</span>
+            </template>
+          </Column>
+
+          <Column header="Flag" style="width: 5rem">
             <template #body="{ data }">
               <span v-if="Number(data.flags) > 0" class="flag-wrap" :title="flagLabel(data.flags)">
-                <i class="pi pi-flag flag-ico" :class="flagClass(data.flags)"></i>
+                <i class="pi pi-flag-fill flag-ico" :class="flagClass(data.flags)"></i>
               </span>
               <span v-else class="muted">—</span>
             </template>
           </Column>
 
-          <!-- ✅ Ações da NOTA -->
-          <Column header="Ações" style="width: 10rem">
+          <!-- Ações da NOTA (prévia + suspender + editar numa coluna só) -->
+          <Column header="Ações" style="width: 9rem">
             <template #body="{ data }">
               <div class="actions-cell">
+                <Button
+                  icon="pi pi-eye"
+                  text
+                  rounded
+                  severity="secondary"
+                  title="Ver prévia do cartão"
+                  @click="openPreview(data)"
+                />
                 <Button
                   v-if="isSuspendedRow(data)"
                   icon="pi pi-check"
@@ -2235,7 +2432,7 @@ onUnmounted(() => {
                   icon="pi pi-ban"
                   text
                   rounded
-                  severity="warning"
+                  severity="warn"
                   title="Suspender a NOTA (todos os cartões)"
                   @click="openNoteAction(data, 'suspend')"
                 />
@@ -2250,20 +2447,58 @@ onUnmounted(() => {
               </div>
             </template>
           </Column>
-
-          <Column header="Preview" style="width: 7rem">
-            <template #body="{ data }">
-              <Button icon="pi pi-eye" text rounded @click="openPreview(data)" />
-            </template>
-          </Column>
-
-          <template #footer>
-            <div class="dt-footer">
-              <span>Mostrando {{ items?.length || 0 }} nesta página • Total {{ total }}</span>
-            </div>
-          </template>
         </DataTable>
       </div>
+
+      <!-- Suspender / desuspender em lote -->
+      <Dialog v-model:visible="bulkSuspendVisible" modal :draggable="false" class="dlg modern-dialog" style="width:min(560px,96vw)" contentStyle="padding: 0;">
+        <template #header>
+          <div class="dlg-hdr">
+            <div class="dlg-hdr-left">
+              <div class="dlg-icon">
+                <i class="pi" :class="bulkSuspendType === 'unsuspend' ? 'pi-check' : 'pi-ban'"></i>
+              </div>
+              <div class="dlg-hdr-txt">
+                <div class="dlg-title">{{ bulkSuspendTitle }}</div>
+                <div class="dlg-sub">A ação afeta <b>todos os cartões</b> de cada nota selecionada.</div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <div class="dlg-body">
+          <div class="noteaction-box">
+            <div class="noteaction-line">
+              <span class="muted">Cartões selecionados:</span>
+              <b>{{ selected.length }}</b>
+            </div>
+            <div class="noteaction-line">
+              <span class="muted">Notas afetadas:</span>
+              <b>{{ selectedNoteIdsCount }}</b>
+            </div>
+            <div class="noteaction-line">
+              <span class="muted">Ação:</span>
+              <b>{{ bulkSuspendType === 'unsuspend' ? 'Desuspender' : 'Suspender' }}</b>
+            </div>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="dlg-footer">
+            <div class="footer-left"></div>
+            <div class="footer-right">
+              <Button label="Cancelar" icon="pi pi-times" outlined :disabled="bulkSuspendLoading" @click="bulkSuspendVisible = false" />
+              <Button
+                :label="bulkSuspendType === 'unsuspend' ? 'Desuspender' : 'Suspender'"
+                :icon="bulkSuspendType === 'unsuspend' ? 'pi pi-check' : 'pi pi-ban'"
+                :severity="bulkSuspendType === 'unsuspend' ? 'success' : 'warn'"
+                :loading="bulkSuspendLoading"
+                @click="confirmBulkSuspend"
+              />
+            </div>
+          </div>
+        </template>
+      </Dialog>
 
       <!-- Preview -->
       <Dialog v-model:visible="previewVisible" modal :draggable="false" class="dlg dlg-preview modern-dialog" style="width:min(980px,96vw)" contentStyle="padding: 0;">
@@ -3157,11 +3392,27 @@ onUnmounted(() => {
                 <i class="pi pi-sliders-h"></i>
                 <div>
                   <div class="section-title">Configuração</div>
-                  <div class="section-sub">Volume, suspensão e dificuldade (opcional)</div>
+                  <div class="section-sub">Destino, volume, suspensão e dificuldade (opcional)</div>
                 </div>
               </div>
 
               <div class="grid">
+                <div class="blk blk-wide">
+                  <div class="lbl">Deck destino</div>
+                  <Select
+                    v-model="recreateTargetDeck"
+                    :options="deckTargetOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    filter
+                    class="w-100"
+                    placeholder="Deck original"
+                  />
+                  <div class="muted tiny" style="margin-top: 8px;">
+                    Onde os cartões gerados serão criados. "Deck original" mantém cada nota no deck de origem.
+                  </div>
+                </div>
+
                 <div class="blk">
                   <div class="lbl">Suspender originais</div>
                   <div class="inline">
@@ -3834,37 +4085,48 @@ onUnmounted(() => {
   font-weight: 700;
 }
 
-.recreate-bar{
+/* Barra de ações em lote (contextual) */
+.bulk-bar{
   margin-top: 12px;
   display:flex;
   justify-content:space-between;
-  gap:10px;
+  gap:12px;
   flex-wrap:wrap;
   align-items:center;
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--app-border));
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--app-card));
 }
-.recreate-left, .recreate-right{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-
-.selection-controls{
-  display:flex;
+.bulk-left, .bulk-right{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.bulk-count{
+  display:inline-flex;
   align-items:center;
-  gap: 4px;
-  padding-right: 8px;
-  border-right: 1px solid var(--app-border);
-  margin-right: 4px;
-}
-.select-all-btn{
+  gap:6px;
   font-size: 13px;
-  white-space: nowrap;
+  padding-right: 4px;
 }
-.clear-btn{
-  padding: 6px 8px;
+.bulk-count > i{ color: var(--color-primary); font-size: 13px; }
+.bulk-count b{ font-size: 14px; }
+.bulk-notes{ font-size: 12px; }
+.bulk-sep{
+  width: 1px;
+  height: 20px;
+  background: var(--app-border);
+  margin: 0 2px;
 }
-.selection-tag{
-  transition: all 0.2s ease;
+
+/* Entrada/saída da barra de ações */
+.slide-fade-enter-active,
+.slide-fade-leave-active{
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
-.selection-tag.has-selection{
-  background: var(--chip-active-bg);
-  border-color: var(--chip-active-border);
+.slide-fade-enter-from,
+.slide-fade-leave-to{
+  opacity: 0;
+  transform: translateY(-6px);
+}
+@media (prefers-reduced-motion: reduce){
+  .slide-fade-enter-active,
+  .slide-fade-leave-active{ transition: none; }
 }
 
 .query-hint{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -4047,15 +4309,102 @@ onUnmounted(() => {
 
 :deep(.modern-dt .p-datatable-header){ background: transparent; border: 0; padding: 8px 6px 14px 6px; }
 :deep(.modern-dt .p-datatable-footer){ background: transparent; border: 0; padding: 12px 6px 6px 6px; }
+
+/* Cabeçalho das colunas */
 :deep(.modern-dt .p-datatable-thead > tr > th){
   background: color-mix(in srgb, var(--app-card) 92%, transparent);
   border-color: var(--app-border);
-  font-weight: 900;
+  font-weight: 800;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--app-text-muted);
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
-:deep(.modern-dt .p-datatable-tbody > tr > td){ border-color: var(--app-border); }
-:deep(.modern-dt .p-datatable-tbody > tr){ background: color-mix(in srgb, var(--app-card) 98%, transparent); }
-:deep(.modern-dt .p-datatable-tbody > tr.p-highlight){
+:deep(.modern-dt .p-datatable-thead > tr > th.p-datatable-sortable-column){
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+:deep(.modern-dt .p-datatable-thead > tr > th.p-datatable-sortable-column:hover){
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--app-card));
+  color: var(--color-primary);
+}
+:deep(.modern-dt .p-datatable-thead > tr > th.p-datatable-column-sorted){
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--app-card));
+  color: var(--color-primary);
+}
+:deep(.modern-dt .p-datatable-sort-icon){
+  color: var(--color-primary);
+  opacity: 0.8;
+  width: 12px;
+  height: 12px;
+}
+
+/* Cabeçalho fixo ao rolar o corpo da tabela */
+:deep(.modern-dt .p-datatable-thead){ z-index: 2; }
+:deep(.modern-dt .p-datatable-table-container){ border-radius: 12px; }
+
+/* Linhas — zebra sutil + hover + seleção */
+:deep(.modern-dt .p-datatable-tbody > tr > td){
+  border-color: var(--app-border);
+  padding-top: 9px;
+  padding-bottom: 9px;
+  font-size: 13px;
+}
+:deep(.modern-dt .p-datatable-tbody > tr){
+  background: color-mix(in srgb, var(--app-card) 98%, transparent);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+:deep(.modern-dt.p-datatable-striped .p-datatable-tbody > tr.p-row-even){
+  background: color-mix(in srgb, var(--app-bg-soft) 40%, var(--app-card));
+}
+:deep(.modern-dt .p-datatable-tbody > tr:not(.p-highlight):not(.p-datatable-row-selected):hover){
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--app-card)) !important;
+}
+:deep(.modern-dt .p-datatable-tbody > tr.p-highlight),
+:deep(.modern-dt .p-datatable-tbody > tr.p-datatable-row-selected){
   background: color-mix(in srgb, var(--color-primary) 20%, transparent) !important;
+}
+
+/* Estado vazio */
+:deep(.modern-dt .p-datatable-empty-message td){
+  padding: 44px 20px !important;
+  border: 0 !important;
+}
+.dt-empty{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap: 8px;
+  text-align:center;
+}
+.dt-empty i{ font-size: 26px; opacity: 0.4; }
+.dt-empty-title{ font-weight: 800; font-size: 14px; opacity: 0.85; }
+.dt-empty-sub{ font-size: 12.5px; opacity: 0.65; }
+
+/* Paginação */
+:deep(.modern-dt .p-paginator){
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--app-border);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+:deep(.modern-dt .p-paginator-page),
+:deep(.modern-dt .p-paginator-first),
+:deep(.modern-dt .p-paginator-prev),
+:deep(.modern-dt .p-paginator-next),
+:deep(.modern-dt .p-paginator-last){
+  border-radius: 10px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+:deep(.modern-dt .p-paginator-page.p-paginator-page-selected){
+  background: var(--color-primary);
+  color: var(--app-bg);
+  font-weight: 800;
 }
 
 .dt-header{
@@ -4065,15 +4414,114 @@ onUnmounted(() => {
   gap: 10px;
   flex-wrap: wrap;
 }
+.dt-title{ display:flex; align-items:center; gap:10px; }
+.dt-title-icon{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 14px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+}
+.dt-title-text{ display:flex; flex-direction:column; }
 .dt-title .title{ font-size: 16px; font-weight: 950; letter-spacing: -0.2px; }
 .dt-title .subtitle{ display:block; margin-top: 4px; font-size: 12.5px; opacity: 0.75; }
-.dt-footer{ opacity: 0.78; font-size: 12.5px; }
+.dt-actions{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 
-.pill{ border-radius:999px; font-weight:900; }
+.sort-scope-tag{
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
+  color: var(--color-warning);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Célula de conteúdo do cartão — frente em destaque, verso como apoio */
+.card-cell{
+  display:flex;
+  flex-direction:column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 46ch;
+}
+.card-front,
+.card-back{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-front{ font-weight: 600; }
+.card-back{ font-size: 12px; opacity: 0.6; }
+
+/* Deck — folha em destaque, caminho completo abaixo */
+.deck-cell{
+  display:flex;
+  flex-direction:column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 22ch;
+}
+.deck-leaf,
+.deck-path,
+.model-cell{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.deck-leaf{ font-weight: 600; }
+.deck-path{ font-size: 11px; opacity: 0.55; }
+.model-cell{ display:block; max-width: 18ch; opacity: 0.85; }
+
+/* Números tabulares para as colunas de estatística */
+.num-cell{
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.num-unit{ opacity: 0.5; font-size: 11px; margin-left: 1px; }
+.num-alert{ color: var(--color-warning); }
+
+/* Tags / pills — leves, com cor semântica em vez de blocos saturados */
+.pill{ border-radius:999px; font-weight:700; }
+:deep(.modern-dt .p-tag),
+.status-pill{
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  letter-spacing: 0.2px;
+}
+:deep(.p-tag.p-tag-success){
+  background: color-mix(in srgb, var(--color-success) 15%, transparent);
+  color: var(--color-success);
+  border: 1px solid color-mix(in srgb, var(--color-success) 35%, transparent);
+}
+:deep(.p-tag.p-tag-info){
+  background: color-mix(in srgb, var(--color-info) 15%, transparent);
+  color: var(--color-info);
+  border: 1px solid color-mix(in srgb, var(--color-info) 35%, transparent);
+}
+:deep(.p-tag.p-tag-warn){
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
+  color: var(--color-warning);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 35%, transparent);
+}
+:deep(.p-tag.p-tag-danger){
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+  color: var(--color-danger);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
+}
+:deep(.p-tag.p-tag-secondary){
+  background: var(--ghost-bg);
+  color: var(--app-text-muted);
+  border: 1px solid var(--ghost-border);
+}
 
 /* Flags */
 .flag-wrap{ display:inline-flex; align-items:center; justify-content:center; }
-.flag-ico{ font-size: 16px; }
+.flag-ico{ font-size: 14px; }
 .flag-none{ opacity: .5; }
 .flag-orange{ color: var(--color-warning); }
 .flag-green{ color: var(--color-success); }
@@ -4085,10 +4533,14 @@ onUnmounted(() => {
   display:flex;
   align-items:center;
   justify-content:center;
-  gap: 6px;
+  gap: 2px;
 }
 :deep(.modern-dt .p-button.p-button-text){
   border-radius: 999px;
+}
+:deep(.modern-dt .actions-cell .p-button){
+  width: 30px;
+  height: 30px;
 }
 
 /* Dialog header layout (mantém seu layout interno) */

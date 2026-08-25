@@ -10,6 +10,10 @@ const props = defineProps({
     type: File,
     required: true
   },
+  documentId: {
+    type: String,
+    default: ''
+  },
   generating: {
     type: Boolean,
     default: false
@@ -47,7 +51,8 @@ defineExpose({
   getHighlights: () =>
     viewerRef.value?.getHighlights?.() || { count: 0, combined: '', items: [] },
   clearSelection: () => viewerRef.value?.clearSelection?.(),
-  goToPage: (p) => viewerRef.value?.goToPage?.(p)
+  goToPage: (p) => viewerRef.value?.goToPage?.(p),
+  openSearch: () => viewerRef.value?.openSearch?.()
 })
 </script>
 
@@ -67,6 +72,7 @@ defineExpose({
     ref="viewerRef"
     :file="file"
     :data="pdfData"
+    :document-id="documentId"
     :generating="generating"
     @selection-changed="emit('selection-changed', $event)"
     @highlights-changed="emit('highlights-changed', $event)"
