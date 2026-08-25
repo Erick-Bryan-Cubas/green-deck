@@ -18,6 +18,7 @@ from app.api import (
     questions_router,
     start_broadcaster,
     stop_broadcaster,
+    study_router,
     websocket_router,
 )
 from app.config import CORS_ORIGINS, ENVIRONMENT
@@ -88,6 +89,7 @@ app.include_router(dashboard_router)
 app.include_router(models_router)
 app.include_router(websocket_router)
 app.include_router(documents_router)
+app.include_router(study_router)
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
