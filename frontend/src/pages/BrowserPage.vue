@@ -10,6 +10,8 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import MultiSelect from 'primevue/multiselect'
 import InputText from 'primevue/inputtext'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
 import InputNumber from 'primevue/inputnumber'
 import InputSwitch from 'primevue/inputswitch'
 import Checkbox from 'primevue/checkbox'
@@ -390,6 +392,61 @@ const queryBuilt = computed(() => {
   return parts.length ? parts.join(' ') : 'is:review'
 })
 
+// Query avançada tem prioridade sobre os filtros básicos (deck/tipo/status/texto),
+// que ficam ignorados quando ela está preenchida — os campos são desabilitados
+// para deixar isso visível em vez de parecer que o filtro simplesmente não aplicou.
+const advancedQueryActive = computed(() => advancedQuery.value.trim().length > 0)
+
+const DEFAULT_STATUS = 'is:review'
+const hasActiveFilters = computed(() =>
+  !!deck.value || !!noteType.value || !!text.value.trim() || !!advancedQuery.value.trim() || status.value !== DEFAULT_STATUS
+)
+const activeFilterCount = computed(() => {
+  let n = 0
+  if (deck.value) n++
+  if (noteType.value) n++
+  if (status.value !== DEFAULT_STATUS) n++
+  if (text.value.trim()) n++
+  if (advancedQuery.value.trim()) n++
+  return n
+})
+
+function clearFilters() {
+  deck.value = ''
+  noteType.value = ''
+  status.value = DEFAULT_STATUS
+  text.value = ''
+  advancedQuery.value = ''
+}
+
+// ----------------------
+// persistência dos filtros (localStorage) — restaurados no próximo acesso à página
+// ----------------------
+const FILTERS_STORAGE_KEY = 'green-deck.browser-filters'
+
+function loadPersistedFilters() {
+  try {
+    const raw = localStorage.getItem(FILTERS_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function persistFilters() {
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({
+      deck: deck.value,
+      noteType: noteType.value,
+      status: status.value,
+      text: text.value,
+      advancedQuery: advancedQuery.value
+    }))
+  } catch {
+    // localStorage indisponível (modo privado, quota excedida, etc.) — ignora
+  }
+}
+
 // ----------------------
 // paginação / dados / ordenação
 // ----------------------
@@ -613,6 +670,7 @@ async function fetchCards() {
 let debounce = null
 watch([deck, noteType, status, text, advancedQuery], () => {
   if (initializing.value) return  // Skip during URL param setup
+  persistFilters()
   first.value = 0
   if (debounce) clearTimeout(debounce)
   debounce = setTimeout(fetchCards, 450)
@@ -1845,12 +1903,25 @@ onMounted(async () => {
   healthTimer = setInterval(fetchHealth, 6000)
   window.addEventListener(OPEN_LOGS_EVENT, handleOpenLogsEvent)
 
-  // Apply URL filter parameter if present (before any fetch)
+  // Restaura filtros salvos da última visita (localStorage) antes de aplicar
+  // um eventual parâmetro de URL, que tem prioridade por ser um link explícito
+  const saved = loadPersistedFilters()
+  if (saved) {
+    if (typeof saved.deck === 'string') deck.value = saved.deck
+    if (typeof saved.noteType === 'string') noteType.value = saved.noteType
+    if (typeof saved.status === 'string') status.value = saved.status
+    if (typeof saved.text === 'string') text.value = saved.text
+    if (typeof saved.advancedQuery === 'string') advancedQuery.value = saved.advancedQuery
+    addLog('Filtros restaurados da última sessão', 'info')
+  }
+
+  // Apply URL filter parameter if present (before any fetch) — sobrepõe o que foi restaurado
   const filterParam = route.query.filter
   if (filterParam) {
     const knownStatuses = statusOptions.map(o => o.value).filter(v => v)
     if (knownStatuses.includes(filterParam)) {
       status.value = filterParam
+      advancedQuery.value = ''
       addLog(`Applied URL filter to status: ${filterParam}`, 'info')
     } else {
       // For complex queries like "is:due", use advancedQuery
@@ -1858,6 +1929,7 @@ onMounted(async () => {
       status.value = ''
       addLog(`Applied URL filter to advancedQuery: ${filterParam}`, 'info')
     }
+    persistFilters()
   }
 
   await Promise.all([fetchDecks(), fetchNoteTypeFilter()])
@@ -1930,16 +2002,64 @@ onUnmounted(() => {
       </Transition>
 
       <div class="filters card-surface" :class="{ 'filters-disabled': initializing }">
-        <div class="filters-row">
-          <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter class="w-22" placeholder="Deck" :disabled="initializing" />
-          <Select v-model="noteType" :options="noteTypeSelectOptions" optionLabel="label" optionValue="value" filter class="w-18" placeholder="Tipo de Nota" :disabled="initializing" />
-          <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-14" :disabled="initializing" />
-          <InputText v-model="text" class="w-18" placeholder="Buscar texto..." :disabled="initializing" />
-          <div class="query-input-wrap">
-            <InputText v-model="advancedQuery" class="query-input" placeholder='Query avançada (ex: deck:"X" is:review tag:y)' :disabled="initializing" />
-            <Button icon="pi pi-question-circle" text rounded class="query-help-btn" @click="(e) => queryHelpRef?.toggle(e)" title="Ajuda com sintaxe de busca" :disabled="initializing" />
+        <div class="filters-header">
+          <div class="filters-title">
+            <i class="pi pi-filter"></i>
+            <span>Filtros de busca</span>
+            <Tag v-if="hasActiveFilters" severity="info" class="pill filters-count-tag">
+              {{ activeFilterCount }} {{ activeFilterCount === 1 ? 'ativo' : 'ativos' }}
+            </Tag>
           </div>
-          <Button icon="pi pi-refresh" label="Atualizar" outlined @click="refreshAll" :disabled="initializing" />
+          <div class="filters-actions">
+            <Button
+              icon="pi pi-filter-slash"
+              label="Limpar"
+              text
+              size="small"
+              severity="secondary"
+              @click="clearFilters"
+              :disabled="initializing || !hasActiveFilters"
+              title="Limpar todos os filtros"
+            />
+            <Button icon="pi pi-refresh" label="Atualizar" outlined size="small" @click="refreshAll" :disabled="initializing" />
+          </div>
+        </div>
+
+        <div class="filters-row">
+          <div
+            class="basic-filters"
+            :class="{ 'basic-filters-muted': advancedQueryActive }"
+            :title="advancedQueryActive ? 'Desative a query avançada para voltar a usar estes filtros' : undefined"
+          >
+            <div class="filter-field">
+              <label class="filter-label"><i class="pi pi-sitemap"></i>Deck</label>
+              <Select v-model="deck" :options="deckSelectOptions" optionLabel="label" optionValue="value" filter showClear class="w-22" placeholder="Todos os decks" :disabled="initializing || advancedQueryActive" />
+            </div>
+            <div class="filter-field">
+              <label class="filter-label"><i class="pi pi-bookmark"></i>Tipo de nota</label>
+              <Select v-model="noteType" :options="noteTypeSelectOptions" optionLabel="label" optionValue="value" filter showClear class="w-18" placeholder="Todos os tipos" :disabled="initializing || advancedQueryActive" />
+            </div>
+            <div class="filter-field">
+              <label class="filter-label"><i class="pi pi-flag"></i>Status</label>
+              <Select v-model="status" :options="statusOptions" optionLabel="label" optionValue="value" class="w-14" :disabled="initializing || advancedQueryActive" />
+            </div>
+            <div class="filter-field">
+              <label class="filter-label"><i class="pi pi-align-left"></i>Texto</label>
+              <IconField class="w-18">
+                <InputIcon class="pi pi-search" />
+                <InputText v-model="text" class="w-100" placeholder="Buscar texto..." :disabled="initializing || advancedQueryActive" />
+              </IconField>
+            </div>
+          </div>
+
+          <div class="filter-field advanced-field">
+            <label class="filter-label"><i class="pi pi-bolt"></i>Query avançada</label>
+            <div class="query-input-wrap">
+              <InputText v-model="advancedQuery" class="query-input" :class="{ 'has-clear': advancedQuery }" placeholder='deck:"X" is:review tag:y' :disabled="initializing" />
+              <Button v-if="advancedQuery" icon="pi pi-times" text rounded class="query-clear-btn" @click="advancedQuery = ''" title="Limpar query avançada" :disabled="initializing" />
+              <Button icon="pi pi-question-circle" text rounded class="query-help-btn" @click="(e) => queryHelpRef?.toggle(e)" title="Ajuda com sintaxe de busca" :disabled="initializing" />
+            </div>
+          </div>
         </div>
 
         <div class="query-hint">
@@ -1947,6 +2067,9 @@ onUnmounted(() => {
           <code class="q">{{ queryBuilt }}</code>
           <span class="muted">Total:</span>
           <b>{{ loading ? '...' : total }}</b>
+          <Tag v-if="advancedQueryActive" severity="warn" class="pill adv-active-tag">
+            <i class="pi pi-bolt mr-1" />Query avançada ativa — filtros básicos ignorados
+          </Tag>
         </div>
       </div>
 
@@ -3657,8 +3780,59 @@ onUnmounted(() => {
   padding: 12px;
 }
 
-.filters{ display:flex; flex-direction:column; gap:10px; }
-.filters-row{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.filters{ display:flex; flex-direction:column; gap:14px; }
+
+.filters-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--app-border);
+}
+.filters-title{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-weight:800;
+  font-size:13.5px;
+  letter-spacing:-0.1px;
+}
+.filters-title > i{
+  font-size:13px;
+  opacity:.85;
+  color: var(--color-primary);
+}
+.filters-count-tag{ font-size:11px; font-weight:800; }
+.filters-actions{ display:flex; gap:6px; align-items:center; }
+
+.filters-row{ display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start; }
+
+.filter-field{ display:flex; flex-direction:column; gap:6px; }
+.filter-label{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  font-size:11px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:0.5px;
+  opacity:.65;
+}
+.filter-label i{ font-size:11px; opacity:.9; }
+
+.basic-filters{ display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start; transition: opacity 0.2s ease; }
+.basic-filters-muted{ opacity: 0.5; }
+
+.advanced-field{ flex: 1 1 320px; min-width: 260px; }
+
+.adv-active-tag{
+  background: color-mix(in srgb, var(--color-warning) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  color: var(--color-warning);
+  font-weight: 700;
+}
 
 .recreate-bar{
   margin-top: 12px;
@@ -3714,11 +3888,14 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
-  width: 34rem;
+  width: 100%;
 }
 .query-input {
   width: 100%;
   padding-right: 40px;
+}
+.query-input.has-clear {
+  padding-right: 72px;
 }
 .query-help-btn {
   position: absolute;
@@ -3728,6 +3905,16 @@ onUnmounted(() => {
   opacity: 0.7;
 }
 .query-help-btn:hover {
+  opacity: 1;
+}
+.query-clear-btn {
+  position: absolute;
+  right: 36px;
+  width: 32px;
+  height: 32px;
+  opacity: 0.7;
+}
+.query-clear-btn:hover {
   opacity: 1;
 }
 
@@ -4043,6 +4230,9 @@ onUnmounted(() => {
 @media (max-width: 920px){
   .pv-grid{ grid-template-columns: 1fr; }
   .w-34,.w-22,.w-18{ width: 100%; }
+  .basic-filters{ width: 100%; }
+  .basic-filters .filter-field{ flex: 1 1 100%; }
+  .advanced-field{ flex-basis: 100%; }
 }
 .pv-title{ font-weight:900; opacity:.85; margin-bottom:6px; }
 .pv-box{
