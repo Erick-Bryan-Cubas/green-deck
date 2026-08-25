@@ -66,7 +66,9 @@ const emit = defineEmits([
 </script>
 
 <template>
-  <div class="panel-head">
+  <!-- No modo PDF o leitor traz a própria barra de ferramentas: o cabeçalho
+       fica compacto para não roubar altura útil de leitura -->
+  <div class="panel-head" :class="{ 'is-compact': viewMode === 'pdf' }">
     <div class="panel-title">
       <i :class="viewMode === 'pdf' ? 'pi pi-file-pdf mr-2' : 'pi pi-pencil mr-2'" />
       {{ viewMode === 'pdf' ? 'Estudo PDF' : 'Editor' }}
@@ -230,6 +232,16 @@ const emit = defineEmits([
   border-bottom: 1px solid var(--panel-head-border);
   background: var(--panel-head-bg);
   min-width: 0;
+}
+
+.panel-head.is-compact {
+  padding: 5px 14px;
+}
+
+.panel-head.is-compact .panel-title {
+  font-size: var(--fs-sm, 13px);
+  font-weight: 700;
+  color: var(--app-text-muted, var(--text-color-secondary));
 }
 
 .panel-title {
