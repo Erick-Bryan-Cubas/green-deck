@@ -25,11 +25,22 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import { VuePDF, usePDF } from '@tato30/vue-pdf'
 import '@tato30/vue-pdf/style.css'
+import {
+  fetchStudyDocument,
+  saveStudyHighlights,
+  saveStudyReading
+} from '@/composables/useStudyStore'
 
 const props = defineProps({
   file: {
     type: File,
     required: true
+  },
+  // Id do documento no backend (sha256). Sem ele o leitor funciona igual,
+  // só que a persistência fica restrita ao localStorage desta máquina.
+  documentId: {
+    type: String,
+    default: ''
   },
   // Bytes do PDF (lidos pelo wrapper). Passar dados em memória evita blob URLs,
   // que a CSP do backend bloqueia em connect-src.
@@ -97,6 +108,13 @@ const viewerRootRef = ref(null)
 let slotEls = []
 // Vira true quando a posição de leitura salva já foi aplicada
 let restored = false
+// Vira true no primeiro gesto de leitura (roda, teclado, clique). Impede que a
+// posição vinda do banco puxe a página debaixo de quem já começou a ler.
+let userInteracted = false
+
+function markInteracted() {
+  userInteracted = true
+}
 // Deslocamento e altura de cada página dentro da área de rolagem, em px de tela.
 // Recalculado a cada mudança de layout (zoom, resize, painel abrindo).
 let pageOffsets = []
@@ -206,6 +224,7 @@ function onPageInput(event) {
 
 function onKeydown(event) {
   if (event.target?.tagName === 'INPUT' || event.target?.tagName === 'TEXTAREA') return
+  markInteracted()
   switch (event.key) {
     case 'ArrowRight':
     case 'PageDown':
@@ -315,6 +334,7 @@ function toggleFitWidth() {
 
 // Ctrl + roda do mouse = zoom (como leitores de PDF nativos)
 function onWheel(event) {
+  markInteracted()
   if (!event.ctrlKey) return
   event.preventDefault()
   if (event.deltaY < 0) zoomIn()
@@ -343,20 +363,47 @@ watch(scale, (val, old) => {
 let resizeObserver = null
 let persistTimer = null
 
+function readingSnapshot() {
+  return {
+    page: currentPage.value,
+    scale: scale.value,
+    fitWidth: fitWidth.value,
+    pageDark: pageDark.value
+  }
+}
+
 // Persiste posição de leitura, zoom e preferências por documento
+// (localStorage = cache local; backend = cópia durável)
 function persistReading() {
+  const snapshot = readingSnapshot()
   try {
     const all = JSON.parse(localStorage.getItem(READING_LS_KEY) || '{}')
-    all[docKey] = {
-      page: currentPage.value,
-      scale: scale.value,
-      fitWidth: fitWidth.value,
-      pageDark: pageDark.value
-    }
+    all[docKey] = snapshot
     localStorage.setItem(READING_LS_KEY, JSON.stringify(all))
   } catch {
-    /* localStorage indisponível — sem persistência */
+    /* localStorage indisponível — segue só com o backend */
   }
+  scheduleRemoteReading()
+}
+
+// A página muda a cada rolagem: o banco recebe no máximo uma escrita a cada
+// REMOTE_READING_MIN_INTERVAL, sempre com o estado mais recente
+const REMOTE_READING_MIN_INTERVAL = 5000
+let remoteReadingTimer = null
+let lastRemoteReadingAt = 0
+
+function scheduleRemoteReading() {
+  if (!props.documentId || remoteReadingTimer) return
+  const wait = Math.max(0, REMOTE_READING_MIN_INTERVAL - (Date.now() - lastRemoteReadingAt))
+  remoteReadingTimer = setTimeout(flushRemoteReading, wait)
+}
+
+function flushRemoteReading() {
+  clearTimeout(remoteReadingTimer)
+  remoteReadingTimer = null
+  if (!props.documentId) return
+  lastRemoteReadingAt = Date.now()
+  saveStudyReading(props.documentId, readingSnapshot())
 }
 
 // Debounce: currentPage agora muda a cada rolagem
@@ -621,12 +668,53 @@ const visibleHighlights = computed(() =>
     : sortedHighlights.value
 )
 
-function loadHighlights() {
+function loadLocalHighlights() {
   try {
     const all = JSON.parse(localStorage.getItem(HIGHLIGHTS_LS_KEY) || '{}')
-    highlights.value = Array.isArray(all[docKey]) ? all[docKey] : []
+    return Array.isArray(all[docKey]) ? all[docKey] : []
   } catch {
-    highlights.value = []
+    return []
+  }
+}
+
+/**
+ * Estado inicial: o cache local aparece na hora; o banco entra depois e só
+ * assume quando o local está vazio (outro navegador, dados limpos). Quando o
+ * local tem dados, ele é empurrado para o banco para os dois convergirem.
+ */
+function loadPersistedState() {
+  highlights.value = loadLocalHighlights()
+  emit('highlights-changed', highlights.value.length)
+  syncWithBackend()
+}
+
+async function syncWithBackend() {
+  if (!props.documentId) return
+
+  const remote = await fetchStudyDocument(props.documentId)
+  if (!remote) return
+
+  const remoteHighlights = Array.isArray(remote.highlights) ? remote.highlights : []
+  if (!highlights.value.length && remoteHighlights.length) {
+    highlights.value = remoteHighlights
+    emit('highlights-changed', highlights.value.length)
+  } else if (highlights.value.length) {
+    saveStudyHighlights(props.documentId, highlights.value)
+  }
+
+  // Mesma regra para a posição de leitura: só usa a do banco se esta máquina
+  // ainda não tinha nenhuma e o usuário ainda não mexeu no leitor
+  const reading = remote.document?.reading
+  if (!savedReading && reading?.page > 0 && !userInteracted) {
+    savedReading = reading
+    currentPage.value = reading.page
+    if (reading.scale > 0) scale.value = reading.scale
+    fitWidth.value = reading.fitWidth !== false
+    pageDark.value = !!reading.pageDark
+    // Depois do relayout: se a restauração inicial já rodou, é preciso rolar
+    nextTick(() => {
+      if (!userInteracted && restored) goToPage(reading.page, false)
+    })
   }
 }
 
@@ -640,8 +728,25 @@ function persistHighlights() {
     }
     localStorage.setItem(HIGHLIGHTS_LS_KEY, JSON.stringify(all))
   } catch {
-    /* localStorage cheio/indisponível — marcações seguem em memória */
+    /* localStorage cheio/indisponível — marcações seguem em memória e no banco */
   }
+  scheduleRemoteHighlights()
+}
+
+// O banco recebe a lista inteira a cada alteração: agrupa rajadas (marcar
+// vários trechos seguidos, arrastar a cor) numa única escrita
+let remoteHighlightsTimer = null
+
+function scheduleRemoteHighlights() {
+  if (!props.documentId) return
+  clearTimeout(remoteHighlightsTimer)
+  remoteHighlightsTimer = setTimeout(flushRemoteHighlights, 600)
+}
+
+function flushRemoteHighlights() {
+  clearTimeout(remoteHighlightsTimer)
+  remoteHighlightsTimer = null
+  if (props.documentId) saveStudyHighlights(props.documentId, highlights.value)
 }
 
 function makeId() {
@@ -954,6 +1059,15 @@ function restoreReadingPosition() {
 
 watch(pdf, measurePages, { immediate: true })
 
+// O id do documento chega depois do upload: o leitor já abriu com o arquivo
+// local, então a reconciliação com o banco acontece quando ele aparece
+watch(
+  () => props.documentId,
+  (id, previous) => {
+    if (id && !previous) syncWithBackend()
+  }
+)
+
 // Dois ticks: o primeiro rende os espaços das páginas, o segundo garante que
 // um eventual reajuste de escala já está no DOM antes de medir os offsets
 function relayoutAndRestore() {
@@ -971,8 +1085,7 @@ watch(layoutReady, (ready) => {
 })
 
 onMounted(() => {
-  loadHighlights()
-  emit('highlights-changed', highlights.value.length)
+  loadPersistedState()
 
   if (scrollRef.value) {
     resizeObserver = new ResizeObserver(relayoutAndRestore)
@@ -985,7 +1098,10 @@ onBeforeUnmount(() => {
   if (scrollRaf) cancelAnimationFrame(scrollRaf)
   if (hoverRaf) cancelAnimationFrame(hoverRaf)
   clearTimeout(persistTimer)
+  // Fecha o leitor sem perder o que ainda estava na fila de escrita
+  if (remoteHighlightsTimer) flushRemoteHighlights()
   persistReading()
+  flushRemoteReading()
 })
 
 defineExpose({
@@ -1226,6 +1342,7 @@ defineExpose({
         class="pdf-scroll"
         tabindex="0"
         @keydown="onKeydown"
+        @mousedown="markInteracted"
         @mouseup="onTextSelection"
         @wheel="onWheel"
         @scroll="onScroll"
