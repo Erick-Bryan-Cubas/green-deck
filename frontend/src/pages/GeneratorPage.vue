@@ -5307,6 +5307,10 @@ onBeforeUnmount(() => {
    Base
 ========================= */
 .app-shell {
+  --generator-action-bg: #34d399;
+  --generator-action-text: #18181b;
+  --generator-action-shadow: rgba(52, 211, 153, 0.35);
+  --generator-action-disabled-bg: color-mix(in srgb, var(--generator-action-bg) 62%, var(--app-bg-soft));
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -5613,12 +5617,12 @@ onBeforeUnmount(() => {
   }
 }
 
-/* CTA Create Cards - verde da logo #28ca73 com efeito de reflexo */
+/* Acoes principais do Generator com contraste AA/AAA nos dois temas. */
 :deep(.cta.p-button) {
   position: relative;
-  background: #28ca73 !important;
-  border: 1px solid #22b866 !important;
-  color: #ffffff !important;
+  background: var(--generator-action-bg) !important;
+  border: 1px solid var(--generator-action-bg) !important;
+  color: var(--generator-action-text) !important;
   font-weight: 700;
   overflow: hidden;
   transition: all 0.3s ease;
@@ -5636,23 +5640,23 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-:deep(.cta.p-button:hover)::before {
+:deep(.cta.p-button:hover:not(:disabled):not(.p-disabled))::before {
   left: 100%;
 }
 
-:deep(.cta.p-button:hover) {
-  background: #22b866 !important;
-  border-color: #1da55a !important;
+:deep(.cta.p-button:hover:not(:disabled):not(.p-disabled)) {
+  background: var(--generator-action-bg) !important;
+  border-color: var(--generator-action-bg) !important;
+  color: var(--generator-action-text) !important;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
+  box-shadow: 0 4px 12px var(--generator-action-shadow);
 }
-
-/* Botão secundário premium - verde da logo #28ca73 */
+/* Demais acoes do cabecalho usam a mesma combinacao acessivel. */
 :deep(.btn-shine.p-button) {
   position: relative;
-  background: #28ca73 !important;
-  border: 1px solid #22b866 !important;
-  color: #ffffff !important;
+  background: var(--generator-action-bg) !important;
+  border: 1px solid var(--generator-action-bg) !important;
+  color: var(--generator-action-text) !important;
   overflow: hidden;
   transition: all 0.3s ease;
 }
@@ -5669,16 +5673,28 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-:deep(.btn-shine.p-button:hover)::before {
+:deep(.btn-shine.p-button:hover:not(:disabled):not(.p-disabled))::before {
   left: 100%;
 }
 
-:deep(.btn-shine.p-button:hover) {
-  background: #22b866 !important;
-  border-color: #1da55a !important;
-  color: #ffffff !important;
+:deep(.btn-shine.p-button:hover:not(:disabled):not(.p-disabled)) {
+  background: var(--generator-action-bg) !important;
+  border-color: var(--generator-action-bg) !important;
+  color: var(--generator-action-text) !important;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
+  box-shadow: 0 4px 12px var(--generator-action-shadow);
+}
+
+:deep(.cta.p-button:disabled),
+:deep(.cta.p-button.p-disabled),
+:deep(.btn-shine.p-button:disabled),
+:deep(.btn-shine.p-button.p-disabled) {
+  opacity: 1;
+  background: var(--generator-action-disabled-bg) !important;
+  border-color: var(--generator-action-disabled-bg) !important;
+  color: var(--generator-action-text) !important;
+  transform: none;
+  box-shadow: none;
 }
 
 @media (max-width: 768px) {
