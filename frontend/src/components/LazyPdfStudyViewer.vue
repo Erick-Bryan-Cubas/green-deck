@@ -10,6 +10,10 @@ const props = defineProps({
     type: File,
     required: true
   },
+  documentId: {
+    type: String,
+    default: ''
+  },
   generating: {
     type: Boolean,
     default: false
@@ -68,6 +72,7 @@ defineExpose({
     ref="viewerRef"
     :file="file"
     :data="pdfData"
+    :document-id="documentId"
     :generating="generating"
     @selection-changed="emit('selection-changed', $event)"
     @highlights-changed="emit('highlights-changed', $event)"
