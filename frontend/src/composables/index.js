@@ -12,3 +12,17 @@ export { useContentSelection } from './useContentSelection'
 export { useCardGeneration } from './useCardGeneration'
 export { useDashboardFilters } from './useDashboardFilters'
 export { useAnimatedNumber, useAnimatedNumbers } from './useAnimatedNumber'
+export {
+  uploadStudyDocument,
+  fetchStudyDocument,
+  fetchStudyFileBytes,
+  listStudyDocuments,
+  saveStudyHighlights,
+  saveStudyReading,
+  deleteStudyDocument,
+  listStudySessions,
+  saveStudySession,
+  deleteStudySession,
+  clearStudySessions,
+  mergeSessions
+} from './useStudyStore'
