@@ -2180,12 +2180,23 @@ onUnmounted(() => {
           <template #header>
             <div class="dt-header">
               <div class="dt-title">
-                <span class="title">Anki Browser</span>
-                <span class="subtitle">Duplo clique para preview • Geração com LLM</span>
+                <span class="dt-title-icon"><i class="pi pi-table"></i></span>
+                <span class="dt-title-text">
+                  <span class="title">Anki Browser</span>
+                  <span class="subtitle">Duplo clique para preview • Geração com LLM</span>
+                </span>
               </div>
               <div class="dt-actions">
                 <Button icon="pi pi-refresh" rounded raised @click="refreshAll" title="Atualizar tudo (decks + cartões)" />
               </div>
+            </div>
+          </template>
+
+          <template #empty>
+            <div class="dt-empty">
+              <i class="pi pi-inbox"></i>
+              <span class="dt-empty-title">Nenhum cartão encontrado</span>
+              <span class="dt-empty-sub">Ajuste os filtros de busca acima ou limpe-os para ver mais resultados.</span>
             </div>
           </template>
 
@@ -4047,15 +4058,93 @@ onUnmounted(() => {
 
 :deep(.modern-dt .p-datatable-header){ background: transparent; border: 0; padding: 8px 6px 14px 6px; }
 :deep(.modern-dt .p-datatable-footer){ background: transparent; border: 0; padding: 12px 6px 6px 6px; }
+
+/* Cabeçalho das colunas */
 :deep(.modern-dt .p-datatable-thead > tr > th){
   background: color-mix(in srgb, var(--app-card) 92%, transparent);
   border-color: var(--app-border);
-  font-weight: 900;
+  font-weight: 800;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--app-text-muted);
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
+:deep(.modern-dt .p-datatable-thead > tr > th.p-datatable-sortable-column){
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+:deep(.modern-dt .p-datatable-thead > tr > th.p-datatable-sortable-column:hover){
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--app-card));
+  color: var(--color-primary);
+}
+:deep(.modern-dt .p-datatable-thead > tr > th.p-datatable-column-sorted){
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--app-card));
+  color: var(--color-primary);
+}
+:deep(.modern-dt .p-datatable-sort-icon){
+  color: var(--color-primary);
+  opacity: 0.8;
+  width: 12px;
+  height: 12px;
+}
+
+/* Linhas — zebra sutil + hover + seleção */
 :deep(.modern-dt .p-datatable-tbody > tr > td){ border-color: var(--app-border); }
-:deep(.modern-dt .p-datatable-tbody > tr){ background: color-mix(in srgb, var(--app-card) 98%, transparent); }
-:deep(.modern-dt .p-datatable-tbody > tr.p-highlight){
+:deep(.modern-dt .p-datatable-tbody > tr){
+  background: color-mix(in srgb, var(--app-card) 98%, transparent);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+:deep(.modern-dt.p-datatable-striped .p-datatable-tbody > tr.p-row-even){
+  background: color-mix(in srgb, var(--app-bg-soft) 40%, var(--app-card));
+}
+:deep(.modern-dt .p-datatable-tbody > tr:not(.p-highlight):not(.p-datatable-row-selected):hover){
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--app-card)) !important;
+}
+:deep(.modern-dt .p-datatable-tbody > tr.p-highlight),
+:deep(.modern-dt .p-datatable-tbody > tr.p-datatable-row-selected){
   background: color-mix(in srgb, var(--color-primary) 20%, transparent) !important;
+}
+
+/* Estado vazio */
+:deep(.modern-dt .p-datatable-empty-message td){
+  padding: 44px 20px !important;
+  border: 0 !important;
+}
+.dt-empty{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap: 8px;
+  text-align:center;
+}
+.dt-empty i{ font-size: 26px; opacity: 0.4; }
+.dt-empty-title{ font-weight: 800; font-size: 14px; opacity: 0.85; }
+.dt-empty-sub{ font-size: 12.5px; opacity: 0.65; }
+
+/* Paginação */
+:deep(.modern-dt .p-paginator){
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--app-border);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+:deep(.modern-dt .p-paginator-page),
+:deep(.modern-dt .p-paginator-first),
+:deep(.modern-dt .p-paginator-prev),
+:deep(.modern-dt .p-paginator-next),
+:deep(.modern-dt .p-paginator-last){
+  border-radius: 10px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+:deep(.modern-dt .p-paginator-page.p-paginator-page-selected){
+  background: var(--color-primary);
+  color: var(--app-bg);
+  font-weight: 800;
 }
 
 .dt-header{
@@ -4065,6 +4154,20 @@ onUnmounted(() => {
   gap: 10px;
   flex-wrap: wrap;
 }
+.dt-title{ display:flex; align-items:center; gap:10px; }
+.dt-title-icon{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 14px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+}
+.dt-title-text{ display:flex; flex-direction:column; }
 .dt-title .title{ font-size: 16px; font-weight: 950; letter-spacing: -0.2px; }
 .dt-title .subtitle{ display:block; margin-top: 4px; font-size: 12.5px; opacity: 0.75; }
 .dt-footer{ opacity: 0.78; font-size: 12.5px; }
