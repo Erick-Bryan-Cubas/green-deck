@@ -1088,12 +1088,12 @@ defineExpose({
   gap: 0.5rem;
 }
 
-/* Botão premium - verde da logo #28ca73 */
+/* Herda a combinacao acessivel definida pela pagina Generator. */
 .document-upload-btn.btn-shine {
   position: relative;
-  background: #28ca73 !important;
-  border: 1px solid #22b866 !important;
-  color: #ffffff !important;
+  background: var(--generator-action-bg, #34d399) !important;
+  border: 1px solid var(--generator-action-bg, #34d399) !important;
+  color: var(--generator-action-text, #18181b) !important;
   overflow: hidden;
   transition: all 0.3s ease;
 }
@@ -1115,11 +1115,11 @@ defineExpose({
 }
 
 .document-upload-btn.btn-shine:hover {
-  background: #22b866 !important;
-  border-color: #1da55a !important;
-  color: #ffffff !important;
+  background: var(--generator-action-bg, #34d399) !important;
+  border-color: var(--generator-action-bg, #34d399) !important;
+  color: var(--generator-action-text, #18181b) !important;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(40, 202, 115, 0.4);
+  box-shadow: 0 4px 12px var(--generator-action-shadow, rgba(52, 211, 153, 0.35));
 }
 
 .document-upload-dialog :deep(.p-dialog-content) {
