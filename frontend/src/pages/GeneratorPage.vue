@@ -59,6 +59,15 @@ import { useOllamaStatus } from '@/composables/useStatusWebSocket'
 import { useSidebar } from '@/composables/useSidebar'
 import { useAppNotifications } from '@/composables/useAppNotifications'
 import { useAppToast } from '@/composables/useAppToast'
+import {
+  clearStudySessions,
+  deleteStudySession,
+  fetchStudyFileBytes,
+  listStudySessions,
+  mergeSessions,
+  saveStudySession,
+  uploadStudyDocument
+} from '@/composables/useStudyStore'
 
 // Services
 import {
@@ -188,10 +197,14 @@ function buildSessionInfo(session) {
   const cardsCount = sessionCardCount(session)
   const cardsLabel = cardsCount === 1 ? '1 cartão' : `${cardsCount} cartões`
 
+  const questionsCount = Array.isArray(session?.questionCards) ? session.questionCards.length : 0
+
   return [
+    session?.pdf?.name ? `PDF: ${session.pdf.name}` : null,
     created ? `Criada em: ${created}` : null,
     updated ? `Atualizada em: ${updated}` : null,
-    `Total de cartões: ${cardsLabel}`
+    `Total de cartões: ${cardsLabel}`,
+    questionsCount ? `Questões: ${questionsCount}` : null
   ]
     .filter(Boolean)
     .join('\n')
@@ -782,7 +795,14 @@ function loadSessions() {
         plainText: typeof s.plainText === 'string' ? s.plainText : '',
         quillDelta: s.quillDelta ?? null,
         cards: Array.isArray(s.cards) ? s.cards : [],
-        documentContext: typeof s.documentContext === 'string' ? s.documentContext : ''
+        documentContext: typeof s.documentContext === 'string' ? s.documentContext : '',
+        // Estes três eram gravados mas descartados na leitura: questões e
+        // segmentação de tópicos sumiam a cada recarregamento da página
+        topicSegments: Array.isArray(s.topicSegments) ? s.topicSegments : [],
+        topicDefinitions: Array.isArray(s.topicDefinitions) ? s.topicDefinitions : [],
+        questionCards: Array.isArray(s.questionCards) ? s.questionCards : [],
+        // Vínculo com o PDF em estudo (o arquivo vive no banco)
+        pdf: s.pdf && typeof s.pdf === 'object' ? s.pdf : null
       }))
       .slice(0, MAX_SESSIONS)
   } catch {
@@ -795,13 +815,32 @@ function persistSessions(list) {
     const capped = list.slice(0, MAX_SESSIONS)
     const raw = JSON.stringify(capped)
     if (raw.length > MAX_LOCALSTORAGE_CHARS) {
-      notify('Conteúdo muito grande — não foi possível salvar a sessão no localStorage.', 'warn', 6000)
+      // O banco continua recebendo a sessão — só o cache local fica de fora
+      notify('Sessão grande demais para o cache do navegador (segue salva no banco).', 'warn', 6000)
       return
     }
     localStorage.setItem(LS_SESSIONS_KEY, raw)
   } catch {
-    notify('Falha ao salvar sessão (storage indisponível).', 'warn', 5000)
+    notify('Falha ao salvar sessão no navegador (segue salva no banco).', 'warn', 5000)
   }
+}
+
+/**
+ * Traz do banco as sessões que não estão no navegador (outra máquina, cache
+ * limpo). Em caso de conflito de id, vence a versão com updatedAt mais novo.
+ */
+async function hydrateSessionsFromBackend() {
+  const remote = await listStudySessions()
+  if (!remote.length) return
+
+  const merged = mergeSessions(sessions.value, remote).slice(0, MAX_SESSIONS)
+  const changed =
+    merged.length !== sessions.value.length ||
+    merged.some((s, i) => s.id !== sessions.value[i]?.id || s.updatedAt !== sessions.value[i]?.updatedAt)
+
+  if (!changed) return
+  sessions.value = merged
+  persistSessions(sessions.value)
 }
 
 function loadActiveSessionId() {
@@ -836,11 +875,19 @@ function upsertSession(session) {
   sessions.value = sessions.value.slice(0, MAX_SESSIONS)
 
   persistSessions(sessions.value)
+
+  // Cópia durável: sobrevive a limpar o navegador e ao limite do localStorage.
+  // documentPagesContent duplica o texto inteiro do documento e nem chega a ser
+  // restaurado — fica fora para não inflar o banco.
+  const durable = { ...next }
+  delete durable.documentPagesContent
+  saveStudySession(durable)
 }
 
 function deleteSessionById(id) {
   sessions.value = sessions.value.filter((s) => s.id !== id)
   persistSessions(sessions.value)
+  deleteStudySession(id)
 
   if (activeSessionId.value === id) {
     activeSessionId.value = sessions.value[0]?.id || null
@@ -852,6 +899,7 @@ function clearAllSessions() {
   sessions.value = []
   activeSessionId.value = null
   persistActiveSessionId(null)
+  clearStudySessions()
   try {
     localStorage.removeItem(LS_SESSIONS_KEY)
   } catch {}
@@ -886,6 +934,13 @@ function resetWorkspaceState() {
   showTopicLegend.value = false
 
   questionCards.value = []
+
+  pdfStudyFile.value = null
+  pdfDocumentId.value = ''
+  pdfSessionLink.value = null
+  pdfSelectedText.value = ''
+  pdfHighlightCount.value = 0
+  editorViewMode.value = 'editor'
 
   editorRef.value?.setDelta?.(null)
 
@@ -923,6 +978,7 @@ function deleteSessionWithConfirmation(id) {
 
   sessions.value = remaining
   persistSessions(sessions.value)
+  deleteStudySession(id)
 
   if (!wasActive) {
     notify('Sessão apagada.', 'success', 2600)
@@ -994,7 +1050,12 @@ function buildActiveSessionSnapshot() {
   const base = getSessionById(id)
 
   const plainText = String(lastFullText.value || '')
-  const title = sessionTitleFromText(plainText)
+  const pdf = pdfSessionLink.value ? { ...pdfSessionLink.value } : null
+  // Estudo por PDF costuma não ter texto no editor: o nome do arquivo é o
+  // que identifica a sessão na lista
+  const title = normalizePlainText(plainText)
+    ? sessionTitleFromText(plainText)
+    : pdf?.name || sessionTitleFromText(plainText)
 
   const delta = lastEditorDelta.value ?? editorRef.value?.getDelta?.() ?? null
 
@@ -1011,7 +1072,9 @@ function buildActiveSessionSnapshot() {
     topicSegments: topicSegments.value,
     topicDefinitions: topicDefinitions.value,
     // AllInOne questions
-    questionCards: questionCards.value
+    questionCards: questionCards.value,
+    // PDF em estudo (o arquivo em si fica no banco, referenciado pelo id)
+    pdf
   }
 }
 
@@ -1033,7 +1096,9 @@ function schedulePersistActiveSession() {
       normalizePlainText(snap.plainText).length > 0 ||
       (Array.isArray(snap.cards) && snap.cards.length > 0) ||
       (Array.isArray(snap.questionCards) && snap.questionCards.length > 0) ||
-      normalizePlainText(snap.documentContext).length > 0
+      normalizePlainText(snap.documentContext).length > 0 ||
+      // Estudar um PDF já é sessão, mesmo sem nada digitado no editor
+      !!snap.pdf
 
     if (!hasAny) {
       saveStatus.value = 'idle'
@@ -1078,6 +1143,9 @@ async function restoreSessionById(id) {
 
     // Restaura AllInOne questions
     questionCards.value = Array.isArray(s.questionCards) ? s.questionCards : []
+
+    // Reabre o PDF em estudo (arquivo vem do banco) — ou fecha o que estava aberto
+    await restorePdfStudy(s.pdf)
 
     await nextTick()
 
@@ -2483,6 +2551,7 @@ function clearTopicHighlights() {
 const generating = ref(false)
 const lastGenerationSource = ref(null) // 'selection' | 'highlight' | 'full'
 const lastGenerationWordCount = ref(0)
+const lastGenerationLabel = ref('')    // rótulo exato quando a fonte é um trecho específico
 
 /**
  * Resolve which content to use for card generation
@@ -2490,8 +2559,20 @@ const lastGenerationWordCount = ref(0)
  * @returns {object} { source, content, shouldWarn, message }
  */
 function resolveGenerationContent() {
-  // 0. Modo de estudo por PDF: seleção no PDF → marcações no PDF → texto do editor
+  // 0. Modo de estudo por PDF: trecho pedido explicitamente no leitor →
+  //    seleção no PDF → marcações no PDF → texto do editor
   if (isPdfStudyActive.value) {
+    const override = pdfGenerationOverride.value
+    if (override?.text) {
+      return {
+        source: override.source || 'selection',
+        content: override.text,
+        shouldWarn: false,
+        message: override.source === 'highlight' ? `Gerando a partir de ${override.label}` : null,
+        label: override.label || ''
+      }
+    }
+
     const pdfSel = (pdfSelectedText.value || '').trim()
     if (pdfSel) {
       return {
@@ -2566,6 +2647,8 @@ function resolveGenerationContent() {
  * Get a human-readable label for the content source
  */
 function getSourceLabel() {
+  // Trecho específico pedido no leitor de PDF: o rótulo já veio pronto
+  if (lastGenerationLabel.value) return lastGenerationLabel.value
   switch (lastGenerationSource.value) {
     case 'selection':
       return 'Texto selecionado'
@@ -2597,6 +2680,8 @@ const generationSourceTitle = computed(() => {
 async function generateCardsFromSelection() {
   // Resolve which content to use (fallback hierarchy)
   const resolved = resolveGenerationContent()
+  // O trecho pedido no leitor vale para esta geração apenas
+  pdfGenerationOverride.value = null
 
   // Handle empty content
   if (resolved.source === 'empty') {
@@ -2616,6 +2701,7 @@ async function generateCardsFromSelection() {
 
   lastGenerationSource.value = resolved.source
   lastGenerationWordCount.value = countWords(resolved.content)
+  lastGenerationLabel.value = resolved.label || ''
   const text = resolved.content
 
   try {
@@ -2845,16 +2931,24 @@ async function handleGenerateQuestions(params) {
     isGeneratingQuestions.value = true
     showQuestionGenerateModal.value = false
 
-    // Determine text to use
+    // Determine text to use — no estudo por PDF a fonte "completa" são as
+    // marcações do leitor (o editor costuma estar vazio nesse modo)
     let text = ''
     if (textSource === 'selection' && selectedText.value) {
       text = selectedText.value
+    } else if (isPdfStudyActive.value) {
+      text = pdfViewerRef.value?.getHighlights?.()?.combined || lastFullText.value || ''
     } else {
       text = lastFullText.value
     }
 
     if (!text || text.trim().length < 50) {
-      notify('Texto insuficiente para gerar questões', 'warn')
+      notify(
+        isPdfStudyActive.value
+          ? 'Selecione um trecho do PDF ou marque trechos para gerar questões'
+          : 'Texto insuficiente para gerar questões',
+        'warn'
+      )
       return
     }
 
@@ -3727,8 +3821,16 @@ const { sidebarMenuItems, sidebarFooterActions } = useSidebar({
             sessionInfo: buildSessionInfo(s),
             metricCount: sessionCardCount(s),
             sublabelMetric: `${sessionCardCount(s)} ${sessionCardCount(s) === 1 ? 'cartão' : 'cartões'}`,
-            icon: s.id === activeSessionId.value ? 'pi pi-check-circle' : 'pi pi-file',
-            iconColor: s.id === activeSessionId.value ? colorTokens.success : colorTokens.neutral,
+            icon: s.id === activeSessionId.value
+              ? 'pi pi-check-circle'
+              : s.pdf?.documentId
+                ? 'pi pi-file-pdf'
+                : 'pi pi-file',
+            iconColor: s.id === activeSessionId.value
+              ? colorTokens.success
+              : s.pdf?.documentId
+                ? colorTokens.danger
+                : colorTokens.neutral,
             active: s.id === activeSessionId.value,
             actionIcon: 'pi pi-trash',
             actionTooltip: 'Apagar sessão',
@@ -3986,19 +4088,106 @@ const editorViewMode = ref('editor')       // 'editor' | 'pdf'
 const pdfViewerRef = ref(null)
 const pdfSelectedText = ref('')
 const pdfHighlightCount = ref(0)
+// Contador de alterações nas marcações (editar texto não muda a contagem)
+const pdfHighlightsRev = ref(0)
+// Id do PDF no banco (sha256). Vazio = ainda subindo, ou backend indisponível
+const pdfDocumentId = ref('')
+// Vínculo do PDF com a sessão. Existe mesmo quando o arquivo não pôde ser
+// recuperado, para a sessão não perder a referência ao documento
+const pdfSessionLink = ref(null) // { documentId, name, size }
+// Trecho específico pedido no leitor (uma marcação, ou a seleção) — tem
+// prioridade sobre a hierarquia normal e vale só para a próxima geração
+const pdfGenerationOverride = ref(null) // { text, source, label }
 
 const pdfDocKey = computed(() =>
   pdfStudyFile.value ? `${pdfStudyFile.value.name}::${pdfStudyFile.value.size}` : ''
 )
 const isPdfStudyActive = computed(() => editorViewMode.value === 'pdf' && !!pdfStudyFile.value)
 
-function onStudyPdf(file) {
+async function onStudyPdf(file) {
   if (immersiveReader.value) setReaderEnabled(false)
   pdfStudyFile.value = file
+  pdfDocumentId.value = ''
+  pdfSessionLink.value = { documentId: '', name: file.name, size: file.size }
   editorViewMode.value = 'pdf'
   selectedText.value = ''
   pdfSelectedText.value = ''
+  pdfHighlightCount.value = 0
   notify(`📖 "${file.name}" aberto — selecione trechos no PDF para gerar cartões`, 'info', 5000)
+
+  // A sessão já existe a partir daqui, mesmo antes do upload terminar
+  schedulePersistActiveSession()
+  await registerStudyDocument(file)
+}
+
+/**
+ * Guarda o PDF no banco e devolve o id que liga o arquivo à sessão. Sem isso
+ * o leitor funciona igual, mas as marcações ficam só neste navegador.
+ */
+async function registerStudyDocument(file) {
+  try {
+    const result = await uploadStudyDocument(file)
+    const id = result?.document?.id
+    if (!id) throw new Error('resposta inesperada do servidor')
+
+    // O usuário pode ter fechado ou trocado o PDF durante o upload
+    if (pdfStudyFile.value !== file) return
+
+    pdfDocumentId.value = id
+    pdfSessionLink.value = { documentId: id, name: file.name, size: file.size }
+    schedulePersistActiveSession()
+
+    const saved = result.highlights?.length || 0
+    if (saved > 0) {
+      notify(
+        `${saved} marcação${saved > 1 ? 'ões' : ''} recuperada${saved > 1 ? 's' : ''} deste PDF`,
+        'success',
+        4000
+      )
+    }
+  } catch (e) {
+    notify(
+      `PDF aberto sem histórico salvo (${e?.message || 'servidor indisponível'}) — as marcações ficam só neste navegador.`,
+      'warn',
+      7000
+    )
+  }
+}
+
+/**
+ * Reabre o PDF de uma sessão restaurada, baixando o arquivo do banco.
+ * Sem vínculo, fecha o que estiver aberto.
+ */
+async function restorePdfStudy(link) {
+  pdfSelectedText.value = ''
+  pdfHighlightCount.value = 0
+  pdfGenerationOverride.value = null
+  selectedText.value = ''
+
+  if (!link?.documentId) {
+    pdfStudyFile.value = null
+    pdfDocumentId.value = ''
+    pdfSessionLink.value = null
+    if (editorViewMode.value === 'pdf') editorViewMode.value = 'editor'
+    return
+  }
+
+  pdfSessionLink.value = { ...link }
+
+  const bytes = await fetchStudyFileBytes(link.documentId)
+  if (!bytes) {
+    pdfStudyFile.value = null
+    pdfDocumentId.value = ''
+    editorViewMode.value = 'editor'
+    notify(`Não foi possível recuperar o PDF "${link.name || 'documento'}" do banco.`, 'warn', 6000)
+    return
+  }
+
+  pdfStudyFile.value = new File([bytes], link.name || 'documento.pdf', {
+    type: 'application/pdf'
+  })
+  pdfDocumentId.value = link.documentId
+  editorViewMode.value = 'pdf'
 }
 
 function setEditorViewMode(mode) {
@@ -4011,26 +4200,72 @@ function setEditorViewMode(mode) {
 
 function closePdfStudy() {
   pdfStudyFile.value = null
+  pdfDocumentId.value = ''
+  // Desfaz o vínculo com a sessão; o PDF e as marcações continuam no banco e
+  // voltam se o mesmo arquivo for aberto de novo
+  pdfSessionLink.value = null
   editorViewMode.value = 'editor'
   pdfSelectedText.value = ''
   pdfHighlightCount.value = 0
+  pdfGenerationOverride.value = null
   selectedText.value = ''
+  schedulePersistActiveSession()
 }
 
 function onPdfSelectionChanged(text) {
   pdfSelectedText.value = text || ''
+  // Uma nova seleção invalida o trecho pendente do leitor
+  pdfGenerationOverride.value = null
   if (editorViewMode.value === 'pdf') {
     selectedText.value = pdfSelectedText.value
   }
 }
 
+// Modal fechado sem confirmar: o trecho pedido no leitor perde a validade
+watch(generateModalVisible, (open) => {
+  if (!open) pdfGenerationOverride.value = null
+})
+
 function onPdfHighlightsChanged(count) {
   pdfHighlightCount.value = count || 0
+  // Editar o texto de uma marcação não muda a contagem: a revisão força os
+  // computeds que dependem do conteúdo a recalcular
+  pdfHighlightsRev.value++
 }
 
-// Geração disparada pelo leitor (toolbar de seleção ou painel de marcações):
-// a resolução de conteúdo em resolveGenerationContent() já prioriza o PDF
-function onPdfGenerate() {
+/**
+ * Fonte "texto completo" das questões. No estudo por PDF, são as marcações;
+ * fora dele, o texto do editor.
+ */
+const questionsFallbackText = computed(() => {
+  if (isPdfStudyActive.value) {
+    // Dependências reativas explícitas (o conteúdo vem do componente filho)
+    void pdfHighlightCount.value
+    void pdfHighlightsRev.value
+    const combined = pdfViewerRef.value?.getHighlights?.()?.combined || ''
+    if (combined) return combined
+  }
+  return lastFullText.value || ''
+})
+
+const questionsFallbackLabel = computed(() => {
+  if (isPdfStudyActive.value && pdfHighlightCount.value > 0) {
+    return `Marcações do PDF (${pdfHighlightCount.value})`
+  }
+  return 'Texto completo'
+})
+
+const questionsFallbackHint = computed(() =>
+  isPdfStudyActive.value ? 'Marque trechos no PDF' : 'Texto insuficiente'
+)
+
+// Geração disparada pelo leitor: o payload diz exatamente qual trecho gerou o
+// pedido (a seleção, uma marcação específica ou todas elas)
+function onPdfGenerate(payload) {
+  const text = (payload?.text || '').trim()
+  pdfGenerationOverride.value = text
+    ? { text, source: payload.source || 'selection', label: payload.label || '' }
+    : null
   openGenerateModal()
 }
 
@@ -4112,9 +4347,10 @@ watch(documentContext, () => {
 let globalKeyHandler = null
 
 onMounted(async () => {
-  // carrega storage (sessões + ativa)
+  // carrega storage (sessões + ativa) e completa com o que estiver só no banco
   sessions.value = loadSessions()
   activeSessionId.value = loadActiveSessionId()
+  hydrateSessionsFromBackend()
 
   // carrega preferências do modo leitura
   try {
@@ -4221,10 +4457,11 @@ onMounted(async () => {
       return
     }
 
-    // Ctrl+F abre busca no editor
+    // Ctrl+F abre a busca do que está visível: PDF em estudo ou editor
     if (isCtrl && e.key === 'f') {
       e.preventDefault()
-      toggleEditorSearch()
+      if (isPdfStudyActive.value) pdfViewerRef.value?.openSearch?.()
+      else toggleEditorSearch()
       return
     }
 
@@ -4747,6 +4984,7 @@ onBeforeUnmount(() => {
                 ref="pdfViewerRef"
                 :key="pdfDocKey"
                 :file="pdfStudyFile"
+                :document-id="pdfDocumentId"
                 :generating="generating"
                 @selection-changed="onPdfSelectionChanged"
                 @highlights-changed="onPdfHighlightsChanged"
@@ -5264,7 +5502,9 @@ onBeforeUnmount(() => {
       :generating="isGeneratingQuestions"
       :hasSelectedText="!!selectedText"
       :selectedTextLength="selectedText?.length || 0"
-      :fullTextLength="lastFullText?.length || 0"
+      :fullTextLength="questionsFallbackText.length"
+      :fullTextLabel="questionsFallbackLabel"
+      :fullTextEmptyHint="questionsFallbackHint"
       :getModelInfo="getModelInfo"
       :getProviderSeverity="getProviderSeverity"
       :getProviderLabel="getProviderLabel"
