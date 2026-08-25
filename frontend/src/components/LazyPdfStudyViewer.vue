@@ -47,7 +47,8 @@ defineExpose({
   getHighlights: () =>
     viewerRef.value?.getHighlights?.() || { count: 0, combined: '', items: [] },
   clearSelection: () => viewerRef.value?.clearSelection?.(),
-  goToPage: (p) => viewerRef.value?.goToPage?.(p)
+  goToPage: (p) => viewerRef.value?.goToPage?.(p),
+  openSearch: () => viewerRef.value?.openSearch?.()
 })
 </script>
 
