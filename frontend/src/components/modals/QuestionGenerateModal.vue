@@ -31,6 +31,15 @@ const props = defineProps({
     type: Number,
     default: 0
   },
+  // No estudo por PDF a fonte "completa" são as marcações, não o editor
+  fullTextLabel: {
+    type: String,
+    default: 'Texto completo'
+  },
+  fullTextEmptyHint: {
+    type: String,
+    default: 'Texto insuficiente'
+  },
   // Helper functions passed from parent
   getModelInfo: Function,
   getProviderSeverity: Function,
@@ -282,12 +291,12 @@ function formatWordCount(chars) {
                     :disabled="fullTextLength < 50"
                   />
                   <div class="source-info">
-                    <span class="source-label">Texto completo</span>
+                    <span class="source-label">{{ fullTextLabel }}</span>
                     <span v-if="fullTextLength >= 50" class="source-meta">
                       {{ formatWordCount(fullTextLength) }}
                     </span>
                     <span v-else class="source-meta text-yellow-500">
-                      Texto insuficiente
+                      {{ fullTextEmptyHint }}
                     </span>
                   </div>
                 </div>
